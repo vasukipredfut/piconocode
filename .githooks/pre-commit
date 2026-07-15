@@ -154,8 +154,8 @@ for path in staged:
                         "com.aria.savedview.", "com.aria.pivot.", "com.aria.tenant.",
                         "com.aria.onboarding.", "com.aria.audit.", "com.aria.document.",
                         "com.aria.reminder.", "com.aria.integration.", "com.aria.ai.",
-                        "com.aria.auth.", "com.aria.finance.", "com.aria.hr.",
-                        "com.aria.mes.", "com.aria.dispatch.")
+                        "com.aria.auth.", "com.aria.print.", "com.aria.finance.",
+                        "com.aria.hr.", "com.aria.mes.", "com.aria.dispatch.")
         allowed = any(pkg.replace(".", "/") in path for pkg in allowed_pkgs)
 
         # Rules 1/2/3 are about NEWLY INTRODUCED bespoke JPA/controllers, so
