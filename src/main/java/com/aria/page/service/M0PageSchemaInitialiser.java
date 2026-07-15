@@ -129,6 +129,19 @@ public class M0PageSchemaInitialiser {
                     log.info("M0 workflow schema + seed already present; V4 skipped");
                 }
             }
+            // V132 — Core auth/HR tables (employee_details, role, department_details,
+            // permissions, refresh_token) were referenced everywhere but never had a
+            // CREATE TABLE — assumed to come from an external legacy DB dump. Fresh
+            // installs without that dump had silently-broken login. Create them here,
+            // before the V4_1 probe below (which requires employee_details + role).
+            try {
+                if (!tableExists(jdbc, "employee_details") || !tableExists(jdbc, "role")) {
+                    log.info("Core auth tables (employee_details/role/...) missing; applying V132");
+                    try { runScript(c, "db/migration/V132__hr_core_auth_tables.sql"); }
+                    catch (RuntimeException e) { log.warn("V132 application failed: {}", e.getMessage()); }
+                }
+            } catch (Exception probe) { log.warn("V132 probe failed: {}", probe.getMessage()); }
+
             // V4_1 is conditional: only applies when the legacy
             // employee_details + role tables exist (production DB does,
             // testcontainer slim DB does not).
