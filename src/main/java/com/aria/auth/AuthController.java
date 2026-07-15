@@ -69,9 +69,16 @@ public class AuthController {
                     Timestamp.from(Instant.now().plus(Duration.ofDays(7))));
 
             List<Map<String, Object>> permissions = List.of();
+            String landingRoute = null;
             Integer roleId = parseRoleId(roles);
             if (roleId != null) {
                 permissions = jdbc.queryForList("SELECT * FROM permissions WHERE role_id = ?", roleId);
+                // DB-driven post-login landing route (per role — customizable data,
+                // not hardcoded in the frontend). NULL → frontend falls back to
+                // the home dashboard. See V126__role_landing_route.sql.
+                landingRoute = jdbc.query(
+                        "SELECT landing_route FROM role WHERE id = ?",
+                        rs -> rs.next() ? rs.getString(1) : null, roleId);
             }
 
             Map<String, Object> resp = new LinkedHashMap<>();
@@ -82,6 +89,7 @@ public class AuthController {
             resp.put("username", principal.getUsername());
             resp.put("roles", roles);
             resp.put("permissions", permissions);
+            resp.put("landingRoute", landingRoute);
             return ResponseEntity.ok(resp);
 
         } catch (BadCredentialsException e) {
