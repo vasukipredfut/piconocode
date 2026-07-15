@@ -1,0 +1,338 @@
+#!/usr/bin/env python3
+"""
+EARMS backend substrate-first pre-commit hook.
+
+Blocks a commit that introduces any of the 10 anti-patterns from
+docs/architecture/CODE-REVIEW-develope-2026-07-11.md.
+
+Install:
+    git config core.hooksPath .githooks
+    chmod +x .githooks/pre-commit
+"""
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+
+CRITICAL = "\033[31m"     # red
+HIGH     = "\033[33m"     # amber
+CLEAN    = "\033[32m"     # green
+RESET    = "\033[0m"
+
+# Files STAGED for commit
+staged = subprocess.check_output(
+    ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
+    text=True,
+).splitlines()
+
+# Baseline migrations (present on main) — modifications to these are BANNED
+try:
+    on_main = subprocess.check_output(
+        ["git", "ls-tree", "-r", "--name-only", "origin/main"],
+        stderr=subprocess.DEVNULL, text=True,
+    ).splitlines()
+except subprocess.CalledProcessError:
+    on_main = subprocess.check_output(
+        ["git", "ls-tree", "-r", "--name-only", "main"],
+        stderr=subprocess.DEVNULL, text=True,
+    ).splitlines()
+baseline_migrations = {
+    p for p in on_main if p.startswith("src/main/resources/db/migration/V") and p.endswith(".sql")
+}
+
+findings = []
+
+def add(severity, rule, file, line, msg, fix):
+    findings.append((severity, rule, file, line, msg, fix))
+
+
+# ------------------------------------------------------------------
+# Rule 11 — customer-scoped filenames (one repo, DB customizes per account).
+#
+# Blocks any NEW file whose path names a customer. Files already on main
+# are grandfathered (they can still be modified) but a new file under the
+# same pattern is a fresh rule violation.
+#
+# Extend CUSTOMER_NAMES as new customers onboard. The point is to fail
+# loud on `V123__acme_seed.sql` or `com/idayam/acme/*` the moment someone
+# tries it.
+# ------------------------------------------------------------------
+CUSTOMER_NAMES = ("pico", "pico-power", "picopower")  # lowercase substring, extend on new-customer PR
+
+def is_customer_scoped(path):
+    lp = path.lower()
+    if "/customers/" in lp:
+        return True
+    for name in CUSTOMER_NAMES:
+        # Match "pico" bounded by / _ - . so we don't false-positive on words
+        # like "epicondylitis" or "topicover.java".
+        if re.search(rf"(^|[/_.-]){re.escape(name)}([_/.-]|$)", lp):
+            return True
+    return False
+
+
+# Files being added (A) or renamed (R) — the exact set that R11 cares about.
+# name-status returns lines like "A\tpath" or "R100\told\tnew".
+try:
+    _name_status = subprocess.check_output(
+        ["git", "diff", "--cached", "--name-status", "--diff-filter=AR"],
+        text=True,
+    ).splitlines()
+    added_paths = set()
+    for line in _name_status:
+        parts = line.split("\t")
+        if not parts:
+            continue
+        if parts[0].startswith("A") and len(parts) >= 2:
+            added_paths.add(parts[1])
+        elif parts[0].startswith("R") and len(parts) >= 3:
+            added_paths.add(parts[2])   # the new name
+except subprocess.CalledProcessError:
+    added_paths = set()
+
+
+for path in staged:
+    if not path:
+        continue
+    p = Path(path)
+
+    # Rule 11 — customer-scoped filename introduced (new file OR rename here).
+    # Grandfathered files (modifications) are permitted; ONLY new customer-named
+    # files are blocked. Docs are exempt (customer runbooks are docs, not code).
+    if (path in added_paths
+            and is_customer_scoped(path)
+            and not path.startswith("docs/")):
+        add("CRITICAL", "R11-customer-scoped-file", path, 0,
+            "customer-named file added to shipped product code — customization is data, not code",
+            "put customization in substrate rows via /api/m0/* or the admin UI; "
+            "onboarding config lives OUTSIDE the source tree. See CLAUDE.md 'Customization rule'.")
+
+    # Rule 8 — binary in migrations dir
+    if path.startswith("src/main/resources/db/migration/") and p.suffix.lower() in (
+        ".zip", ".jar", ".gz", ".tar", ".dump", ".png", ".jpg", ".pdf", ".xlsx",
+    ):
+        add("CRITICAL", "R8-binary-in-migrations", path, 0,
+            f"binary file '{p.suffix}' inside db/migration/",
+            "move to docs/customers/<name>/reference-dumps/ or delete")
+        continue
+
+    # Rule 4 — modified baseline migration
+    if path in baseline_migrations:
+        add("CRITICAL", "R4-modified-baseline-migration", path, 0,
+            "baseline migration modified — Flyway will fail on every existing DB",
+            f"revert this file, ship a new Vn__fix_from_{p.stem}.sql instead")
+
+    # Rule 9 — application.properties with non-127.0.0.1 JDBC url
+    if path == "src/main/resources/application.properties":
+        try:
+            body = p.read_text()
+        except (FileNotFoundError, UnicodeDecodeError):
+            body = ""
+        for i, line in enumerate(body.splitlines(), 1):
+            m = re.search(r"^\s*psql\.datasource\.url\s*=\s*jdbc:mariadb://([\d\.]+)", line)
+            if m and m.group(1) not in ("127.0.0.1", "localhost"):
+                add("CRITICAL", "R9-remote-ip-in-props", path, i,
+                    f"active JDBC url points at {m.group(1)}",
+                    "revert to 127.0.0.1; per-dev override goes in application-local.properties")
+
+    # Java rules
+    if p.suffix == ".java":
+        try:
+            content = p.read_text()
+        except (FileNotFoundError, UnicodeDecodeError):
+            continue
+        # NOTE: the idayam->aria rename swept the code to com.aria.* but this
+        # allowlist lagged, so every controller under com.aria.m0 tripped R3.
+        # Both prefixes are allowed (some ported files still live under idayam).
+        allowed_pkgs = ("com.aria.m0.", "com.aria.m11.adapter.",
+                        "com.aria.m6.gst.", "com.aria.m7.govforms.",
+                        "com.aria.ai.",
+                        "com.idayam.m0.", "com.idayam.m11.adapter.",
+                        "com.idayam.m6.gst.", "com.idayam.m7.govforms.",
+                        "com.idayam.ai.")  # AI substrate is a first-class package
+        allowed = any(pkg.replace(".", "/") in path for pkg in allowed_pkgs)
+
+        # Rule 1 — new @Entity
+        if re.search(r"^\s*@Entity\b", content, re.MULTILINE) and not allowed:
+            add("CRITICAL", "R1-new-jpa-entity", path, 0,
+                "new @Entity class outside com.idayam.m0.*",
+                "use entity_registry + entity_field_registry rows in a Vn migration")
+
+        # Rule 2 — new JpaRepository
+        if re.search(r"extends\s+(JpaRepository|CrudRepository|Repository)\b", content) and not allowed:
+            add("CRITICAL", "R2-new-jpa-repo", path, 0,
+                "new *Repository interface outside com.idayam.m0.*",
+                "GenericEntityController handles CRUD via JdbcTemplate — delete this file")
+
+        # Rule 3 — new *Controller.java
+        if p.name.endswith("Controller.java") and re.search(r"@RestController\b|@Controller\b", content):
+            if not allowed:
+                add("CRITICAL", "R3-new-bespoke-controller", path, 0,
+                    "new *Controller outside allowed packages",
+                    "use /api/m0/entities/{code} via GenericEntityController")
+
+        # Rule 6 — commented-out code block > 20 consecutive lines
+        commented_run = 0
+        max_commented_run = 0
+        for line in content.splitlines():
+            if line.strip().startswith("//"):
+                commented_run += 1
+                max_commented_run = max(max_commented_run, commented_run)
+            else:
+                commented_run = 0
+        if max_commented_run > 20 and not path.endswith("Test.java"):
+            add("HIGH", "R6-commented-out-code", path, 0,
+                f"{max_commented_run}-line commented-out block",
+                "delete it (git remembers) or explain WHY it stays in a real comment")
+
+        # Rule 10 — typos in class names
+        typos = ["Weightmnet", "Weightmnent", "Requset", "Recieve", "Adress",
+                 "Occured", "Seperated", "Recomend", "Existance"]
+        for typo in typos:
+            if typo in p.name:
+                add("HIGH", "R10-classname-typo", path, 0,
+                    f"probable typo in class name: '{typo}'",
+                    "rename before merging — public class names are hard to change later")
+
+        # === SonarQube-inspired rules for Java =========================
+
+        # S106 — System.out / System.err in production code
+        for i, line in enumerate(content.splitlines(), 1):
+            if re.search(r"^\s*System\.(out|err)\.print", line) and not path.endswith("Test.java"):
+                add("HIGH", "S106-system-out", path, i,
+                    "System.out/err used in production path",
+                    "use Logger (SLF4J) — org.slf4j.LoggerFactory.getLogger(...)")
+
+        # S138 — method length > 80 lines
+        in_method_lines = 0
+        method_start_line = 0
+        brace_depth = 0
+        in_method = False
+        for i, line in enumerate(content.splitlines(), 1):
+            stripped = line.strip()
+            if re.search(r"^\s*(public|protected|private|static)\s.*\(.*\)\s*\{?", line) and brace_depth == 0:
+                in_method = True
+                method_start_line = i
+                in_method_lines = 0
+            if in_method:
+                in_method_lines += 1
+                brace_depth += line.count("{") - line.count("}")
+                if brace_depth == 0 and in_method_lines > 1:
+                    if in_method_lines > 80:
+                        add("HIGH", "S138-method-too-long", path, method_start_line,
+                            f"method is {in_method_lines} lines (limit 80)",
+                            "extract private helpers; each method one responsibility")
+                    in_method = False
+
+        # SM01 — new business table missing tenant_id (SQL migrations only)
+        # (handled below in the SQL-file branch)
+
+    # === SQL migration Sonar rules ================================
+    if path.startswith("src/main/resources/db/migration/") and path.endswith(".sql"):
+        try:
+            sql = Path(path).read_text()
+        except (FileNotFoundError, UnicodeDecodeError):
+            sql = ""
+
+        # SM01 — new business table missing tenant_id
+        for match in re.finditer(r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+([a-z][a-z0-9_]+)\s*\(([^;]+?)\)\s*ENGINE",
+                                 sql, re.IGNORECASE | re.DOTALL):
+            table_name = match.group(1)
+            table_body = match.group(2)
+            # Skip lookup/reference tables (starts with 'ref_' or 'lookup_')
+            if table_name.startswith(("ref_", "lookup_", "audit_")):
+                continue
+            if "tenant_id" not in table_body.lower():
+                add("HIGH", "SM01-missing-tenant-id", path, 0,
+                    f"table '{table_name}' has no tenant_id column",
+                    "add 'tenant_id BIGINT NOT NULL' unless this is a global reference table")
+
+        # SM02 — missing created_at / updated_at
+        for match in re.finditer(r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+([a-z][a-z0-9_]+)\s*\(([^;]+?)\)\s*ENGINE",
+                                 sql, re.IGNORECASE | re.DOTALL):
+            table_name = match.group(1)
+            table_body = match.group(2).lower()
+            if table_name.startswith(("ref_", "lookup_")):
+                continue
+            if "created_at" not in table_body:
+                add("HIGH", "SM02-missing-created-at",
+                    path, 0, f"table '{table_name}' has no created_at column",
+                    "add 'created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP'")
+
+        # SM03 — INSERT without any idempotency guard.
+        # Accepted patterns (any one is enough):
+        #   INSERT IGNORE INTO ...
+        #   INSERT INTO ... ON DUPLICATE KEY UPDATE ...
+        #   INSERT INTO ... SELECT ... WHERE NOT EXISTS (SELECT 1 FROM ... WHERE ...)
+        #   INSERT INTO ... SELECT ... FROM ... WHERE NOT EXISTS (SELECT 1 FROM ...)
+        for match in re.finditer(r"INSERT\s+INTO\s+([a-z][a-z0-9_]+)([^;]+);", sql,
+                                 re.IGNORECASE | re.DOTALL):
+            insert_body = match.group(0).upper()
+            is_ignore = "INSERT IGNORE" in insert_body
+            has_where_not_exists = "WHERE NOT EXISTS" in insert_body or "AND NOT EXISTS" in insert_body
+            has_on_dup = "ON DUPLICATE KEY" in insert_body
+            if is_ignore or has_where_not_exists or has_on_dup:
+                continue
+            line_no = sql[:match.start()].count("\n") + 1
+            add("HIGH", "SM03-non-idempotent-insert",
+                path, line_no,
+                f"INSERT INTO {match.group(1)} without idempotency guard",
+                "wrap with 'WHERE NOT EXISTS (SELECT 1 FROM ... WHERE ...)' or use 'INSERT IGNORE'")
+
+        # SM05 — camelCase column detected
+        for match in re.finditer(r"(\b[a-z]+[A-Z][a-zA-Z0-9]+)\s+(VARCHAR|INT|BIGINT|TIMESTAMP|DECIMAL|TEXT|BOOLEAN|JSON)",
+                                 sql):
+            camel_col = match.group(1)
+            # Ignore likely-SQL-keywords or common identifiers
+            if camel_col not in ("nvarChar", "isPublished"):
+                line_no = sql[:match.start()].count("\n") + 1
+                add("HIGH", "SM05-camelcase-column",
+                    path, line_no,
+                    f"column '{camel_col}' is camelCase; should be snake_case",
+                    f"rename to '{re.sub('([A-Z])', r'_\\1', camel_col).lower()}'")
+
+# Rule 5 — migration Vn collision
+migrations_staged = [p for p in staged if p.startswith("src/main/resources/db/migration/V") and p.endswith(".sql")]
+migration_dir = Path("src/main/resources/db/migration")
+if migration_dir.exists():
+    all_migrations = list(migration_dir.glob("V*.sql"))
+    by_version = {}
+    for m in all_migrations:
+        m_v = re.match(r"V(\d+(?:_\d+)?)", m.name)
+        if not m_v: continue
+        by_version.setdefault(m_v.group(1), []).append(m.name)
+    for version, files in by_version.items():
+        if len(files) > 1 and any(f in [Path(p).name for p in migrations_staged] for f in files):
+            add("CRITICAL", "R5-migration-collision", ",".join(files), 0,
+                f"two migrations claim V{version}",
+                "rename one to the next free Vn")
+
+# Report
+if not findings:
+    print(f"{CLEAN}✓ substrate-check: 0 findings — safe to commit{RESET}")
+    sys.exit(0)
+
+crit = sum(1 for f in findings if f[0] == "CRITICAL")
+high = sum(1 for f in findings if f[0] == "HIGH")
+
+print("\nEARMS substrate-check findings:\n")
+print(f"{'SEV':<10} {'RULE':<32} FILE:LINE")
+print("-" * 100)
+for sev, rule, file, line, msg, fix in findings:
+    color = CRITICAL if sev == "CRITICAL" else HIGH
+    print(f"{color}{sev:<10}{RESET} {rule:<32} {file}:{line}")
+    print(f"           → {msg}")
+    print(f"           → fix: {fix}\n")
+
+print("-" * 100)
+if crit > 0:
+    print(f"{CRITICAL}✗ {crit} critical, {high} high — commit BLOCKED{RESET}")
+    print("  Fix findings above OR (if truly intentional) commit with:")
+    print("    git commit --no-verify")
+    print("  Understanding that --no-verify bypasses substrate protection — see")
+    print("  docs/architecture/CODE-REVIEW-develope-2026-07-11.md for consequences.")
+    sys.exit(1)
+else:
+    print(f"{HIGH}⚠ {high} high — commit ALLOWED but review before merging{RESET}")
+    sys.exit(0)

@@ -1,0 +1,807 @@
+{
+  "info": {
+    "_postman_id": "idayam-erp-backend-collection",
+    "name": "Idayam ERP Backend API",
+    "description": "Complete API collection for Idayam ERP Backend system with 400+ endpoints across 106 controllers",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "version": "1.0.0"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{accessToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"admin\",\n  \"password\": \"password123\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "login"]
+            },
+            "description": "Authenticate user and receive JWT tokens"
+          },
+          "response": {
+            "status": "OK",
+            "code": 200,
+            "description": "{\n  \"accessToken\": \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...\",\n  \"refreshToken\": \"refresh_token_value\",\n  \"expiresIn\": 86400\n}"
+          }
+        },
+        {
+          "name": "Refresh Token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/refresh",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "refresh"]
+            }
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/logout",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "logout"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "User Management",
+      "item": [
+        {
+          "name": "Get All Users",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/user?page=0&size=20",
+              "host": ["{{base_url}}"],
+              "path": ["api", "user"],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "0"
+                },
+                {
+                  "key": "size",
+                  "value": "20"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get User by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/user/1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "user", "1"]
+            }
+          }
+        },
+        {
+          "name": "Create User",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"newuser\",\n  \"email\": \"newuser@company.com\",\n  \"password\": \"SecurePassword123!\",\n  \"firstName\": \"John\",\n  \"lastName\": \"Doe\",\n  \"active\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/user/save",
+              "host": ["{{base_url}}"],
+              "path": ["api", "user", "save"]
+            }
+          }
+        },
+        {
+          "name": "Update User",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": 1,\n  \"username\": \"updateduser\",\n  \"email\": \"updated@company.com\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Smith\",\n  \"active\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/user/update",
+              "host": ["{{base_url}}"],
+              "path": ["api", "user", "update"]
+            }
+          }
+        },
+        {
+          "name": "Delete User",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/user/1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "user", "1"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Human Resources",
+      "item": [
+        {
+          "name": "Employee",
+          "item": [
+            {
+              "name": "Get All Employees",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/employee?page=0&size=20",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "employee"]
+                }
+              }
+            },
+            {
+              "name": "Create Employee",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"John Smith\",\n  \"designation\": \"Manager\",\n  \"department\": \"Operations\",\n  \"salary\": 50000,\n  \"joinDate\": \"2024-01-15\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/employee/save",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "employee", "save"]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Attendance",
+          "item": [
+            {
+              "name": "Record Attendance",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"employeeId\": 1,\n  \"date\": \"2024-04-22\",\n  \"status\": \"PRESENT\",\n  \"checkInTime\": \"09:00\",\n  \"checkOutTime\": \"17:30\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/attendance/save",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "attendance", "save"]
+                }
+              }
+            },
+            {
+              "name": "Get Attendance",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/attendance?employeeId=1&fromDate=2024-01-01&toDate=2024-04-22",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "attendance"],
+                  "query": [
+                    {
+                      "key": "employeeId",
+                      "value": "1"
+                    },
+                    {
+                      "key": "fromDate",
+                      "value": "2024-01-01"
+                    },
+                    {
+                      "key": "toDate",
+                      "value": "2024-04-22"
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Leave Management",
+          "item": [
+            {
+              "name": "Request Leave",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"employeeId\": 1,\n  \"leaveType\": \"CASUAL\",\n  \"fromDate\": \"2024-05-01\",\n  \"toDate\": \"2024-05-03\",\n  \"reason\": \"Personal\",\n  \"days\": 3\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/leave/apply",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "leave", "apply"]
+                }
+              }
+            },
+            {
+              "name": "Approve Leave",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"leaveId\": 1,\n  \"status\": \"APPROVED\",\n  \"comments\": \"Approved\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/leave/approve",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "leave", "approve"]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Salary",
+          "item": [
+            {
+              "name": "Get Salary",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/salary?employeeId=1&month=04&year=2024",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "salary"]
+                }
+              }
+            },
+            {
+              "name": "Process Salary",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"month\": 4,\n  \"year\": 2024,\n  \"processDate\": \"2024-04-30\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/salary/process",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "salary", "process"]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Inventory Management",
+      "item": [
+        {
+          "name": "Products",
+          "item": [
+            {
+              "name": "Get All Products",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/product?page=0&size=20",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "product"]
+                }
+              }
+            },
+            {
+              "name": "Create Product",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"code\": \"PROD001\",\n  \"name\": \"Product Name\",\n  \"category\": \"Category\",\n  \"unitPrice\": 100.00,\n  \"reorderLevel\": 10,\n  \"active\": true\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/product/save",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "product", "save"]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Stock Management",
+          "item": [
+            {
+              "name": "Get Stock",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/stock?productId=1",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "stock"]
+                }
+              }
+            },
+            {
+              "name": "Adjust Stock",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"productId\": 1,\n  \"quantity\": 100,\n  \"reason\": \"Stock Adjustment\",\n  \"adjustmentType\": \"ADDITION\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/stock/adjust",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "stock", "adjust"]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Material Request",
+          "item": [
+            {
+              "name": "Create Material Request",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"productId\": 1,\n  \"quantity\": 50,\n  \"requestedFor\": \"Production\",\n  \"requiredDate\": \"2024-05-01\",\n  \"department\": \"Manufacturing\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/material-request/save",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "material-request", "save"]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Procurement",
+      "item": [
+        {
+          "name": "Purchase Order",
+          "item": [
+            {
+              "name": "Get All Purchase Orders",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/purchase-order?page=0&size=20",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "purchase-order"]
+                }
+              }
+            },
+            {
+              "name": "Create Purchase Order",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"vendorId\": 1,\n  \"poDate\": \"2024-04-22\",\n  \"deliveryDate\": \"2024-05-22\",\n  \"items\": [\n    {\n      \"productId\": 1,\n      \"quantity\": 100,\n      \"unitPrice\": 50.00\n    }\n  ],\n  \"totalAmount\": 5000.00\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/purchase-order/save",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "purchase-order", "save"]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Vendor",
+          "item": [
+            {
+              "name": "Get All Vendors",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/vendor?page=0&size=20",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "vendor"]
+                }
+              }
+            },
+            {
+              "name": "Create Vendor",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"vendorName\": \"Vendor Name\",\n  \"contactPerson\": \"Contact Person\",\n  \"email\": \"vendor@company.com\",\n  \"phone\": \"1234567890\",\n  \"city\": \"City\",\n  \"country\": \"Country\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/vendor/save",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "vendor", "save"]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Sales",
+      "item": [
+        {
+          "name": "Sales Order",
+          "item": [
+            {
+              "name": "Get All Sales Orders",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/sales-order?page=0&size=20",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "sales-order"]
+                }
+              }
+            },
+            {
+              "name": "Create Sales Order",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"customerId\": 1,\n  \"orderDate\": \"2024-04-22\",\n  \"deliveryDate\": \"2024-05-22\",\n  \"items\": [\n    {\n      \"productId\": 1,\n      \"quantity\": 50,\n      \"unitPrice\": 150.00\n    }\n  ],\n  \"totalAmount\": 7500.00\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/sales-order/save",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "sales-order", "save"]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Financial",
+      "item": [
+        {
+          "name": "Voucher",
+          "item": [
+            {
+              "name": "Create Voucher",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"voucherType\": \"JV\",\n  \"voucherDate\": \"2024-04-22\",\n  \"description\": \"Journal Entry\",\n  \"entries\": [\n    {\n      \"accountCode\": \"1001\",\n      \"debit\": 1000.00,\n      \"credit\": 0.00\n    },\n    {\n      \"accountCode\": \"2001\",\n      \"debit\": 0.00,\n      \"credit\": 1000.00\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/voucher/save",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "voucher", "save"]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Reports",
+      "item": [
+        {
+          "name": "Sales Report",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/report/sales?fromDate=2024-01-01&toDate=2024-04-22",
+              "host": ["{{base_url}}"],
+              "path": ["api", "report", "sales"],
+              "query": [
+                {
+                  "key": "fromDate",
+                  "value": "2024-01-01"
+                },
+                {
+                  "key": "toDate",
+                  "value": "2024-04-22"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Inventory Report",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/report/inventory",
+              "host": ["{{base_url}}"],
+              "path": ["api", "report", "inventory"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "accessToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "refreshToken",
+      "value": "",
+      "type": "string"
+    }
+  ]
+}

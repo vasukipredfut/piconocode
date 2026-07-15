@@ -1,0 +1,555 @@
+{
+  "$schema": "https://earms.in/schemas/tenant-config/v1.json",
+  "bundleVersion": "1.0.0",
+  "exportedAt": "2026-06-06T00:00:00+05:30",
+  "exportedBy": "EARMS PM (Customer-0 onboarding)",
+  "comment": "Pico Power Project — gate / weighbridge / dispatch first paying customer. Honors CUSTOMIZATION-POLICY: every Pico-specific behaviour lives here, NOT in a source fork. Valid against M0 §2 and §6 (US-M0-01, US-M0-03, US-M0-05, US-M0-10, US-M0-11, US-M0-12, US-M0-13, US-M0-16, US-M0-18).",
+
+  "tenant": {
+    "code": "PICO-POWER",
+    "slug": "pico-power",
+    "legalName": "PICO POWER PROJECT",
+    "displayName": "Pico Power",
+    "gstin": "33XXXXX0000X1ZA",
+    "udyam": "UDYAM-TN-00-0000000",
+    "pan": "XXXXX0000X",
+    "fiscalYearStart": "04-01",
+    "tier": "DEDICATED",
+    "registeredAddress": {
+      "line1": "Plot No XX, SIPCOT Industrial Park",
+      "line2": "Phase II",
+      "city": "Tuticorin",
+      "district": "Thoothukudi",
+      "state": "TN",
+      "stateCode": "33",
+      "pincode": "628002",
+      "country": "IN"
+    },
+    "branches": [
+      {
+        "code": "PP-TUT",
+        "name": "Tuticorin Plant",
+        "gstin": "33XXXXX0000X1ZA",
+        "isHeadOffice": true,
+        "address": "same-as-registered",
+        "timezone": "Asia/Kolkata",
+        "fyStart": "04-01"
+      }
+    ],
+    "locale": {
+      "language": "en-IN",
+      "secondaryLanguages": ["ta-IN"],
+      "currency": "INR",
+      "numberFormat": "en-IN",
+      "timezone": "Asia/Kolkata"
+    },
+    "branding": {
+      "primary": "#0B3D2E",
+      "secondary": "#F2A900",
+      "logoUrl": "tenant-assets://pico-power/logo.png",
+      "favicon": "tenant-assets://pico-power/favicon.ico"
+    }
+  },
+
+  "moduleSubscriptions": [
+    { "code": "M0",  "tier": "FULL",  "since": "2026-06-15", "comment": "platform substrate; mandatory" },
+    { "code": "M1",  "tier": "OUTBOUND_ONLY", "features": ["M1.IRN","M1.EwayBill","M1.GSTR1Json","M1.GSTR3BJson"], "comment": "FG dispatch generates IRN; inbound vendor invoices are attachment-only (Pico does not issue them)" },
+    { "code": "M3",  "tier": "BASIC", "features": ["M3.VendorMaster","M3.Aging","M3.UdyamCapture"], "comment": "RM oil vendors + packing-material vendors + transporters" },
+    { "code": "M4",  "tier": "FULL",  "features": ["M4.MultiGodown","M4.Batch","M4.StockLedger","M4.TankBinning"], "comment": "tank-locations modelled as bins" },
+    { "code": "M5",  "tier": "DAY1_SUBSET", "features": ["M5.ItemMaster","M5.LotCreateOnUnload","M5.LotPickOnDispatch"], "comment": "WO/BOM/JC/Backflush/Variance/StdCost DEFERRED to T+90" },
+    { "code": "M6",  "tier": "OFF",   "comment": "no production OEE telemetry on Day-1; Phase-2" },
+    { "code": "M7",  "tier": "BASIC", "features": ["M7.EmployeeMaster","M7.Attendance","M7.Payslip"], "comment": "EPF/ESI ECR + Form 24Q DEFERRED to T+90 unless inspector visit imminent" },
+    { "code": "M8",  "tier": "OFF",   "comment": "Factories Act Form 12/17/25 DEFERRED to T+90" },
+    { "code": "M9",  "tier": "FULL",  "features": ["M9.CheckweigherRS232","M9.CheckweigherTCP","M9.BarcodeQR","M9.LabelPrinter","M9.WorkerSupervisor","M9.WorkerDownFallback"], "comment": "weighbridge (2x), QR scanners (camera-PWA = workerless), label printers (2x)" },
+    { "code": "M10", "tier": "FULL",  "features": ["M10.TankerInbound","M10.PackUnload","M10.IntTransferIn","M10.ThirdPartyIn","M10.ReturnStockIn","M10.TankerOutbound","M10.FGLoading","M10.PackLoading","M10.IntTransferOut","M10.ThirdPartyOut"], "comment": "all 10 flow variants — Day-1 critical" },
+    { "code": "M11", "tier": "OFF",   "comment": "M11 owner KPI bundle deferred to Phase-5" }
+  ],
+
+  "customFields": {
+    "Vehicle": [
+      { "code": "vehicleType",      "fieldType": "select",     "label": {"en-IN":"Vehicle Type"}, "options":["TANKER","FLATBED_CONTAINER","BOX_TRUCK","TIPPER","LCV"], "required": true, "section": "Identity", "position": 1, "onForm": true, "onList": true, "searchableIndexed": true },
+      { "code": "tankerCompartments","fieldType":"number",     "label": {"en-IN":"Tanker Compartments"}, "validation":{"min":1,"max":6}, "visibilityExpr":"expr:vehicle.vehicleType == 'TANKER'", "section":"Tanker", "position": 2 },
+      { "code": "tankCleaningCertNo","fieldType":"text",       "label": {"en-IN":"Tank Cleaning Certificate No"}, "visibilityExpr":"expr:vehicle.vehicleType == 'TANKER'", "section":"Tanker", "position": 3 },
+      { "code": "tankCleaningCertExpiry","fieldType":"date",   "label": {"en-IN":"Tank Cleaning Cert Expiry"}, "visibilityExpr":"expr:vehicle.vehicleType == 'TANKER'", "validation":{"exprList":["expr:tankCleaningCertExpiry >= today()"]}, "section":"Tanker", "position": 4, "searchableIndexed": true },
+      { "code": "previousLoad",     "fieldType": "text",       "label": {"en-IN":"Previous Load (declared)"}, "visibilityExpr":"expr:vehicle.vehicleType == 'TANKER'", "section":"Tanker", "position": 5 },
+      { "code": "tareWeightKg",     "fieldType": "decimal",    "label": {"en-IN":"Tare (kg)"}, "section":"Weight", "position": 6 },
+      { "code": "rcExpiry",         "fieldType": "date",       "label": {"en-IN":"RC Expiry"}, "required": true, "section":"Statutory", "position": 7 },
+      { "code": "insuranceExpiry",  "fieldType": "date",       "label": {"en-IN":"Insurance Expiry"}, "required": true, "section":"Statutory", "position": 8 },
+      { "code": "pucExpiry",        "fieldType": "date",       "label": {"en-IN":"PUC Expiry"}, "required": true, "section":"Statutory", "position": 9 },
+      { "code": "transporterId",    "fieldType": "relation",   "relationEntity":"Transporter", "label": {"en-IN":"Transporter"}, "section":"Commercial", "position": 10, "searchableIndexed": true }
+    ],
+    "Driver": [
+      { "code": "dlNumber",         "fieldType": "text",       "label": {"en-IN":"DL Number"}, "required": true, "validation":{"regex":"^[A-Z]{2}[0-9]{2}[A-Z0-9 ]{6,13}$"}, "section":"Identity", "position": 1, "searchableIndexed": true },
+      { "code": "dlExpiry",         "fieldType": "date",       "label": {"en-IN":"DL Expiry"}, "required": true, "section":"Identity", "position": 2 },
+      { "code": "primaryMobile",    "fieldType": "text",       "label": {"en-IN":"Mobile"}, "required": true, "validation":{"regex":"^[6-9][0-9]{9}$"}, "section":"Contact", "position": 3 },
+      { "code": "altMobile",        "fieldType": "text",       "label": {"en-IN":"Alt Mobile"}, "section":"Contact", "position": 4 },
+      { "code": "preferredLanguage","fieldType": "select",     "options":["en","ta","hi"], "label": {"en-IN":"Preferred SMS Language"}, "defaultValue":"ta", "section":"Contact", "position": 5 },
+      { "code": "aadhaarLast4",     "fieldType": "text",       "label": {"en-IN":"Aadhaar Last 4"}, "validation":{"regex":"^[0-9]{4}$"}, "section":"Identity", "position": 6 }
+    ],
+    "Vendor": [
+      { "code": "vendorRole",       "fieldType":"multiselect", "label":{"en-IN":"Vendor Role"}, "options":["RM_OIL","PACKING_MATERIAL","TRANSPORTER","SERVICE"], "required": true, "section":"Classification", "position":1, "searchableIndexed": true },
+      { "code": "udyamNumber",      "fieldType":"text",        "label":{"en-IN":"Udyam Number"}, "validation":{"regex":"^UDYAM-[A-Z]{2}-[0-9]{2}-[0-9]{7}$"}, "section":"MSME 43B(h)", "position":2 },
+      { "code": "msmeCategory",     "fieldType":"select",      "options":["MICRO","SMALL","MEDIUM","NON_MSME"], "label":{"en-IN":"MSME Category"}, "section":"MSME 43B(h)", "position":3, "searchableIndexed": true },
+      { "code": "agreedCreditDays", "fieldType":"number",      "label":{"en-IN":"Agreed Credit Days"}, "defaultValue": 30, "validation":{"min":0,"max":45}, "section":"Commercial", "position":4 },
+      { "code": "oilGradeSupplied", "fieldType":"multiselect", "options":["PALM","PALMOLEIN","SUNFLOWER","SOYBEAN","RICEBRAN","COCONUT","COTTONSEED"], "label":{"en-IN":"Oil Grade Supplied"}, "visibilityExpr":"expr:has('RM_OIL', vendor.vendorRole)", "section":"RM Oil", "position":5 }
+    ],
+    "TankLocation": [
+      { "code": "tankCapacityKL",    "fieldType":"decimal",    "label":{"en-IN":"Capacity (KL)"}, "required": true, "section":"Capacity", "position":1 },
+      { "code": "currentOilGrade",   "fieldType":"select",     "options":["PALM","PALMOLEIN","SUNFLOWER","SOYBEAN","RICEBRAN","COCONUT","COTTONSEED","EMPTY"], "label":{"en-IN":"Current Grade"}, "required": true, "section":"Status", "position":2, "searchableIndexed": true },
+      { "code": "batchDensity",      "fieldType":"decimal",    "label":{"en-IN":"Batch Density (g/cc @30°C)"}, "validation":{"min":0.85,"max":0.95}, "section":"Quality", "position":3 },
+      { "code": "lastCleanedOn",     "fieldType":"date",       "label":{"en-IN":"Last Cleaned"}, "section":"Hygiene", "position":4 },
+      { "code": "cleaningCertExpiry","fieldType":"date",       "label":{"en-IN":"Cleaning Cert Expiry"}, "section":"Hygiene", "position":5 },
+      { "code": "minHeadspaceKL",    "fieldType":"decimal",    "label":{"en-IN":"Min Headspace (KL)"}, "defaultValue": 5, "section":"Capacity", "position":6 }
+    ],
+    "DispatchEvent": [
+      { "code": "gatePassNo",        "fieldType":"text",       "label":{"en-IN":"Gate Pass No"}, "section":"Identity", "position":1, "searchableIndexed": true, "computedExpr":"expr:fmt('GP-{0}-{1}', branch.code, dispatch.id)" },
+      { "code": "tokenNo",           "fieldType":"text",       "label":{"en-IN":"Parking Token"}, "section":"Identity", "position":2, "searchableIndexed": true },
+      { "code": "qcSampleId",        "fieldType":"text",       "label":{"en-IN":"QC Sample ID"}, "section":"QC", "position":3 },
+      { "code": "qcVerdict",         "fieldType":"select",     "options":["PASS","FAIL","CONDITIONAL"], "label":{"en-IN":"QC Verdict"}, "section":"QC", "position":4 },
+      { "code": "weighmentLoadedKg", "fieldType":"decimal",    "label":{"en-IN":"Loaded (kg)"}, "section":"Weighbridge", "position":5 },
+      { "code": "weighmentEmptyKg",  "fieldType":"decimal",    "label":{"en-IN":"Empty (kg)"}, "section":"Weighbridge", "position":6 },
+      { "code": "weighmentVerifyKg", "fieldType":"decimal",    "label":{"en-IN":"Re-verify (kg)"}, "section":"Weighbridge", "position":7 },
+      { "code": "weighmentNetKg",    "fieldType":"computed",   "label":{"en-IN":"Net (kg)"}, "computedExpr":"expr:abs(weighmentLoadedKg - weighmentEmptyKg)", "section":"Weighbridge", "position":8 },
+      { "code": "weighmentDeltaPct", "fieldType":"computed",   "label":{"en-IN":"Re-verify Delta %"}, "computedExpr":"expr:abs((weighmentVerifyKg - weighmentEmptyKg) / weighmentEmptyKg) * 100", "section":"Weighbridge", "position":9 },
+      { "code": "managerApprovalReason","fieldType":"longtext","label":{"en-IN":"Manager Approval Reason"}, "visibilityExpr":"expr:dispatch.weighmentDeltaPct > 0.2", "section":"Approval", "position":10 }
+    ]
+  },
+
+  "workflowDefinitions": [
+    {
+      "$schema": "https://earms.in/schemas/wdl/v1.json",
+      "code": "M10.TankerInbound",
+      "label": {"en-IN":"Tanker (RM Oil) Unloading"},
+      "entity": "DispatchEvent",
+      "version": 1,
+      "initialState": "FRONT_GATE_ARRIVAL",
+      "terminalStates": ["EXIT_STAMPED","REJECTED","ABORTED"],
+      "states": [
+        { "code": "FRONT_GATE_ARRIVAL",    "label":{"en-IN":"Front-gate arrival"} },
+        { "code": "FRONT_GATE_VERIFIED",   "label":{"en-IN":"Front-gate docs verified"} },
+        { "code": "PARKING_ASSIGNED",      "label":{"en-IN":"Parking bay assigned"},          "sla":{"maxMinutes":15,"onBreach":[{"type":"notify","template":"parking_overdue","to":"role:Manager"}]} },
+        { "code": "DISPATCH_QUEUED",       "label":{"en-IN":"Queued at dispatch office"} },
+        { "code": "QC_SAMPLE_DRAWN",       "label":{"en-IN":"QC sample drawn"} },
+        { "code": "QC_RESULT_PENDING",     "label":{"en-IN":"QC result pending"},             "sla":{"maxMinutes":60,"onBreach":[{"type":"notify","template":"qc_overdue","to":"role:Manager"}]} },
+        { "code": "WB_LOADED_WEIGHED",     "label":{"en-IN":"Loaded weight captured"} },
+        { "code": "TANK_ASSIGNED",         "label":{"en-IN":"Tank assigned"} },
+        { "code": "UNLOADING_IN_PROGRESS", "label":{"en-IN":"Unloading in progress"},         "sla":{"maxMinutes":120,"onBreach":[{"type":"notify","template":"unload_overdue","to":"role:Manager"}]} },
+        { "code": "UNLOADING_CLOSED",      "label":{"en-IN":"Unloading closed"} },
+        { "code": "WB_EMPTY_WEIGHED",      "label":{"en-IN":"Empty weight captured"} },
+        { "code": "WB_REVERIFIED",         "label":{"en-IN":"Re-verify weight captured"} },
+        { "code": "MANAGER_APPROVAL",      "label":{"en-IN":"Manager approval (delta)"},     "sla":{"maxMinutes":15,"onBreach":[{"type":"notify","template":"mgr_overdue","to":"role:Plantowner"}]} },
+        { "code": "EXIT_STAMPED",          "label":{"en-IN":"Exit stamped"} },
+        { "code": "REJECTED",              "label":{"en-IN":"QC rejected"} },
+        { "code": "ABORTED",               "label":{"en-IN":"Aborted"} }
+      ],
+      "transitions": [
+        { "code":"frontgate_verify",     "from":"FRONT_GATE_ARRIVAL",    "to":"FRONT_GATE_VERIFIED",
+          "guard":"expr:has_role('FrontGate') && vehicle.rcExpiry > today() && vehicle.insuranceExpiry > today() && driver.dlExpiry > today() && vehicle.tankCleaningCertExpiry > today()",
+          "actions":[{"type":"audit","note":"docs verified"},{"type":"webhook","url":"/api/m10/token/allocate","body":"data:dispatch"}] },
+        { "code":"frontgate_reject",     "from":"FRONT_GATE_ARRIVAL",    "to":"REJECTED",
+          "guard":"expr:has_role('FrontGate')",
+          "actions":[{"type":"notify","template":"vehicle_rejected","to":"role:Manager"}] },
+        { "code":"assign_parking",       "from":"FRONT_GATE_VERIFIED",   "to":"PARKING_ASSIGNED",
+          "guard":"expr:has_role('ParkingSecurity')",
+          "actions":[{"type":"notify","template":"parking_assigned","to":"channel:sms","recipient":"driver.primaryMobile"}] },
+        { "code":"queue_for_dispatch",   "from":"PARKING_ASSIGNED",      "to":"DISPATCH_QUEUED",
+          "guard":"expr:has_role('Dispatch')" },
+        { "code":"qc_draw_sample",       "from":"DISPATCH_QUEUED",       "to":"QC_SAMPLE_DRAWN",
+          "guard":"expr:has_role('QC')",
+          "actions":[{"type":"audit","note":"sample drawn"}] },
+        { "code":"qc_pending",           "from":"QC_SAMPLE_DRAWN",       "to":"QC_RESULT_PENDING",
+          "guard":"expr:has_role('QC')" },
+        { "code":"qc_pass",              "from":"QC_RESULT_PENDING",     "to":"WB_LOADED_WEIGHED",
+          "guard":"expr:has_role('QC') && dispatch.qcVerdict == 'PASS'",
+          "actions":[{"type":"webhook","url":"/api/m9/wb/capture","body":"const:read1_loaded"}] },
+        { "code":"qc_fail",              "from":"QC_RESULT_PENDING",     "to":"REJECTED",
+          "guard":"expr:has_role('QC') && dispatch.qcVerdict == 'FAIL'",
+          "actions":[{"type":"notify","template":"qc_failed","to":"role:Manager"}] },
+        { "code":"assign_tank",          "from":"WB_LOADED_WEIGHED",     "to":"TANK_ASSIGNED",
+          "guard":"expr:has_role('UnloadingSupervisor') && tank.currentOilGrade == dispatch.expectedGrade && tank.minHeadspaceKL >= dispatch.expectedKL",
+          "actions":[{"type":"audit","note":"tank locked"}] },
+        { "code":"start_unload",         "from":"TANK_ASSIGNED",         "to":"UNLOADING_IN_PROGRESS",
+          "guard":"expr:has_role('UnloadingSupervisor')" },
+        { "code":"close_unload",         "from":"UNLOADING_IN_PROGRESS", "to":"UNLOADING_CLOSED",
+          "guard":"expr:has_role('UnloadingSupervisor')",
+          "actions":[{"type":"internal_api","method":"POST","path":"/api/m5/lots","bodyExpr":"expr:{ item: dispatch.itemCode, batch: dispatch.batchNo, qtyKg: dispatch.weighmentNetKg, bin: tank.code }"}] },
+        { "code":"weigh_empty",          "from":"UNLOADING_CLOSED",      "to":"WB_EMPTY_WEIGHED",
+          "guard":"expr:has_role('WeighmentOfficer')",
+          "actions":[{"type":"webhook","url":"/api/m9/wb/capture","body":"const:read2_empty"}] },
+        { "code":"weigh_reverify",       "from":"WB_EMPTY_WEIGHED",      "to":"WB_REVERIFIED",
+          "guard":"expr:has_role('WeighmentOfficer')",
+          "actions":[{"type":"webhook","url":"/api/m9/wb/capture","body":"const:read3_verify"}] },
+        { "code":"auto_clear_no_delta",  "from":"WB_REVERIFIED",         "to":"EXIT_STAMPED",
+          "guard":"expr:dispatch.weighmentDeltaPct <= 0.2",
+          "actions":[{"type":"webhook","url":"/api/m9/printer/gatepass","body":"data:dispatch"},{"type":"notify","template":"exit_cleared","to":"channel:sms","recipient":"driver.primaryMobile"}] },
+        { "code":"escalate_delta",       "from":"WB_REVERIFIED",         "to":"MANAGER_APPROVAL",
+          "guard":"expr:dispatch.weighmentDeltaPct > 0.2",
+          "actions":[{"type":"notify","template":"weight_delta_approve","to":"role:Manager"}] },
+        { "code":"mgr_approve",          "from":"MANAGER_APPROVAL",      "to":"EXIT_STAMPED",
+          "guard":"expr:has_role('Manager')",
+          "actions":[{"type":"audit","note":"manager override"},{"type":"webhook","url":"/api/m9/printer/gatepass","body":"data:dispatch"}] },
+        { "code":"mgr_reject",           "from":"MANAGER_APPROVAL",      "to":"ABORTED",
+          "guard":"expr:has_role('Manager')" }
+      ],
+      "participants": [
+        { "code":"FrontGate" }, { "code":"ParkingSecurity" }, { "code":"Dispatch" },
+        { "code":"QC" }, { "code":"WeighmentOfficer" }, { "code":"UnloadingSupervisor" },
+        { "code":"Manager" }, { "code":"Plantowner" }
+      ]
+    },
+
+    { "code": "M10.PackUnload",         "version": 1, "entity": "DispatchEvent", "label":{"en-IN":"Packing-Material Unloading"},
+      "initialState":"FRONT_GATE_ARRIVAL","terminalStates":["EXIT_STAMPED","REJECTED","ABORTED"],
+      "states":[{"code":"FRONT_GATE_ARRIVAL"},{"code":"FRONT_GATE_VERIFIED"},{"code":"PARKING_ASSIGNED","sla":{"maxMinutes":15}},{"code":"DISPATCH_QUEUED"},{"code":"WB_LOADED_WEIGHED"},{"code":"BAY_ASSIGNED"},{"code":"UNLOADING_IN_PROGRESS","sla":{"maxMinutes":90}},{"code":"GRN_CAPTURED"},{"code":"WB_EMPTY_WEIGHED"},{"code":"WB_REVERIFIED"},{"code":"MANAGER_APPROVAL","sla":{"maxMinutes":15}},{"code":"EXIT_STAMPED"},{"code":"REJECTED"},{"code":"ABORTED"}],
+      "transitions":[
+        {"code":"frontgate_verify","from":"FRONT_GATE_ARRIVAL","to":"FRONT_GATE_VERIFIED","guard":"expr:has_role('FrontGate')"},
+        {"code":"assign_parking","from":"FRONT_GATE_VERIFIED","to":"PARKING_ASSIGNED","guard":"expr:has_role('ParkingSecurity')"},
+        {"code":"queue_dispatch","from":"PARKING_ASSIGNED","to":"DISPATCH_QUEUED","guard":"expr:has_role('Dispatch')"},
+        {"code":"weigh_loaded","from":"DISPATCH_QUEUED","to":"WB_LOADED_WEIGHED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"assign_bay","from":"WB_LOADED_WEIGHED","to":"BAY_ASSIGNED","guard":"expr:has_role('UnloadingSupervisor')"},
+        {"code":"start_unload","from":"BAY_ASSIGNED","to":"UNLOADING_IN_PROGRESS","guard":"expr:has_role('UnloadingSupervisor')"},
+        {"code":"capture_grn","from":"UNLOADING_IN_PROGRESS","to":"GRN_CAPTURED","guard":"expr:has_role('UnloadingSupervisor')","actions":[{"type":"internal_api","method":"POST","path":"/api/m4/grn","bodyExpr":"expr:dispatch.grnBody"}]},
+        {"code":"weigh_empty","from":"GRN_CAPTURED","to":"WB_EMPTY_WEIGHED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"weigh_reverify","from":"WB_EMPTY_WEIGHED","to":"WB_REVERIFIED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"auto_clear","from":"WB_REVERIFIED","to":"EXIT_STAMPED","guard":"expr:dispatch.weighmentDeltaPct <= 0.2","actions":[{"type":"webhook","url":"/api/m9/printer/gatepass","body":"data:dispatch"}]},
+        {"code":"escalate","from":"WB_REVERIFIED","to":"MANAGER_APPROVAL","guard":"expr:dispatch.weighmentDeltaPct > 0.2"},
+        {"code":"mgr_approve","from":"MANAGER_APPROVAL","to":"EXIT_STAMPED","guard":"expr:has_role('Manager')"},
+        {"code":"mgr_reject","from":"MANAGER_APPROVAL","to":"ABORTED","guard":"expr:has_role('Manager')"}
+      ]
+    },
+
+    { "code":"M10.IntTransferIn", "version":1, "entity":"DispatchEvent", "label":{"en-IN":"Internal Transfer In"},
+      "initialState":"FRONT_GATE_ARRIVAL","terminalStates":["EXIT_STAMPED","REJECTED","ABORTED"],
+      "states":[{"code":"FRONT_GATE_ARRIVAL"},{"code":"FRONT_GATE_VERIFIED"},{"code":"PARKING_ASSIGNED","sla":{"maxMinutes":15}},{"code":"DISPATCH_QUEUED"},{"code":"WB_LOADED_WEIGHED"},{"code":"BAY_ASSIGNED"},{"code":"UNLOADING_IN_PROGRESS","sla":{"maxMinutes":90}},{"code":"STN_MATCHED"},{"code":"WB_EMPTY_WEIGHED"},{"code":"WB_REVERIFIED"},{"code":"MANAGER_APPROVAL","sla":{"maxMinutes":15}},{"code":"EXIT_STAMPED"},{"code":"REJECTED"},{"code":"ABORTED"}],
+      "transitions":[
+        {"code":"frontgate_verify","from":"FRONT_GATE_ARRIVAL","to":"FRONT_GATE_VERIFIED","guard":"expr:has_role('FrontGate') && dispatch.stnNo != null"},
+        {"code":"assign_parking","from":"FRONT_GATE_VERIFIED","to":"PARKING_ASSIGNED","guard":"expr:has_role('ParkingSecurity')"},
+        {"code":"queue_dispatch","from":"PARKING_ASSIGNED","to":"DISPATCH_QUEUED","guard":"expr:has_role('Dispatch')"},
+        {"code":"weigh_loaded","from":"DISPATCH_QUEUED","to":"WB_LOADED_WEIGHED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"assign_bay","from":"WB_LOADED_WEIGHED","to":"BAY_ASSIGNED","guard":"expr:has_role('UnloadingSupervisor')"},
+        {"code":"start_unload","from":"BAY_ASSIGNED","to":"UNLOADING_IN_PROGRESS","guard":"expr:has_role('UnloadingSupervisor')"},
+        {"code":"match_stn","from":"UNLOADING_IN_PROGRESS","to":"STN_MATCHED","guard":"expr:has_role('UnloadingSupervisor')","actions":[{"type":"internal_api","method":"POST","path":"/api/m4/intra-branch-receipt","bodyExpr":"expr:dispatch.stnReceiptBody"}]},
+        {"code":"weigh_empty","from":"STN_MATCHED","to":"WB_EMPTY_WEIGHED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"weigh_reverify","from":"WB_EMPTY_WEIGHED","to":"WB_REVERIFIED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"auto_clear","from":"WB_REVERIFIED","to":"EXIT_STAMPED","guard":"expr:dispatch.weighmentDeltaPct <= 0.2"},
+        {"code":"escalate","from":"WB_REVERIFIED","to":"MANAGER_APPROVAL","guard":"expr:dispatch.weighmentDeltaPct > 0.2"},
+        {"code":"mgr_approve","from":"MANAGER_APPROVAL","to":"EXIT_STAMPED","guard":"expr:has_role('Manager')"},
+        {"code":"mgr_reject","from":"MANAGER_APPROVAL","to":"ABORTED","guard":"expr:has_role('Manager')"}
+      ]
+    },
+
+    { "code":"M10.ThirdPartyIn", "version":1, "entity":"DispatchEvent", "label":{"en-IN":"3rd-Party In (job-work return / consignment)"},
+      "initialState":"FRONT_GATE_ARRIVAL","terminalStates":["EXIT_STAMPED","REJECTED","ABORTED"],
+      "states":[{"code":"FRONT_GATE_ARRIVAL"},{"code":"FRONT_GATE_VERIFIED"},{"code":"PARKING_ASSIGNED","sla":{"maxMinutes":15}},{"code":"DISPATCH_QUEUED"},{"code":"QC_SAMPLE_DRAWN"},{"code":"QC_RESULT_PENDING","sla":{"maxMinutes":60}},{"code":"WB_LOADED_WEIGHED"},{"code":"BAY_ASSIGNED"},{"code":"UNLOADING_IN_PROGRESS","sla":{"maxMinutes":90}},{"code":"DOC_RECONCILED"},{"code":"WB_EMPTY_WEIGHED"},{"code":"WB_REVERIFIED"},{"code":"MANAGER_APPROVAL","sla":{"maxMinutes":15}},{"code":"EXIT_STAMPED"},{"code":"REJECTED"},{"code":"ABORTED"}],
+      "transitions":[
+        {"code":"frontgate_verify","from":"FRONT_GATE_ARRIVAL","to":"FRONT_GATE_VERIFIED","guard":"expr:has_role('FrontGate')"},
+        {"code":"assign_parking","from":"FRONT_GATE_VERIFIED","to":"PARKING_ASSIGNED","guard":"expr:has_role('ParkingSecurity')"},
+        {"code":"queue_dispatch","from":"PARKING_ASSIGNED","to":"DISPATCH_QUEUED","guard":"expr:has_role('Dispatch')"},
+        {"code":"qc_draw","from":"DISPATCH_QUEUED","to":"QC_SAMPLE_DRAWN","guard":"expr:has_role('QC')"},
+        {"code":"qc_pending","from":"QC_SAMPLE_DRAWN","to":"QC_RESULT_PENDING","guard":"expr:has_role('QC')"},
+        {"code":"qc_pass","from":"QC_RESULT_PENDING","to":"WB_LOADED_WEIGHED","guard":"expr:dispatch.qcVerdict=='PASS'"},
+        {"code":"qc_fail","from":"QC_RESULT_PENDING","to":"REJECTED","guard":"expr:dispatch.qcVerdict=='FAIL'"},
+        {"code":"assign_bay","from":"WB_LOADED_WEIGHED","to":"BAY_ASSIGNED","guard":"expr:has_role('UnloadingSupervisor')"},
+        {"code":"start_unload","from":"BAY_ASSIGNED","to":"UNLOADING_IN_PROGRESS","guard":"expr:has_role('UnloadingSupervisor')"},
+        {"code":"reconcile","from":"UNLOADING_IN_PROGRESS","to":"DOC_RECONCILED","guard":"expr:has_role('Dispatch')"},
+        {"code":"weigh_empty","from":"DOC_RECONCILED","to":"WB_EMPTY_WEIGHED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"weigh_reverify","from":"WB_EMPTY_WEIGHED","to":"WB_REVERIFIED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"auto_clear","from":"WB_REVERIFIED","to":"EXIT_STAMPED","guard":"expr:dispatch.weighmentDeltaPct <= 0.2"},
+        {"code":"escalate","from":"WB_REVERIFIED","to":"MANAGER_APPROVAL","guard":"expr:dispatch.weighmentDeltaPct > 0.2"},
+        {"code":"mgr_approve","from":"MANAGER_APPROVAL","to":"EXIT_STAMPED","guard":"expr:has_role('Manager')"},
+        {"code":"mgr_reject","from":"MANAGER_APPROVAL","to":"ABORTED","guard":"expr:has_role('Manager')"}
+      ]
+    },
+
+    { "code":"M10.ReturnStockIn", "version":1, "entity":"DispatchEvent", "label":{"en-IN":"Sales Return / Stock In"},
+      "initialState":"FRONT_GATE_ARRIVAL","terminalStates":["EXIT_STAMPED","REJECTED","ABORTED"],
+      "states":[{"code":"FRONT_GATE_ARRIVAL"},{"code":"FRONT_GATE_VERIFIED"},{"code":"PARKING_ASSIGNED","sla":{"maxMinutes":15}},{"code":"DISPATCH_QUEUED"},{"code":"WB_LOADED_WEIGHED"},{"code":"RETURN_VERIFIED"},{"code":"BAY_ASSIGNED"},{"code":"UNLOADING_IN_PROGRESS","sla":{"maxMinutes":90}},{"code":"CREDIT_NOTE_DRAFTED"},{"code":"WB_EMPTY_WEIGHED"},{"code":"WB_REVERIFIED"},{"code":"MANAGER_APPROVAL","sla":{"maxMinutes":15}},{"code":"EXIT_STAMPED"},{"code":"REJECTED"},{"code":"ABORTED"}],
+      "transitions":[
+        {"code":"frontgate_verify","from":"FRONT_GATE_ARRIVAL","to":"FRONT_GATE_VERIFIED","guard":"expr:has_role('FrontGate') && dispatch.originalInvoiceNo != null"},
+        {"code":"assign_parking","from":"FRONT_GATE_VERIFIED","to":"PARKING_ASSIGNED","guard":"expr:has_role('ParkingSecurity')"},
+        {"code":"queue_dispatch","from":"PARKING_ASSIGNED","to":"DISPATCH_QUEUED","guard":"expr:has_role('Dispatch')"},
+        {"code":"weigh_loaded","from":"DISPATCH_QUEUED","to":"WB_LOADED_WEIGHED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"verify_return","from":"WB_LOADED_WEIGHED","to":"RETURN_VERIFIED","guard":"expr:has_role('Dispatch')"},
+        {"code":"assign_bay","from":"RETURN_VERIFIED","to":"BAY_ASSIGNED","guard":"expr:has_role('UnloadingSupervisor')"},
+        {"code":"start_unload","from":"BAY_ASSIGNED","to":"UNLOADING_IN_PROGRESS","guard":"expr:has_role('UnloadingSupervisor')"},
+        {"code":"draft_cn","from":"UNLOADING_IN_PROGRESS","to":"CREDIT_NOTE_DRAFTED","guard":"expr:has_role('Dispatch')","actions":[{"type":"internal_api","method":"POST","path":"/api/sales/return","bodyExpr":"expr:dispatch.returnBody"}]},
+        {"code":"weigh_empty","from":"CREDIT_NOTE_DRAFTED","to":"WB_EMPTY_WEIGHED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"weigh_reverify","from":"WB_EMPTY_WEIGHED","to":"WB_REVERIFIED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"auto_clear","from":"WB_REVERIFIED","to":"EXIT_STAMPED","guard":"expr:dispatch.weighmentDeltaPct <= 0.2"},
+        {"code":"escalate","from":"WB_REVERIFIED","to":"MANAGER_APPROVAL","guard":"expr:dispatch.weighmentDeltaPct > 0.2"},
+        {"code":"mgr_approve","from":"MANAGER_APPROVAL","to":"EXIT_STAMPED","guard":"expr:has_role('Manager')"},
+        {"code":"mgr_reject","from":"MANAGER_APPROVAL","to":"ABORTED","guard":"expr:has_role('Manager')"}
+      ]
+    },
+
+    { "code":"M10.TankerOutbound", "version":1, "entity":"DispatchEvent", "label":{"en-IN":"Tanker Loading (Bulk Oil Out)"},
+      "initialState":"FRONT_GATE_ARRIVAL","terminalStates":["EXIT_STAMPED","REJECTED","ABORTED"],
+      "states":[{"code":"FRONT_GATE_ARRIVAL"},{"code":"FRONT_GATE_VERIFIED"},{"code":"PARKING_ASSIGNED","sla":{"maxMinutes":15}},{"code":"DISPATCH_QUEUED"},{"code":"PRE_QC_TANK_CHECK"},{"code":"WB_EMPTY_WEIGHED"},{"code":"BAY_ASSIGNED"},{"code":"LOADING_IN_PROGRESS","sla":{"maxMinutes":120}},{"code":"LOADING_CLOSED"},{"code":"WB_LOADED_WEIGHED"},{"code":"WB_REVERIFIED"},{"code":"IRN_REQUESTED"},{"code":"IRN_CONFIRMED"},{"code":"MANAGER_APPROVAL","sla":{"maxMinutes":15}},{"code":"EXIT_STAMPED"},{"code":"REJECTED"},{"code":"ABORTED"}],
+      "transitions":[
+        {"code":"frontgate_verify","from":"FRONT_GATE_ARRIVAL","to":"FRONT_GATE_VERIFIED","guard":"expr:has_role('FrontGate') && vehicle.tankCleaningCertExpiry > today()"},
+        {"code":"assign_parking","from":"FRONT_GATE_VERIFIED","to":"PARKING_ASSIGNED","guard":"expr:has_role('ParkingSecurity')"},
+        {"code":"queue_dispatch","from":"PARKING_ASSIGNED","to":"DISPATCH_QUEUED","guard":"expr:has_role('Dispatch')"},
+        {"code":"pre_qc","from":"DISPATCH_QUEUED","to":"PRE_QC_TANK_CHECK","guard":"expr:has_role('QC')","actions":[{"type":"audit","note":"tanker cleanliness verified"}]},
+        {"code":"weigh_empty","from":"PRE_QC_TANK_CHECK","to":"WB_EMPTY_WEIGHED","guard":"expr:has_role('WeighmentOfficer') && dispatch.qcVerdict=='PASS'"},
+        {"code":"assign_bay","from":"WB_EMPTY_WEIGHED","to":"BAY_ASSIGNED","guard":"expr:has_role('UnloadingSupervisor') && tank.currentOilGrade == dispatch.expectedGrade"},
+        {"code":"start_load","from":"BAY_ASSIGNED","to":"LOADING_IN_PROGRESS","guard":"expr:has_role('UnloadingSupervisor')"},
+        {"code":"close_load","from":"LOADING_IN_PROGRESS","to":"LOADING_CLOSED","guard":"expr:has_role('UnloadingSupervisor')","actions":[{"type":"internal_api","method":"POST","path":"/api/m5/lot/pick","bodyExpr":"expr:dispatch.pickBody"}]},
+        {"code":"weigh_loaded","from":"LOADING_CLOSED","to":"WB_LOADED_WEIGHED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"weigh_reverify","from":"WB_LOADED_WEIGHED","to":"WB_REVERIFIED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"request_irn","from":"WB_REVERIFIED","to":"IRN_REQUESTED","guard":"expr:dispatch.weighmentDeltaPct <= 0.2","actions":[{"type":"webhook","url":"/api/m1/issueIrn","body":"data:dispatch.invoiceDraft"}]},
+        {"code":"escalate_delta","from":"WB_REVERIFIED","to":"MANAGER_APPROVAL","guard":"expr:dispatch.weighmentDeltaPct > 0.2"},
+        {"code":"mgr_approve","from":"MANAGER_APPROVAL","to":"IRN_REQUESTED","guard":"expr:has_role('Manager')","actions":[{"type":"webhook","url":"/api/m1/issueIrn","body":"data:dispatch.invoiceDraft"}]},
+        {"code":"mgr_reject","from":"MANAGER_APPROVAL","to":"ABORTED","guard":"expr:has_role('Manager')"},
+        {"code":"irn_ok","from":"IRN_REQUESTED","to":"IRN_CONFIRMED","guard":"expr:dispatch.irnNo != null"},
+        {"code":"exit","from":"IRN_CONFIRMED","to":"EXIT_STAMPED","guard":"expr:has_role('FrontGate')","actions":[{"type":"webhook","url":"/api/m9/printer/gatepass","body":"data:dispatch"}]}
+      ]
+    },
+
+    { "code":"M10.FGLoading", "version":1, "entity":"DispatchEvent", "label":{"en-IN":"FG (Packed) Loading"},
+      "initialState":"FRONT_GATE_ARRIVAL","terminalStates":["EXIT_STAMPED","REJECTED","ABORTED"],
+      "states":[{"code":"FRONT_GATE_ARRIVAL"},{"code":"FRONT_GATE_VERIFIED"},{"code":"PARKING_ASSIGNED","sla":{"maxMinutes":15}},{"code":"DISPATCH_QUEUED"},{"code":"WB_EMPTY_WEIGHED"},{"code":"BAY_ASSIGNED"},{"code":"LOADING_IN_PROGRESS","sla":{"maxMinutes":120}},{"code":"PICKLIST_CLOSED"},{"code":"WB_LOADED_WEIGHED"},{"code":"WB_REVERIFIED"},{"code":"IRN_REQUESTED"},{"code":"IRN_CONFIRMED"},{"code":"MANAGER_APPROVAL","sla":{"maxMinutes":15}},{"code":"EXIT_STAMPED"},{"code":"REJECTED"},{"code":"ABORTED"}],
+      "transitions":[
+        {"code":"frontgate_verify","from":"FRONT_GATE_ARRIVAL","to":"FRONT_GATE_VERIFIED","guard":"expr:has_role('FrontGate')"},
+        {"code":"assign_parking","from":"FRONT_GATE_VERIFIED","to":"PARKING_ASSIGNED","guard":"expr:has_role('ParkingSecurity')"},
+        {"code":"queue_dispatch","from":"PARKING_ASSIGNED","to":"DISPATCH_QUEUED","guard":"expr:has_role('Dispatch')"},
+        {"code":"weigh_empty","from":"DISPATCH_QUEUED","to":"WB_EMPTY_WEIGHED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"assign_bay","from":"WB_EMPTY_WEIGHED","to":"BAY_ASSIGNED","guard":"expr:has_role('UnloadingSupervisor')"},
+        {"code":"start_load","from":"BAY_ASSIGNED","to":"LOADING_IN_PROGRESS","guard":"expr:has_role('UnloadingSupervisor')"},
+        {"code":"close_pick","from":"LOADING_IN_PROGRESS","to":"PICKLIST_CLOSED","guard":"expr:has_role('UnloadingSupervisor')","actions":[{"type":"internal_api","method":"POST","path":"/api/m5/lot/pick","bodyExpr":"expr:dispatch.pickBody"}]},
+        {"code":"weigh_loaded","from":"PICKLIST_CLOSED","to":"WB_LOADED_WEIGHED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"weigh_reverify","from":"WB_LOADED_WEIGHED","to":"WB_REVERIFIED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"request_irn","from":"WB_REVERIFIED","to":"IRN_REQUESTED","guard":"expr:dispatch.weighmentDeltaPct <= 0.2","actions":[{"type":"webhook","url":"/api/m1/issueIrn","body":"data:dispatch.invoiceDraft"}]},
+        {"code":"escalate_delta","from":"WB_REVERIFIED","to":"MANAGER_APPROVAL","guard":"expr:dispatch.weighmentDeltaPct > 0.2"},
+        {"code":"mgr_approve","from":"MANAGER_APPROVAL","to":"IRN_REQUESTED","guard":"expr:has_role('Manager')"},
+        {"code":"mgr_reject","from":"MANAGER_APPROVAL","to":"ABORTED","guard":"expr:has_role('Manager')"},
+        {"code":"irn_ok","from":"IRN_REQUESTED","to":"IRN_CONFIRMED","guard":"expr:dispatch.irnNo != null"},
+        {"code":"exit","from":"IRN_CONFIRMED","to":"EXIT_STAMPED","guard":"expr:has_role('FrontGate')","actions":[{"type":"webhook","url":"/api/m9/printer/gatepass","body":"data:dispatch"}]}
+      ]
+    },
+
+    { "code":"M10.PackLoading", "version":1, "entity":"DispatchEvent", "label":{"en-IN":"Packing-Material Loading (out)"},
+      "initialState":"FRONT_GATE_ARRIVAL","terminalStates":["EXIT_STAMPED","ABORTED"],
+      "states":[{"code":"FRONT_GATE_ARRIVAL"},{"code":"FRONT_GATE_VERIFIED"},{"code":"PARKING_ASSIGNED","sla":{"maxMinutes":15}},{"code":"DISPATCH_QUEUED"},{"code":"WB_EMPTY_WEIGHED"},{"code":"BAY_ASSIGNED"},{"code":"LOADING_IN_PROGRESS","sla":{"maxMinutes":90}},{"code":"WB_LOADED_WEIGHED"},{"code":"WB_REVERIFIED"},{"code":"MANAGER_APPROVAL","sla":{"maxMinutes":15}},{"code":"EXIT_STAMPED"},{"code":"ABORTED"}],
+      "transitions":[
+        {"code":"frontgate_verify","from":"FRONT_GATE_ARRIVAL","to":"FRONT_GATE_VERIFIED","guard":"expr:has_role('FrontGate')"},
+        {"code":"assign_parking","from":"FRONT_GATE_VERIFIED","to":"PARKING_ASSIGNED","guard":"expr:has_role('ParkingSecurity')"},
+        {"code":"queue_dispatch","from":"PARKING_ASSIGNED","to":"DISPATCH_QUEUED","guard":"expr:has_role('Dispatch')"},
+        {"code":"weigh_empty","from":"DISPATCH_QUEUED","to":"WB_EMPTY_WEIGHED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"assign_bay","from":"WB_EMPTY_WEIGHED","to":"BAY_ASSIGNED","guard":"expr:has_role('UnloadingSupervisor')"},
+        {"code":"start_load","from":"BAY_ASSIGNED","to":"LOADING_IN_PROGRESS","guard":"expr:has_role('UnloadingSupervisor')"},
+        {"code":"weigh_loaded","from":"LOADING_IN_PROGRESS","to":"WB_LOADED_WEIGHED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"weigh_reverify","from":"WB_LOADED_WEIGHED","to":"WB_REVERIFIED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"auto_clear","from":"WB_REVERIFIED","to":"EXIT_STAMPED","guard":"expr:dispatch.weighmentDeltaPct <= 0.2"},
+        {"code":"escalate","from":"WB_REVERIFIED","to":"MANAGER_APPROVAL","guard":"expr:dispatch.weighmentDeltaPct > 0.2"},
+        {"code":"mgr_approve","from":"MANAGER_APPROVAL","to":"EXIT_STAMPED","guard":"expr:has_role('Manager')"},
+        {"code":"mgr_reject","from":"MANAGER_APPROVAL","to":"ABORTED","guard":"expr:has_role('Manager')"}
+      ]
+    },
+
+    { "code":"M10.IntTransferOut", "version":1, "entity":"DispatchEvent", "label":{"en-IN":"Internal Transfer Out (sister plant)"},
+      "initialState":"FRONT_GATE_ARRIVAL","terminalStates":["EXIT_STAMPED","ABORTED"],
+      "states":[{"code":"FRONT_GATE_ARRIVAL"},{"code":"FRONT_GATE_VERIFIED"},{"code":"PARKING_ASSIGNED","sla":{"maxMinutes":15}},{"code":"DISPATCH_QUEUED"},{"code":"STN_DRAFTED"},{"code":"WB_EMPTY_WEIGHED"},{"code":"BAY_ASSIGNED"},{"code":"LOADING_IN_PROGRESS","sla":{"maxMinutes":120}},{"code":"WB_LOADED_WEIGHED"},{"code":"WB_REVERIFIED"},{"code":"MANAGER_APPROVAL","sla":{"maxMinutes":15}},{"code":"EXIT_STAMPED"},{"code":"ABORTED"}],
+      "transitions":[
+        {"code":"frontgate_verify","from":"FRONT_GATE_ARRIVAL","to":"FRONT_GATE_VERIFIED","guard":"expr:has_role('FrontGate')"},
+        {"code":"assign_parking","from":"FRONT_GATE_VERIFIED","to":"PARKING_ASSIGNED","guard":"expr:has_role('ParkingSecurity')"},
+        {"code":"queue_dispatch","from":"PARKING_ASSIGNED","to":"DISPATCH_QUEUED","guard":"expr:has_role('Dispatch')"},
+        {"code":"draft_stn","from":"DISPATCH_QUEUED","to":"STN_DRAFTED","guard":"expr:has_role('Dispatch')","actions":[{"type":"internal_api","method":"POST","path":"/api/m4/stn","bodyExpr":"expr:dispatch.stnBody"}]},
+        {"code":"weigh_empty","from":"STN_DRAFTED","to":"WB_EMPTY_WEIGHED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"assign_bay","from":"WB_EMPTY_WEIGHED","to":"BAY_ASSIGNED","guard":"expr:has_role('UnloadingSupervisor')"},
+        {"code":"start_load","from":"BAY_ASSIGNED","to":"LOADING_IN_PROGRESS","guard":"expr:has_role('UnloadingSupervisor')"},
+        {"code":"weigh_loaded","from":"LOADING_IN_PROGRESS","to":"WB_LOADED_WEIGHED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"weigh_reverify","from":"WB_LOADED_WEIGHED","to":"WB_REVERIFIED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"auto_clear","from":"WB_REVERIFIED","to":"EXIT_STAMPED","guard":"expr:dispatch.weighmentDeltaPct <= 0.2"},
+        {"code":"escalate","from":"WB_REVERIFIED","to":"MANAGER_APPROVAL","guard":"expr:dispatch.weighmentDeltaPct > 0.2"},
+        {"code":"mgr_approve","from":"MANAGER_APPROVAL","to":"EXIT_STAMPED","guard":"expr:has_role('Manager')"},
+        {"code":"mgr_reject","from":"MANAGER_APPROVAL","to":"ABORTED","guard":"expr:has_role('Manager')"}
+      ]
+    },
+
+    { "code":"M10.ThirdPartyOut", "version":1, "entity":"DispatchEvent", "label":{"en-IN":"3rd-Party Out (job-work issue / DC)"},
+      "initialState":"FRONT_GATE_ARRIVAL","terminalStates":["EXIT_STAMPED","ABORTED"],
+      "states":[{"code":"FRONT_GATE_ARRIVAL"},{"code":"FRONT_GATE_VERIFIED"},{"code":"PARKING_ASSIGNED","sla":{"maxMinutes":15}},{"code":"DISPATCH_QUEUED"},{"code":"DC_DRAFTED"},{"code":"WB_EMPTY_WEIGHED"},{"code":"BAY_ASSIGNED"},{"code":"LOADING_IN_PROGRESS","sla":{"maxMinutes":120}},{"code":"WB_LOADED_WEIGHED"},{"code":"WB_REVERIFIED"},{"code":"MANAGER_APPROVAL","sla":{"maxMinutes":15}},{"code":"EXIT_STAMPED"},{"code":"ABORTED"}],
+      "transitions":[
+        {"code":"frontgate_verify","from":"FRONT_GATE_ARRIVAL","to":"FRONT_GATE_VERIFIED","guard":"expr:has_role('FrontGate')"},
+        {"code":"assign_parking","from":"FRONT_GATE_VERIFIED","to":"PARKING_ASSIGNED","guard":"expr:has_role('ParkingSecurity')"},
+        {"code":"queue_dispatch","from":"PARKING_ASSIGNED","to":"DISPATCH_QUEUED","guard":"expr:has_role('Dispatch')"},
+        {"code":"draft_dc","from":"DISPATCH_QUEUED","to":"DC_DRAFTED","guard":"expr:has_role('Dispatch')","actions":[{"type":"internal_api","method":"POST","path":"/api/m4/dc","bodyExpr":"expr:dispatch.dcBody"}]},
+        {"code":"weigh_empty","from":"DC_DRAFTED","to":"WB_EMPTY_WEIGHED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"assign_bay","from":"WB_EMPTY_WEIGHED","to":"BAY_ASSIGNED","guard":"expr:has_role('UnloadingSupervisor')"},
+        {"code":"start_load","from":"BAY_ASSIGNED","to":"LOADING_IN_PROGRESS","guard":"expr:has_role('UnloadingSupervisor')"},
+        {"code":"weigh_loaded","from":"LOADING_IN_PROGRESS","to":"WB_LOADED_WEIGHED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"weigh_reverify","from":"WB_LOADED_WEIGHED","to":"WB_REVERIFIED","guard":"expr:has_role('WeighmentOfficer')"},
+        {"code":"auto_clear","from":"WB_REVERIFIED","to":"EXIT_STAMPED","guard":"expr:dispatch.weighmentDeltaPct <= 0.2"},
+        {"code":"escalate","from":"WB_REVERIFIED","to":"MANAGER_APPROVAL","guard":"expr:dispatch.weighmentDeltaPct > 0.2"},
+        {"code":"mgr_approve","from":"MANAGER_APPROVAL","to":"EXIT_STAMPED","guard":"expr:has_role('Manager')"},
+        {"code":"mgr_reject","from":"MANAGER_APPROVAL","to":"ABORTED","guard":"expr:has_role('Manager')"}
+      ]
+    }
+  ],
+
+  "workflowAttachments": [
+    { "entity":"DispatchEvent", "workflowCode":"M10.TankerInbound",  "workflowVersion":1, "role":"flow:tanker_in" },
+    { "entity":"DispatchEvent", "workflowCode":"M10.PackUnload",     "workflowVersion":1, "role":"flow:pack_in" },
+    { "entity":"DispatchEvent", "workflowCode":"M10.IntTransferIn",  "workflowVersion":1, "role":"flow:itx_in" },
+    { "entity":"DispatchEvent", "workflowCode":"M10.ThirdPartyIn",   "workflowVersion":1, "role":"flow:3p_in" },
+    { "entity":"DispatchEvent", "workflowCode":"M10.ReturnStockIn",  "workflowVersion":1, "role":"flow:ret_in" },
+    { "entity":"DispatchEvent", "workflowCode":"M10.TankerOutbound", "workflowVersion":1, "role":"flow:tanker_out" },
+    { "entity":"DispatchEvent", "workflowCode":"M10.FGLoading",      "workflowVersion":1, "role":"flow:fg_out" },
+    { "entity":"DispatchEvent", "workflowCode":"M10.PackLoading",    "workflowVersion":1, "role":"flow:pack_out" },
+    { "entity":"DispatchEvent", "workflowCode":"M10.IntTransferOut", "workflowVersion":1, "role":"flow:itx_out" },
+    { "entity":"DispatchEvent", "workflowCode":"M10.ThirdPartyOut",  "workflowVersion":1, "role":"flow:3p_out" }
+  ],
+
+  "notificationTemplates": [
+    { "code":"parking_assigned",     "channel":"sms",   "language":"ta-IN", "subject":null, "body":"PICO POWER: உங்கள் டோக்கன் {{tokenNo}} – பார்க்கிங் வளாகம் {{bay}}. மொபைல் ON வைக்கவும்." },
+    { "code":"parking_assigned_en",  "channel":"sms",   "language":"en-IN", "subject":null, "body":"PICO POWER: Token {{tokenNo}} – Park at bay {{bay}}. Keep phone on." },
+    { "code":"parking_overdue",      "channel":"push",  "language":"en-IN", "subject":"Parking SLA breach", "body":"Vehicle {{vehicleNo}} idle in parking > 15 min. Token {{tokenNo}}." },
+    { "code":"qc_overdue",           "channel":"push",  "language":"en-IN", "subject":"QC SLA breach", "body":"QC sample {{qcSampleId}} pending > 60 min for vehicle {{vehicleNo}}." },
+    { "code":"qc_failed",            "channel":"push",  "language":"en-IN", "subject":"QC fail", "body":"QC verdict FAIL for {{vehicleNo}} / {{itemCode}}. Vehicle held at parking bay {{bay}}." },
+    { "code":"weight_delta_approve", "channel":"push",  "language":"en-IN", "subject":"Weight delta needs approval", "body":"3rd weighment delta {{weighmentDeltaPct}}% > 0.2% on {{vehicleNo}}. Approve in mobile inbox." },
+    { "code":"mgr_overdue",          "channel":"push",  "language":"en-IN", "subject":"Manager approval overdue", "body":"Vehicle {{vehicleNo}} waiting > 15 min on manager approval. Owner notified." },
+    { "code":"unload_overdue",       "channel":"push",  "language":"en-IN", "subject":"Unloading SLA breach", "body":"Unloading at bay {{bay}} > 2h. Vehicle {{vehicleNo}}." },
+    { "code":"exit_cleared",         "channel":"sms",   "language":"ta-IN", "subject":null, "body":"PICO POWER: கேட் பாஸ் {{gatePassNo}} – வெளியேற அனுமதி. நன்றி." },
+    { "code":"vehicle_rejected",     "channel":"push",  "language":"en-IN", "subject":"Vehicle rejected at front gate", "body":"{{vehicleNo}} rejected: {{rejectReason}}. Driver advised to leave." }
+  ],
+
+  "formLayouts": [
+    { "entity":"DispatchEvent", "code":"frontgate.scan", "label":{"en-IN":"Front Gate – Scan & Verify"}, "device":"mobile-pwa", "sections":[
+      { "code":"identity", "fields":["vehicleNo","driver.dlNumber","driver.primaryMobile","dispatch.flowVariant"] },
+      { "code":"statutory","fields":["vehicle.rcExpiry","vehicle.insuranceExpiry","vehicle.pucExpiry","vehicle.tankCleaningCertExpiry"] },
+      { "code":"action",   "fields":["actions.verify","actions.reject"] }
+    ]},
+    { "entity":"DispatchEvent", "code":"parking.allocate", "label":{"en-IN":"Parking – Bay Allocation"}, "device":"mobile-pwa", "sections":[
+      { "code":"queue", "fields":["dispatch.tokenNo","dispatch.flowVariant","dispatch.priority"] },
+      { "code":"assign","fields":["parking.bayCode","actions.allocate"] }
+    ]},
+    { "entity":"DispatchEvent", "code":"dispatch.queue", "label":{"en-IN":"Dispatch – Live Queue"}, "device":"tablet+desktop", "sections":[
+      { "code":"queue", "fields":["dispatch.tokenNo","dispatch.flowVariant","dispatch.state","dispatch.slaCountdown"] }
+    ]},
+    { "entity":"DispatchEvent", "code":"qc.sample", "label":{"en-IN":"QC – Sampling"}, "device":"mobile-pwa", "sections":[
+      { "code":"sample", "fields":["dispatch.qcSampleId","dispatch.itemCode","dispatch.batchNo"] },
+      { "code":"verdict","fields":["dispatch.qcVerdict","dispatch.qcRemarks","actions.submit"] }
+    ]},
+    { "entity":"DispatchEvent", "code":"wb.read", "label":{"en-IN":"Weighbridge – 3 Reads"}, "device":"tablet+wb-console", "sections":[
+      { "code":"reading", "fields":["dispatch.weighmentLoadedKg","dispatch.weighmentEmptyKg","dispatch.weighmentVerifyKg","dispatch.weighmentNetKg","dispatch.weighmentDeltaPct"] }
+    ]},
+    { "entity":"DispatchEvent", "code":"unloading.bay", "label":{"en-IN":"Unloading – Bay Control"}, "device":"mobile-pwa+tablet", "sections":[
+      { "code":"tank",     "fields":["tank.code","tank.currentOilGrade","tank.minHeadspaceKL"] },
+      { "code":"progress", "fields":["dispatch.startedAt","dispatch.closedAt","actions.close"] }
+    ]},
+    { "entity":"DispatchEvent", "code":"mgr.approval", "label":{"en-IN":"Manager Approval Inbox"}, "device":"mobile", "sections":[
+      { "code":"context", "fields":["dispatch.weighmentDeltaPct","dispatch.weighmentLoadedKg","dispatch.weighmentEmptyKg","dispatch.weighmentVerifyKg"] },
+      { "code":"action",  "fields":["dispatch.managerApprovalReason","actions.approve","actions.reject"] }
+    ]},
+    { "entity":"DispatchEvent", "code":"owner.dashboard", "label":{"en-IN":"Owner Day View"}, "device":"mobile", "sections":[
+      { "code":"kpis", "fields":["kpi.vehiclesIn","kpi.vehiclesOut","kpi.avgTurnaroundMin","kpi.qcFailRate","kpi.mgrOverridesToday"] }
+    ]}
+  ],
+
+  "savedViews": [
+    { "entity":"DispatchEvent", "code":"queue.live",     "label":{"en-IN":"Live gate queue"},        "filter":"expr:dispatch.state in ['FRONT_GATE_ARRIVAL','PARKING_ASSIGNED','DISPATCH_QUEUED']", "sort":"-createdAt" },
+    { "entity":"DispatchEvent", "code":"queue.mgrInbox", "label":{"en-IN":"Manager approval inbox"},"filter":"expr:dispatch.state == 'MANAGER_APPROVAL'", "sort":"-createdAt" },
+    { "entity":"DispatchEvent", "code":"queue.slaBreached","label":{"en-IN":"SLA-breached"},        "filter":"expr:dispatch.slaBreached == true", "sort":"-slaBreachedAt" },
+    { "entity":"Vehicle",       "code":"expiringDocs",   "label":{"en-IN":"Docs expiring < 30d"},   "filter":"expr:days_between(today(), vehicle.rcExpiry) < 30 || days_between(today(), vehicle.insuranceExpiry) < 30", "sort":"vehicle.rcExpiry" },
+    { "entity":"TankLocation",  "code":"tanksLowHeadspace","label":{"en-IN":"Tanks: low headspace"},"filter":"expr:tank.minHeadspaceKL < 10", "sort":"tank.code" }
+  ],
+
+  "rolesAndPermissions": [
+    { "role":"FrontGate",            "label":{"en-IN":"Front Gate Security"},
+      "perms":["DispatchEvent:create","DispatchEvent:read.queue","DispatchEvent:transition:frontgate_verify","DispatchEvent:transition:frontgate_reject","DispatchEvent:transition:exit","Vehicle:read","Driver:read"] },
+    { "role":"ParkingSecurity",      "label":{"en-IN":"Parking Security"},
+      "perms":["DispatchEvent:read.queue","DispatchEvent:transition:assign_parking","DispatchEvent:update.parking"] },
+    { "role":"Dispatch",             "label":{"en-IN":"Dispatch Front Office"},
+      "perms":["DispatchEvent:read.all","DispatchEvent:transition:queue_dispatch","DispatchEvent:transition:draft_stn","DispatchEvent:transition:draft_dc","DispatchEvent:transition:draft_cn","DispatchEvent:transition:reconcile","DispatchEvent:transition:verify_return"] },
+    { "role":"QC",                   "label":{"en-IN":"Quality Control"},
+      "perms":["DispatchEvent:read.queue","DispatchEvent:transition:qc_draw_sample","DispatchEvent:transition:qc_pending","DispatchEvent:transition:qc_pass","DispatchEvent:transition:qc_fail","DispatchEvent:transition:pre_qc"] },
+    { "role":"WeighmentOfficer",     "label":{"en-IN":"Weighment Officer"},
+      "perms":["DispatchEvent:read.queue","DispatchEvent:transition:weigh_loaded","DispatchEvent:transition:weigh_empty","DispatchEvent:transition:weigh_reverify"] },
+    { "role":"UnloadingSupervisor",  "label":{"en-IN":"Unloading/Loading Supervisor"},
+      "perms":["DispatchEvent:read.queue","DispatchEvent:transition:assign_tank","DispatchEvent:transition:assign_bay","DispatchEvent:transition:start_unload","DispatchEvent:transition:start_load","DispatchEvent:transition:close_unload","DispatchEvent:transition:close_pick","DispatchEvent:transition:capture_grn","TankLocation:read","TankLocation:update.headspace"] },
+    { "role":"Manager",              "label":{"en-IN":"Plant Manager"},
+      "perms":["*:read","DispatchEvent:transition:mgr_approve","DispatchEvent:transition:mgr_reject","Vendor:approve","Item:approve"] },
+    { "role":"Plantowner",           "label":{"en-IN":"Plant Owner / Promoter"},
+      "perms":["*:read","Dashboard:owner","ConfigurableViews:owner"] },
+    { "role":"TenantAdmin",          "label":{"en-IN":"Tenant IT champ"},
+      "perms":["M0:*","M9:device.*","M0:formLayouts.*","M0:savedViews.*"] }
+  ],
+
+  "mastersSkeleton": {
+    "Items": [
+      { "code":"OIL.PALM.CR",        "name":"Crude Palm Oil",         "uom":"KG", "groupCode":"RM_OIL",        "trackBatch":true,  "hsn":"15111000", "gstPct":5 },
+      { "code":"OIL.PALMOLEIN.RBD",  "name":"RBD Palmolein",          "uom":"KG", "groupCode":"FG_BULK",       "trackBatch":true,  "hsn":"15119010", "gstPct":5 },
+      { "code":"OIL.SUNFLOWER.RBD",  "name":"RBD Sunflower",          "uom":"KG", "groupCode":"FG_BULK",       "trackBatch":true,  "hsn":"15121110", "gstPct":5 },
+      { "code":"PM.PET.1L",          "name":"PET Bottle 1L",          "uom":"NOS","groupCode":"PACK_PRIMARY", "trackBatch":false, "hsn":"39233010", "gstPct":18 },
+      { "code":"PM.CAP.38MM",        "name":"38mm cap",               "uom":"NOS","groupCode":"PACK_PRIMARY", "trackBatch":false, "hsn":"39235010", "gstPct":18 },
+      { "code":"PM.CARTON.12X1L",    "name":"Carton 12x1L",           "uom":"NOS","groupCode":"PACK_SEC",     "trackBatch":false, "hsn":"48191010", "gstPct":12 }
+    ],
+    "ItemGroups": [
+      { "code":"RM_OIL",       "label":"Raw Material – Bulk Oil" },
+      { "code":"FG_BULK",      "label":"Finished Goods – Bulk" },
+      { "code":"FG_PACKED",    "label":"Finished Goods – Packed" },
+      { "code":"PACK_PRIMARY", "label":"Packing Material – Primary" },
+      { "code":"PACK_SEC",     "label":"Packing Material – Secondary" }
+    ],
+    "TankLocations": [
+      { "code":"T-01", "tankCapacityKL": 80, "currentOilGrade":"PALMOLEIN", "minHeadspaceKL":8 },
+      { "code":"T-02", "tankCapacityKL": 80, "currentOilGrade":"PALMOLEIN", "minHeadspaceKL":8 },
+      { "code":"T-15", "tankCapacityKL": 60, "currentOilGrade":"SUNFLOWER", "minHeadspaceKL":6 },
+      { "comment":"Pico supplies the full ~30-tank list via the seed CSV." }
+    ],
+    "Bays": [
+      { "code":"PB-01", "type":"PARKING",  "capacity":4 },
+      { "code":"PB-02", "type":"PARKING",  "capacity":4 },
+      { "code":"UB-01", "type":"UNLOAD",   "lineTo":"T-01" },
+      { "code":"UB-02", "type":"UNLOAD",   "lineTo":"T-02" },
+      { "code":"LB-01", "type":"LOAD",     "lineTo":"T-15" },
+      { "code":"PD-01", "type":"PACK_DOCK" }
+    ],
+    "Weighbridges": [
+      { "code":"WB-1", "capacityKg": 60000, "protocol":"RS232", "frame":"MT_IND",  "device":"M9.CHECKWEIGHER_RS232", "stabilityCount":3, "toleranceKg":20 },
+      { "code":"WB-2", "capacityKg": 80000, "protocol":"TCP",   "frame":"MT_IND",  "device":"M9.CHECKWEIGHER_TCP",   "stabilityCount":3, "toleranceKg":20 }
+    ],
+    "Gates": [
+      { "code":"G-1", "type":"FRONT",  "scannerWorkerless":true },
+      { "code":"G-2", "type":"PARKING","scannerWorkerless":true },
+      { "code":"G-3", "type":"WB-1",   "scannerWorkerless":true },
+      { "code":"G-4", "type":"EXIT",   "scannerWorkerless":true }
+    ],
+    "Printers": [
+      { "code":"PR-GATE",  "model":"Zebra ZD230", "lang":"ZPL", "port":9100, "host":"10.10.0.51", "use":"gatepass" },
+      { "code":"PR-WB",    "model":"Zebra ZD230", "lang":"ZPL", "port":9100, "host":"10.10.0.52", "use":"weighment_slip" }
+    ]
+  },
+
+  "redisProfile": {
+    "caches": [
+      { "name":"masters:item",           "ttlSec":900,  "scope":"tenant" },
+      { "name":"masters:vendor",         "ttlSec":900,  "scope":"tenant" },
+      { "name":"masters:tank",           "ttlSec":120,  "scope":"tenant" },
+      { "name":"formLayouts",            "ttlSec":300,  "scope":"tenant" },
+      { "name":"tenantSubscription",     "ttlSec":300,  "scope":"tenant" }
+    ],
+    "idempotencyKeys": [
+      "POST /api/m10/dispatch/:id/transition/* ⇒ Idempotency-Key required, dedupe 60s",
+      "POST /api/m9/wb/capture ⇒ Idempotency-Key required, dedupe 30s (defends double-press)"
+    ],
+    "rateLimits": [
+      { "route":"/api/m10/dispatch/*",  "perRole":"FrontGate",        "rpm":120 },
+      { "route":"/api/m10/dispatch/*",  "perRole":"WeighmentOfficer", "rpm":60 },
+      { "route":"/api/auth/signin",     "perIp":true,                  "rpm":10 }
+    ],
+    "pubsub": [
+      { "topic":"m10.queue.updated",   "publishers":["dispatch service"],     "subscribers":["dispatch UI","owner dashboard"] },
+      { "topic":"m10.sla.breached",    "publishers":["sla watcher"],          "subscribers":["manager mobile push","owner dashboard"] },
+      { "topic":"m9.wb.reading",       "publishers":["wb worker"],            "subscribers":["weighment UI","dispatch UI"] }
+    ]
+  },
+
+  "deployment": {
+    "model": "on-prem-edge-vm",
+    "host": { "vcpu": 8, "ramGb": 32, "ssdGb": 500, "os": "Ubuntu 22.04 LTS" },
+    "composeFiles": ["docker-compose.yml","docker-compose.prod.yml"],
+    "services": ["mariadb","backend","frontend","redis","nginx","wb-worker-1","wb-worker-2","printer-worker","prometheus","grafana"],
+    "backup": { "target":"s3://wasabi/pico-power/", "rpoMin":15, "rtoHr":4, "fullDaily":true, "incremental30min":true }
+  }
+}
