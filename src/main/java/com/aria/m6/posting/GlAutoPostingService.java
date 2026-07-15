@@ -136,28 +136,21 @@ public class GlAutoPostingService {
             totalDed = totalDed.add(nz(ps.get("total_deduct")));
             totalNet = totalNet.add(nz(ps.get("net_pay")));
         }
-        // Defaults — proportional split (Pico's 3 employees): PF~3600, ESI~150, PT~625, TDS=0 for low earners
-        // Use the empirical numbers from PayrollCalcService run on the 3 employees.
-        totalPfEmp = totalGross.multiply(new BigDecimal("0.08")).setScale(2, RoundingMode.HALF_UP);
-        totalPfEr  = totalPfEmp;
-        totalEsiEmp = BigDecimal.ZERO;
-        totalEsiEr  = BigDecimal.ZERO;
-        totalPt = new BigDecimal("625.00");
-
+        // Tenant-agnostic posting from the payslip totals only (m7_payslip carries
+        // gross / total_deduct / net_pay). Double entry balances by construction:
+        //   Dr Salaries (gross) = Cr Net payable (net) + Cr Statutory & other deductions (deduct)
+        // No hardcoded PF/ESI/PT rates — the component split, when needed, comes
+        // from PayrollCalcService per employee, not baked-in constants.
         LocalDate dt = LocalDate.parse(period + "-28");
         String jeNo = "JE-PAY-" + period;
         String fy = computeFy(dt);
-        // Dr Salaries
+        // Dr Salaries expense (gross)
         insertEntry(jeNo, dt, fy, period, "PAYROLL", "PAY-" + period, "6010", "Salaries " + period, totalGross, BigDecimal.ZERO, null, null);
-        // Dr Employer PF
-        insertEntry(jeNo, dt, fy, period, "PAYROLL", "PAY-" + period, "6020", "PF Employer " + period, totalPfEr, BigDecimal.ZERO, null, null);
-        // Cr Statutory liabilities
-        insertEntry(jeNo, dt, fy, period, "PAYROLL", "PAY-" + period, "2031", "PF payable " + period, BigDecimal.ZERO, totalPfEmp.add(totalPfEr), null, null);
-        if (totalPt.signum() > 0)
-            insertEntry(jeNo, dt, fy, period, "PAYROLL", "PAY-" + period, "2033", "PT payable " + period, BigDecimal.ZERO, totalPt, null, null);
-        // Cr Net Salary Payable
-        BigDecimal netPayable = totalGross.subtract(totalPt);
-        insertEntry(jeNo, dt, fy, period, "PAYROLL", "PAY-" + period, "2040", "Net Salary Payable " + period, BigDecimal.ZERO, netPayable, null, null);
+        // Cr Statutory & other deductions payable (total deductions)
+        if (totalDed.signum() > 0)
+            insertEntry(jeNo, dt, fy, period, "PAYROLL", "PAY-" + period, "2030", "Statutory & other deductions payable " + period, BigDecimal.ZERO, totalDed, null, null);
+        // Cr Net Salary Payable (net pay)
+        insertEntry(jeNo, dt, fy, period, "PAYROLL", "PAY-" + period, "2040", "Net Salary Payable " + period, BigDecimal.ZERO, totalNet, null, null);
 
         return Map.of("ok", true, "je_no", jeNo,
                       "emp_count", payslips.size(),

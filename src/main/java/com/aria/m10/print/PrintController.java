@@ -33,7 +33,8 @@ public class PrintController {
 
     private final JdbcTemplate jdbc;
 
-    public PrintController(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+    private final com.aria.m0.tenantconfig.TenantSettings settings;
+    public PrintController(JdbcTemplate jdbc, com.aria.m0.tenantconfig.TenantSettings settings) { this.jdbc = jdbc; this.settings = settings; }
 
     @GetMapping(value = "/gate-pass/{id}", produces = MediaType.TEXT_HTML_VALUE)
     public ResponseEntity<String> gatePass(@PathVariable long id) {
@@ -48,7 +49,7 @@ public class PrintController {
         sb.append("<body>");
         sb.append("<div class='voucher'>");
         sb.append("<div class='header'>")
-          .append("<div><h1>PICO POWER PROJECT</h1><small>Coimbatore · TN</small></div>")
+          .append("<div><h1>" + esc(settings.get("company_name","Company").toUpperCase()) + "</h1><small>Coimbatore · TN</small></div>")
           .append("<div class='gp-no'><div class='lbl'>GATE PASS</div><div class='num'>")
           .append(s(gp.get("gp_number"))).append("</div></div>")
           .append("</div>");
@@ -97,7 +98,7 @@ public class PrintController {
         StringBuilder sb = new StringBuilder();
         sb.append(htmlHead("GRN " + s(g.get("grn_number"))));
         sb.append("<body><div class='voucher'>");
-        sb.append("<div class='header'><div><h1>PICO POWER PROJECT</h1><small>Coimbatore · TN · GSTIN 33XXXXX0000Z1</small></div>")
+        sb.append("<div class='header'><div><h1>" + esc(settings.get("company_name","Company").toUpperCase()) + "</h1><small>Coimbatore · TN · GSTIN 33XXXXX0000Z1</small></div>")
           .append("<div class='gp-no'><div class='lbl'>GOODS RECEIPT NOTE</div><div class='num'>")
           .append(s(g.get("grn_number"))).append("</div></div></div>");
         sb.append("<table class='kv'>");

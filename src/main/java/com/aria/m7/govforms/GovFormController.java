@@ -41,10 +41,13 @@ public class GovFormController {
 
     private final JdbcTemplate jdbc;
     private final PayrollCalcService payroll;
+    private final com.aria.m0.tenantconfig.TenantSettings settings;
 
-    public GovFormController(JdbcTemplate jdbc, PayrollCalcService payroll) {
+    public GovFormController(JdbcTemplate jdbc, PayrollCalcService payroll,
+                             com.aria.m0.tenantconfig.TenantSettings settings) {
         this.jdbc = jdbc;
         this.payroll = payroll;
+        this.settings = settings;
     }
 
     // ====================================================================
@@ -89,7 +92,7 @@ public class GovFormController {
 
         String html = govHeader("Form 16 (Part A + B) — " + fy, "TDS Certificate u/s 203 of Income-Tax Act 1961");
         html += "<div class='meta'>" +
-                kv("Employer", "Pico Power Project Pvt. Ltd.") +
+                kv("Employer", settings.get("company_name", "Company")) +
                 kv("Employer TAN", "CHEX12345T") +
                 kv("Employer PAN", "AAACS1234L") +
                 kv("Address", "Coimbatore Plant, Tamil Nadu") +
@@ -161,7 +164,7 @@ public class GovFormController {
         String html = govHeader("Form 24Q — Quarterly TDS Return on Salary",
                 "Section 200(3) of Income-Tax Act 1961 · FY " + fy + " · " + quarter);
         html += "<div class='meta'>" +
-                kv("Deductor", "Pico Power Project Pvt. Ltd.") +
+                kv("Deductor", settings.get("company_name", "Company")) +
                 kv("TAN", "CHEX12345T") +
                 kv("Quarter", quarter + " (" + months[0] + " — " + months[months.length - 1] + ")") +
                 kv("Form Used", "24Q") +
@@ -325,7 +328,7 @@ public class GovFormController {
                 "CGST Act 2017 §37 · Period " + period + " · Due 11-" + nextMonth(period));
         html += "<div class='meta'>" +
                 kv("GSTIN", "33AAACS1234L1ZA") +
-                kv("Legal Name", "Pico Power Project Pvt. Ltd.") +
+                kv("Legal Name", settings.get("company_name", "Company")) +
                 kv("Return Period", period) +
                 kv("Type", "Monthly") +
                 kv("Due Date", "11-" + nextMonth(period)) +
@@ -437,7 +440,7 @@ public class GovFormController {
         String html = govHeader("Factories Act 1948 — Form 21 (Annual Return)",
                 "Sec 110 + Rule 100 · FY " + fy);
         html += "<div class='meta'>" +
-                kv("Factory Name", "Pico Power Project — Coimbatore Plant") +
+                kv("Factory Name", settings.get("factory_name", "Factory")) +
                 kv("Registration #", "FAC-CBE-2018-001") +
                 kv("Manager", "Mr. R. Selvam") +
                 kv("Calendar Year", fy) +
@@ -475,7 +478,7 @@ public class GovFormController {
                 "Sec 110 + Rule 100 · Half-Year " + half);
         Integer headcount = jdbc.queryForObject("SELECT COUNT(*) FROM m7_employee WHERE status='ACTIVE'", Integer.class);
         html += "<div class='meta'>" +
-                kv("Factory Name", "Pico Power Project — Coimbatore Plant") +
+                kv("Factory Name", settings.get("factory_name", "Factory")) +
                 kv("Half-Year", half) +
                 kv("Workers Engaged", String.valueOf(headcount)) +
                 "</div>";
@@ -525,7 +528,7 @@ public class GovFormController {
         String html = govHeader("Form MSME-1",
                 "MCA · Half-yearly return of outstanding payments to MSME vendors > 45 days · " + half);
         html += "<div class='meta'>" +
-                kv("Company", "Pico Power Project Pvt. Ltd.") +
+                kv("Company", settings.get("company_name", "Company")) +
                 kv("CIN", "U15400TN2018PTC123456") +
                 kv("Half-Year", half) +
                 kv("MSME Suppliers w/ delay", String.valueOf(cnt)) +

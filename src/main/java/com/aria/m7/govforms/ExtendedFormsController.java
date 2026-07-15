@@ -35,11 +35,17 @@ public class ExtendedFormsController {
 
     private final JdbcTemplate jdbc;
     private final PayrollCalcService payroll;
+    private final com.aria.m0.tenantconfig.TenantSettings settings;
 
-    public ExtendedFormsController(JdbcTemplate jdbc, PayrollCalcService payroll) {
+    public ExtendedFormsController(JdbcTemplate jdbc, PayrollCalcService payroll,
+                                   com.aria.m0.tenantconfig.TenantSettings settings) {
         this.jdbc = jdbc;
         this.payroll = payroll;
+        this.settings = settings;
     }
+
+    private String factoryName() { return settings.get("factory_name", "Factory"); }
+    private String factoryLicence() { return settings.get("factory_licence_no", ""); }
 
     // ====================================================================
     // FORM 11 — Adult Workers Register (Factories Act §62 + Rule 78)
@@ -70,8 +76,8 @@ public class ExtendedFormsController {
         }
         String html = govHeader("Form 11 — Register of Adult Workers",
             "Factories Act 1948 §62 + Rule 78 · FY " + fy);
-        html += "<div class='meta'>" + kv("Factory", "Pico Power Project — Coimbatore Plant") +
-                kv("Lic No", "TN/FAC/CBE/2023/01188") + kv("FY", fy) +
+        html += "<div class='meta'>" + kv("Factory", factoryName()) +
+                kv("Lic No", factoryLicence()) + kv("FY", fy) +
                 kv("Total Workers", String.valueOf(sno)) + "</div>";
         html += "<table><thead><tr><th>S.No</th><th>Code</th><th>Name</th><th>Father/Spouse</th>" +
                 "<th>Sex</th><th>DOB</th><th>Designation</th><th>Dept</th><th>DOJ</th>" +
@@ -117,7 +123,7 @@ public class ExtendedFormsController {
         }
         String html = govHeader("Form 12 — Register of Leave with Wages",
             "Factories Act 1948 §79 + Rule 89 · FY " + fy);
-        html += "<div class='meta'>" + kv("Factory", "Pico Power Project — Coimbatore Plant") +
+        html += "<div class='meta'>" + kv("Factory", factoryName()) +
                 kv("FY", fy) + kv("Total Workers", String.valueOf(sno)) + "</div>";
         html += "<table><thead><tr><th>S.No</th><th>Code</th><th>Name</th><th>DOJ</th>" +
                 "<th>Opening Bal</th><th>Earned</th><th>Used</th><th>LOP</th><th>Closing</th></tr></thead><tbody>" +
@@ -156,7 +162,7 @@ public class ExtendedFormsController {
         }
         String html = govHeader("Form 15 — Register of Accidents and Dangerous Occurrences",
             "Factories Act 1948 §88 + Rule 99 · FY " + fy);
-        html += "<div class='meta'>" + kv("Factory", "Pico Power Project — Coimbatore Plant") +
+        html += "<div class='meta'>" + kv("Factory", factoryName()) +
                 kv("FY", fy) + kv("Total Incidents", String.valueOf(accs.size())) + "</div>";
         html += "<table><thead><tr><th>S.No</th><th>Acc #</th><th>When</th><th>Person/Designation</th>" +
                 "<th>Place</th><th>Body Part / Injury</th><th>Severity</th><th>Cause</th>" +
@@ -190,7 +196,7 @@ public class ExtendedFormsController {
         }
         String html = govHeader("Form 17 — Wage / Muster Register",
             "Factories Act 1948 §59 + Rule 78 · Period " + period);
-        html += "<div class='meta'>" + kv("Factory", "Pico Power Project — Coimbatore Plant") +
+        html += "<div class='meta'>" + kv("Factory", factoryName()) +
                 kv("Period", period) + kv("Total Workers", String.valueOf(ps.size())) + "</div>";
         html += "<table><thead><tr><th>S.No</th><th>Code</th><th>Name</th>" +
                 "<th>Gross</th><th>Deductions</th><th>Net Pay</th><th>Signature</th></tr></thead><tbody>" +
@@ -227,7 +233,7 @@ public class ExtendedFormsController {
                 .append("</tr>");
         }
         String html = govHeader("Muster Roll", "Factories Act 1948 §62 + Rule 78 · Period " + period);
-        html += "<div class='meta'>" + kv("Factory", "Pico Power Project — Coimbatore Plant") +
+        html += "<div class='meta'>" + kv("Factory", factoryName()) +
                 kv("Period", period) + kv("Total Workers", String.valueOf(att.size())) + "</div>";
         html += "<table><thead><tr><th>S.No</th><th>Code</th><th>Name</th>" +
                 "<th>Total</th><th>Present</th><th>Wk Off</th><th>Holiday</th>" +
@@ -263,7 +269,7 @@ public class ExtendedFormsController {
                 .append(td(hourly)).append(td(otAmt)).append("</tr>");
         }
         String html = govHeader("Overtime Register", "Factories Act §59 · 2× ordinary rate · Period " + period);
-        html += "<div class='meta'>" + kv("Factory", "Pico Power Project — Coimbatore Plant") +
+        html += "<div class='meta'>" + kv("Factory", factoryName()) +
                 kv("Period", period) + kv("Workers w/ OT", String.valueOf(att.size())) +
                 kv("Total OT Wage (₹)", String.format("%,.2f", totalOt)) + "</div>";
         html += "<table><thead><tr><th>S.No</th><th>Code</th><th>Name</th>" +
@@ -300,7 +306,7 @@ public class ExtendedFormsController {
                 .append(td(bonus)).append("</tr>");
         }
         String html = govHeader("Bonus Register", "Payment of Bonus Act 1965 · 8.33% min cap Rs.7,000/mo basic · FY " + fy);
-        html += "<div class='meta'>" + kv("Factory", "Pico Power Project — Coimbatore Plant") +
+        html += "<div class='meta'>" + kv("Factory", factoryName()) +
                 kv("FY", fy) + kv("Total Workers", String.valueOf(emps.size())) +
                 kv("Total Bonus (₹)", String.format("%,.2f", totalBonus)) + "</div>";
         html += "<table><thead><tr><th>S.No</th><th>Code</th><th>Name</th>" +
@@ -419,7 +425,7 @@ public class ExtendedFormsController {
                 .append(td(dr)).append(td(cr)).append("</tr>");
         }
         String html = govHeader("Trial Balance", "Section 128 Companies Act 2013 · As of " + asof);
-        html += "<div class='meta'>" + kv("Company", "Pico Power Project Pvt Ltd") + kv("As Of", asof) +
+        html += "<div class='meta'>" + kv("Company", settings.get("company_name", "Company")) + kv("As Of", asof) +
                 kv("DR Total", String.format("%,.2f", drTotal)) +
                 kv("CR Total", String.format("%,.2f", crTotal)) + "</div>";
         html += "<table><thead><tr><th>Code</th><th>Account</th><th>Class</th>" +
@@ -460,7 +466,7 @@ public class ExtendedFormsController {
         }
         BigDecimal pat = totalIncome.subtract(totalExpense);
         String html = govHeader("Profit & Loss Statement", "Sec 129 Companies Act · FY " + fy);
-        html += "<div class='meta'>" + kv("Company", "Pico Power Project Pvt Ltd") +
+        html += "<div class='meta'>" + kv("Company", settings.get("company_name", "Company")) +
                 kv("FY", fy) + kv("Total Income (₹)", String.format("%,.2f", totalIncome)) +
                 kv("Total Expense (₹)", String.format("%,.2f", totalExpense)) +
                 kv("PAT (₹)", String.format("%,.2f", pat)) + "</div>";
@@ -496,7 +502,7 @@ public class ExtendedFormsController {
             if ("EQUITY".equals(klass))     { equityRows.append(row); totalEquity = totalEquity.add(bal.abs()); }
         }
         String html = govHeader("Balance Sheet", "Sec 129 Companies Act · As of " + asof);
-        html += "<div class='meta'>" + kv("Company", "Pico Power Project Pvt Ltd") +
+        html += "<div class='meta'>" + kv("Company", settings.get("company_name", "Company")) +
                 kv("As Of", asof) + kv("Total Assets (₹)", String.format("%,.2f", totalAssets)) +
                 kv("Total Liab + Equity (₹)", String.format("%,.2f", totalLiab.add(totalEquity))) + "</div>";
         html += "<h3>Assets</h3><table>" + assetRows +

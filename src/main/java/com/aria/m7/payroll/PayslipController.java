@@ -24,10 +24,13 @@ public class PayslipController {
 
     private final PayrollCalcService calc;
     private final JdbcTemplate jdbc;
+    private final com.aria.m0.tenantconfig.TenantSettings settings;
 
-    public PayslipController(PayrollCalcService calc, JdbcTemplate jdbc) {
+    public PayslipController(PayrollCalcService calc, JdbcTemplate jdbc,
+                             com.aria.m0.tenantconfig.TenantSettings settings) {
         this.calc = calc;
         this.jdbc = jdbc;
+        this.settings = settings;
     }
 
     @GetMapping(value = "/html", produces = MediaType.TEXT_HTML_VALUE)
@@ -109,7 +112,7 @@ public class PayslipController {
             "button { padding: 8px 18px; border: none; border-radius: 4px; background: #1976d2; color: #fff; cursor: pointer; font-size: 14px; }" +
             "@media print { .btnbar { display: none; } body { margin: 0; } }";
 
-        String company = "Pico Power Project Pvt. Ltd.";
+        String company = settings.get("company_name", "Company");
         String employerGstin = "33AAACS1234L1ZA";
 
         StringBuilder html = new StringBuilder();

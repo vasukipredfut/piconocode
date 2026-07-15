@@ -108,9 +108,11 @@ public class PayrollCalcService {
 
         // 4. Statutory deductions — load current settings
         Map<String, Object> pfSetting = jdbc.queryForMap(
-            "SELECT * FROM m7_pf_setting WHERE tenant_id=1 ORDER BY effective_from DESC LIMIT 1");
+            "SELECT * FROM m7_pf_setting WHERE tenant_id=? ORDER BY effective_from DESC LIMIT 1",
+            com.aria.security.TenantContext.get());
         Map<String, Object> esiSetting = jdbc.queryForMap(
-            "SELECT * FROM m7_esi_setting WHERE tenant_id=1 ORDER BY effective_from DESC LIMIT 1");
+            "SELECT * FROM m7_esi_setting WHERE tenant_id=? ORDER BY effective_from DESC LIMIT 1",
+            com.aria.security.TenantContext.get());
 
         BigDecimal pfBase = basic.add(da);
         BigDecimal pfCeiling = nz(pfSetting.get("wage_ceiling"));
@@ -214,8 +216,9 @@ public class PayrollCalcService {
         try {
             List<Map<String, Object>> slabs = jdbc.queryForList(
                 "SELECT cadence, gender, gross_from, gross_to, pt_amount, feb_surcharge " +
-                "FROM m7_pt_slab WHERE tenant_id=1 AND state_code=? " +
-                "ORDER BY effective_from DESC, gross_from", state);
+                "FROM m7_pt_slab WHERE tenant_id=? AND state_code=? " +
+                "ORDER BY effective_from DESC, gross_from",
+                com.aria.security.TenantContext.get(), state);
             for (Map<String, Object> s : slabs) {
                 String sg = (String) s.get("gender");
                 if (sg != null && !sg.equals(g)) continue;
