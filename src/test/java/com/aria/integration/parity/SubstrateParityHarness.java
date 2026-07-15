@@ -2,7 +2,7 @@ package com.aria.integration.parity;
 
 import com.aria._base.EarmsContainersExtension;
 import com.aria.integration.m0.M0SubstrateTestApp;
-import com.aria.m0.entity.GenericEntityController;
+import com.aria.entity.GenericEntityController;
 import com.aria.security.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;

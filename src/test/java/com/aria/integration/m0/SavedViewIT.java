@@ -1,8 +1,8 @@
 package com.aria.integration.m0;
 
 import com.aria._base.EarmsContainersExtension;
-import com.aria.m0.savedview.SavedViewService;
-import com.aria.m0.savedview.model.SavedView;
+import com.aria.savedview.SavedViewService;
+import com.aria.savedview.model.SavedView;
 import com.aria.security.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;

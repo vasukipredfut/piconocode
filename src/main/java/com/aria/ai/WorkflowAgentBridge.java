@@ -1,7 +1,7 @@
 package com.aria.ai;
 
-import com.aria.m0.workflow.engine.WorkflowTransitionListener;
-import com.aria.m0.workflow.model.WorkflowInstance;
+import com.aria.workflow.engine.WorkflowTransitionListener;
+import com.aria.workflow.model.WorkflowInstance;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;

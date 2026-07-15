@@ -1,16 +1,16 @@
 package com.aria.integration.m10;
 
 import com.aria._base.EarmsContainersExtension;
-import com.aria.m0.tenantconfig.TenantConfigBundleService;
-import com.aria.m0.workflow.dao.WorkflowEventRepository;
-import com.aria.m0.workflow.dao.WorkflowInstanceRepository;
-import com.aria.m0.workflow.dto.WorkflowTransitionResult;
-import com.aria.m0.workflow.engine.WorkflowEngineService;
-import com.aria.m0.workflow.model.WorkflowEvent;
-import com.aria.m0.workflow.model.WorkflowInstance;
-import com.aria.m10.dao.GatePassRepository;
-import com.aria.m10.model.GatePass;
-import com.aria.m10.service.GatePassService;
+import com.aria.tenant.TenantConfigBundleService;
+import com.aria.workflow.dao.WorkflowEventRepository;
+import com.aria.workflow.dao.WorkflowInstanceRepository;
+import com.aria.workflow.dto.WorkflowTransitionResult;
+import com.aria.workflow.engine.WorkflowEngineService;
+import com.aria.workflow.model.WorkflowEvent;
+import com.aria.workflow.model.WorkflowInstance;
+import com.aria.dispatch.dao.GatePassRepository;
+import com.aria.dispatch.model.GatePass;
+import com.aria.dispatch.service.GatePassService;
 import com.aria.redis.RedisConfig;
 import com.aria.security.TenantContext;
 import org.junit.jupiter.api.AfterEach;
@@ -199,26 +199,26 @@ class PicoTankerInboundLifecycleIT {
     })
     @Import({RedisConfig.class})
     @EnableJpaRepositories(basePackages = {
-            "com.aria.m0.page.dao", "com.aria.m0.workflow.dao",
-            "com.aria.m0.entity_registry.dao", "com.aria.m10.dao"
+            "com.aria.page.dao", "com.aria.workflow.dao",
+            "com.aria.entity_registry.dao", "com.aria.dispatch.dao"
     },
             transactionManagerRef = "m0PageTransactionManager",
             entityManagerFactoryRef = "entityManagerFactory")
     @ComponentScan(
             basePackages = {
-                    "com.aria.m0.page.service",
-                    "com.aria.m0.workflow",
-                    "com.aria.m0.page.dao",
-                    "com.aria.m0.workflow.dao",
-                    "com.aria.m0.entity_registry",
-                    "com.aria.m10",
+                    "com.aria.page.service",
+                    "com.aria.workflow",
+                    "com.aria.page.dao",
+                    "com.aria.workflow.dao",
+                    "com.aria.entity_registry",
+                    "com.aria.dispatch",
             },
             excludeFilters = @ComponentScan.Filter(
                     type = org.springframework.context.annotation.FilterType.ASSIGNABLE_TYPE,
-                    classes = com.aria.m0.page.dao.M0PageJpaConfig.class))
+                    classes = com.aria.page.dao.M0PageJpaConfig.class))
     @org.springframework.boot.autoconfigure.domain.EntityScan(basePackages = {
-            "com.aria.m0.page.model", "com.aria.m0.workflow.model",
-            "com.aria.m0.entity_registry.model", "com.aria.m10.model"
+            "com.aria.page.model", "com.aria.workflow.model",
+            "com.aria.entity_registry.model", "com.aria.dispatch.model"
     })
     public static class PicoLifecycleTestApp {
         @org.springframework.context.annotation.Bean(name = "m0PageTransactionManager")

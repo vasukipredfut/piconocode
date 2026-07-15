@@ -1,7 +1,7 @@
 package com.aria.integration.m0;
 
 import com.aria._base.EarmsContainersExtension;
-import com.aria.m0.entity_registry.EntityRegistryService;
+import com.aria.entity_registry.EntityRegistryService;
 import com.aria.security.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;

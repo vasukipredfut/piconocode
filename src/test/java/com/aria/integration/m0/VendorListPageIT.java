@@ -3,7 +3,7 @@ package com.aria.integration.m0;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.aria._base.EarmsContainersExtension;
-import com.aria.m0.page.service.PageRendererService;
+import com.aria.page.service.PageRendererService;
 import com.aria.security.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -60,7 +60,7 @@ class VendorListPageIT {
         assertThat(served).isPresent();
         // bodyJson should contain kind=list and the joined select array.
         ObjectMapper json = new ObjectMapper();
-        com.aria.m0.page.dto.PageResponse resp = (com.aria.m0.page.dto.PageResponse) served.get();
+        com.aria.page.dto.PageResponse resp = (com.aria.page.dto.PageResponse) served.get();
         String body = resp.getBodyJson();
         JsonNode tree = json.readTree(body);
         assertThat(tree.get("kind").asText()).isEqualTo("list");
@@ -86,7 +86,7 @@ class VendorListPageIT {
         assertThat(served).isPresent();
         ObjectMapper json = new ObjectMapper();
         JsonNode tree = json.readTree(
-                ((com.aria.m0.page.dto.PageResponse) served.get()).getBodyJson());
+                ((com.aria.page.dto.PageResponse) served.get()).getBodyJson());
         assertThat(tree.get("kind").asText()).isEqualTo("detail");
         assertThat(tree.get("tabs").isArray()).isTrue();
         assertThat(tree.get("tabs").size()).isGreaterThanOrEqualTo(2);

@@ -1,14 +1,14 @@
 package com.aria.integration.workflow;
 
 import com.aria._base.EarmsContainersExtension;
-import com.aria.m0.workflow.dao.WorkflowDefinitionRepository;
-import com.aria.m0.workflow.dao.WorkflowEventRepository;
-import com.aria.m0.workflow.dao.WorkflowInstanceRepository;
-import com.aria.m0.workflow.dto.WorkflowQueueItem;
-import com.aria.m0.workflow.dto.WorkflowTransitionResult;
-import com.aria.m0.workflow.engine.WorkflowEngineService;
-import com.aria.m0.workflow.engine.WorkflowTransitionNotFoundException;
-import com.aria.m0.workflow.model.WorkflowInstance;
+import com.aria.workflow.dao.WorkflowDefinitionRepository;
+import com.aria.workflow.dao.WorkflowEventRepository;
+import com.aria.workflow.dao.WorkflowInstanceRepository;
+import com.aria.workflow.dto.WorkflowQueueItem;
+import com.aria.workflow.dto.WorkflowTransitionResult;
+import com.aria.workflow.engine.WorkflowEngineService;
+import com.aria.workflow.engine.WorkflowTransitionNotFoundException;
+import com.aria.workflow.model.WorkflowInstance;
 import com.aria.redis.RedisConfig;
 import com.aria.security.TenantContext;
 import org.junit.jupiter.api.AfterEach;
@@ -203,21 +203,21 @@ class WorkflowEngineIT {
             SecurityAutoConfiguration.class
     })
     @Import({RedisConfig.class})
-    @EnableJpaRepositories(basePackages = {"com.aria.m0.page.dao", "com.aria.m0.workflow.dao"},
+    @EnableJpaRepositories(basePackages = {"com.aria.page.dao", "com.aria.workflow.dao"},
             transactionManagerRef = "m0PageTransactionManager",
             entityManagerFactoryRef = "entityManagerFactory")
     @ComponentScan(
             basePackages = {
-                    "com.aria.m0.page.service",
-                    "com.aria.m0.workflow",
-                    "com.aria.m0.workflow.engine",
-                    "com.aria.m0.workflow.dao",
-                    "com.aria.m0.page.dao",
+                    "com.aria.page.service",
+                    "com.aria.workflow",
+                    "com.aria.workflow.engine",
+                    "com.aria.workflow.dao",
+                    "com.aria.page.dao",
             },
             excludeFilters = @ComponentScan.Filter(
                     type = org.springframework.context.annotation.FilterType.ASSIGNABLE_TYPE,
-                    classes = com.aria.m0.page.dao.M0PageJpaConfig.class))
-    @org.springframework.boot.autoconfigure.domain.EntityScan(basePackages = {"com.aria.m0.page.model", "com.aria.m0.workflow.model"})
+                    classes = com.aria.page.dao.M0PageJpaConfig.class))
+    @org.springframework.boot.autoconfigure.domain.EntityScan(basePackages = {"com.aria.page.model", "com.aria.workflow.model"})
     public static class WorkflowTestApp {
         @org.springframework.context.annotation.Bean(name = "m0PageTransactionManager")
         public org.springframework.transaction.PlatformTransactionManager m0PageTransactionManager(

@@ -1,10 +1,10 @@
 package com.aria.integration.m0;
 
 import com.aria._base.EarmsContainersExtension;
-import com.aria.m0.action.ActionDispatcher;
-import com.aria.m0.action.ActionInvocation;
-import com.aria.m0.action.ActionResult;
-import com.aria.m0.datasource.DataSourceSpec;
+import com.aria.action.ActionDispatcher;
+import com.aria.action.ActionInvocation;
+import com.aria.action.ActionResult;
+import com.aria.datasource.DataSourceSpec;
 import com.aria.security.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;

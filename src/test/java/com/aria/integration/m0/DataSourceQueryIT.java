@@ -1,8 +1,8 @@
 package com.aria.integration.m0;
 
 import com.aria._base.EarmsContainersExtension;
-import com.aria.m0.datasource.DataSourceQueryService;
-import com.aria.m0.datasource.DataSourceSpec;
+import com.aria.datasource.DataSourceQueryService;
+import com.aria.datasource.DataSourceSpec;
 import com.aria.security.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;

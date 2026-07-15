@@ -60,7 +60,7 @@ public class SubstrateDriftReviewer implements AiAgentHandler {
 
             check(findings, path, diff, "R1-new-jpa-entity",
                     "CRITICAL", Pattern.compile("^\\+\\s*@Entity\\b", Pattern.MULTILINE),
-                    "New @Entity outside com.aria.m0.* — use entity_registry rows",
+                    "New @Entity outside com.aria.* — use entity_registry rows",
                     p -> !p.contains("com/aria/m0/") && p.endsWith(".java"));
 
             check(findings, path, diff, "R2-new-jpa-repo",

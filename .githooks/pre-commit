@@ -145,12 +145,17 @@ for path in staged:
         # NOTE: the idayam->aria rename swept the code to com.aria.* but this
         # allowlist lagged, so every controller under com.aria.m0 tripped R3.
         # Both prefixes are allowed (some ported files still live under idayam).
-        allowed_pkgs = ("com.aria.m0.", "com.aria.m11.adapter.",
-                        "com.aria.m6.gst.", "com.aria.m7.govforms.",
-                        "com.aria.ai.", "com.aria.auth.",
-                        "com.idayam.m0.", "com.idayam.m11.adapter.",
-                        "com.idayam.m6.gst.", "com.idayam.m7.govforms.",
-                        "com.idayam.ai.")  # AI substrate is a first-class package
+        # Post-rename: capability packages (no more mN module codes). Every
+        # remaining com.aria package is generic platform, so all may host
+        # controllers/entities/repos.
+        allowed_pkgs = ("com.aria.workflow.", "com.aria.page.", "com.aria.entity.",
+                        "com.aria.entity_registry.", "com.aria.action.",
+                        "com.aria.datasource.", "com.aria.designer.",
+                        "com.aria.savedview.", "com.aria.pivot.", "com.aria.tenant.",
+                        "com.aria.onboarding.", "com.aria.audit.", "com.aria.document.",
+                        "com.aria.reminder.", "com.aria.integration.", "com.aria.ai.",
+                        "com.aria.auth.", "com.aria.finance.", "com.aria.hr.",
+                        "com.aria.mes.", "com.aria.dispatch.")
         allowed = any(pkg.replace(".", "/") in path for pkg in allowed_pkgs)
 
         # Rules 1/2/3 are about NEWLY INTRODUCED bespoke JPA/controllers, so

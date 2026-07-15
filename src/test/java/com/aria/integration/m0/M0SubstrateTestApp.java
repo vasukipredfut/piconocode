@@ -26,7 +26,7 @@ import jakarta.persistence.EntityManagerFactory;
  * savedview / entity_registry packages so the new controllers + services
  * are wired.
  *
- * <p>Excludes the production {@link com.aria.m0.page.dao.M0PageJpaConfig}
+ * <p>Excludes the production {@link com.aria.page.dao.M0PageJpaConfig}
  * because it expects a qualified {@code psqlDataSource} from the legacy
  * PsqlConfig wiring. We synthesize the equivalent {@code m0PageTransactionManager}
  * bean here and let Spring's auto-config provide the single primary
@@ -41,36 +41,36 @@ import jakarta.persistence.EntityManagerFactory;
 @Import({RedisConfig.class})
 @EnableJpaRepositories(
         basePackages = {
-                "com.aria.m0.page.dao",
-                "com.aria.m0.workflow.dao",
-                "com.aria.m0.savedview.dao",
-                "com.aria.m0.entity_registry.dao",
-                "com.aria.m0.action.dao"
+                "com.aria.page.dao",
+                "com.aria.workflow.dao",
+                "com.aria.savedview.dao",
+                "com.aria.entity_registry.dao",
+                "com.aria.action.dao"
         },
         transactionManagerRef = "m0PageTransactionManager",
         entityManagerFactoryRef = "entityManagerFactory")
 @ComponentScan(
         basePackages = {
-                "com.aria.m0.page.service",
-                "com.aria.m0.workflow",
-                "com.aria.m0.workflow.engine",
-                "com.aria.m0.workflow.dao",
-                "com.aria.m0.page.dao",
+                "com.aria.page.service",
+                "com.aria.workflow",
+                "com.aria.workflow.engine",
+                "com.aria.workflow.dao",
+                "com.aria.page.dao",
                 // Round 1G additions
-                "com.aria.m0.action",
-                "com.aria.m0.datasource",
-                "com.aria.m0.entity_registry",
-                "com.aria.m0.savedview"
+                "com.aria.action",
+                "com.aria.datasource",
+                "com.aria.entity_registry",
+                "com.aria.savedview"
         },
         excludeFilters = @ComponentScan.Filter(
                 type = FilterType.ASSIGNABLE_TYPE,
-                classes = com.aria.m0.page.dao.M0PageJpaConfig.class))
+                classes = com.aria.page.dao.M0PageJpaConfig.class))
 @EntityScan(basePackages = {
-        "com.aria.m0.page.model",
-        "com.aria.m0.workflow.model",
-        "com.aria.m0.savedview.model",
-        "com.aria.m0.entity_registry.model",
-        "com.aria.m0.action.model"
+        "com.aria.page.model",
+        "com.aria.workflow.model",
+        "com.aria.savedview.model",
+        "com.aria.entity_registry.model",
+        "com.aria.action.model"
 })
 public class M0SubstrateTestApp {
 

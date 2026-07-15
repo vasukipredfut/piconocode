@@ -1,6 +1,6 @@
 package com.aria.ai.llm;
 
-import com.aria.m11.secrets.TenantSecretCodec;
+import com.aria.integration.secrets.TenantSecretCodec;
 import com.aria.security.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

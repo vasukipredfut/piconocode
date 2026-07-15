@@ -3,14 +3,14 @@ package com.aria.integration.m0;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.aria._base.EarmsContainersExtension;
-import com.aria.m0.page.dao.PageDefinitionRepository;
-import com.aria.m0.page.dao.PageVersionRepository;
-import com.aria.m0.page.dto.PageCreateRequest;
-import com.aria.m0.page.dto.PageUpdateRequest;
-import com.aria.m0.page.model.PageDefinition;
-import com.aria.m0.page.model.PageVersion;
-import com.aria.m0.page.service.PageDefinitionService;
-import com.aria.m0.page.service.PageRendererService;
+import com.aria.page.dao.PageDefinitionRepository;
+import com.aria.page.dao.PageVersionRepository;
+import com.aria.page.dto.PageCreateRequest;
+import com.aria.page.dto.PageUpdateRequest;
+import com.aria.page.model.PageDefinition;
+import com.aria.page.model.PageVersion;
+import com.aria.page.service.PageDefinitionService;
+import com.aria.page.service.PageRendererService;
 import com.aria.redis.RedisConfig;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
@@ -50,7 +50,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * SQL-Server pool) — full-boot IT for the page substrate will land with
  * the {@code TASK_M0_TENANT_AUTH} task.
  *
- * <p>The {@link com.aria.m0.page.service.M0PageSchemaInitialiser} runs at
+ * <p>The {@link com.aria.page.service.M0PageSchemaInitialiser} runs at
  * context start and applies V3 / V3_2 against the fresh testcontainer DB,
  * so we get the same schema + the 7 Pico pages seeded for free.
  */
@@ -218,23 +218,23 @@ class PageDefinitionIT {
             SecurityAutoConfiguration.class
     })
     @Import({RedisConfig.class})
-    @EnableJpaRepositories(basePackages = {"com.aria.m0.page.dao", "com.aria.m0.workflow.dao"},
+    @EnableJpaRepositories(basePackages = {"com.aria.page.dao", "com.aria.workflow.dao"},
             transactionManagerRef = "m0PageTransactionManager",
             entityManagerFactoryRef = "entityManagerFactory")
     @ComponentScan(
             basePackages = {
-                    "com.aria.m0.page.service",
-                    "com.aria.m0.workflow",
-                    "com.aria.m0.page.dao",
-                    "com.aria.m0.workflow.dao",
+                    "com.aria.page.service",
+                    "com.aria.workflow",
+                    "com.aria.page.dao",
+                    "com.aria.workflow.dao",
             },
             // Skip the production M0PageJpaConfig — it expects a qualified
             // 'psqlDataSource' bean from the legacy PsqlConfig wiring, which
             // we don't load in this slim test context.
             excludeFilters = @ComponentScan.Filter(
                     type = org.springframework.context.annotation.FilterType.ASSIGNABLE_TYPE,
-                    classes = com.aria.m0.page.dao.M0PageJpaConfig.class))
-    @org.springframework.boot.autoconfigure.domain.EntityScan(basePackages = {"com.aria.m0.page.model", "com.aria.m0.workflow.model"})
+                    classes = com.aria.page.dao.M0PageJpaConfig.class))
+    @org.springframework.boot.autoconfigure.domain.EntityScan(basePackages = {"com.aria.page.model", "com.aria.workflow.model"})
     public static class PageSubstrateTestApp {
 
         /**

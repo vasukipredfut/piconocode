@@ -1,6 +1,6 @@
 package com.aria.archunit;
 
-import com.aria.m0.workflow.engine.WorkflowDriven;
+import com.aria.workflow.engine.WorkflowDriven;
 import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.domain.JavaAccess;
 import com.tngtech.archunit.core.domain.JavaClass;
@@ -21,9 +21,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * PR that violates them fails CI.
  *
  * <h2>Rule G</h2>
- * Fields annotated {@link com.aria.m0.workflow.engine.WorkflowDriven}
+ * Fields annotated {@link com.aria.workflow.engine.WorkflowDriven}
  * may only be written from classes inside the workflow engine package
- * {@code com.aria.m0.workflow.engine}. (Read access from anywhere is
+ * {@code com.aria.workflow.engine}. (Read access from anywhere is
  * fine.) This guarantees the engine is the SOLE state mutator of
  * {@code WorkflowInstance.currentState} and {@code status}.
  *
@@ -31,18 +31,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Method names matching the regex
  * {@code (?i)^(approve|reject|cancel|submit|close|finalize|publish)\\w*$}
  * are banned on {@code @Service}-annotated classes that live OUTSIDE
- * {@code com.aria.m0.workflow.engine}. Catches the
+ * {@code com.aria.workflow.engine}. Catches the
  * "let me just add an approveGatePass() to the service layer" anti-pattern
  * (Schema V2 §1.3 table row 6).
  *
- * <p>The scan is restricted to {@code com.aria.m0.**} so legacy
+ * <p>The scan is restricted to {@code com.aria.**} so legacy
  * non-workflow service classes outside M0 are unaffected — Rule H targets
  * the new substrate, not the historical codebase that's frozen behind
  * CUSTOMIZATION-POLICY.
  */
 class M0ArchUnitTest {
 
-    private static final String ENGINE_PKG = "com.aria.m0.workflow.engine";
+    private static final String ENGINE_PKG = "com.aria.workflow.engine";
 
     private static final java.util.regex.Pattern BANNED_NAMES =
             java.util.regex.Pattern.compile("(?i)^(approve|reject|cancel|submit|close|finalize|publish)\\w*$");
@@ -68,9 +68,9 @@ class M0ArchUnitTest {
             for (JavaFieldAccess w : writes) {
                 String pkg = w.getOrigin().getOwner().getPackageName();
                 // Lombok-generated setters live on the entity class itself
-                // (com.aria.m0.workflow.model) and the engine package
+                // (com.aria.workflow.model) and the engine package
                 // invokes them — that's the legitimate path. We allow:
-                //   - any class in com.aria.m0.workflow.engine.*
+                //   - any class in com.aria.workflow.engine.*
                 //   - the entity's own constructor / lifecycle hooks
                 //     (same package as the field declaration)
                 boolean okEngine = pkg.startsWith(ENGINE_PKG);
@@ -89,7 +89,7 @@ class M0ArchUnitTest {
      * Adding to this list requires PR review per CUSTOMIZATION-POLICY.
      */
     private static final Set<String> RULE_H_ALLOW = Set.of(
-            "com.aria.m0.page.service.PageDefinitionService" // publish() = page-version publish
+            "com.aria.page.service.PageDefinitionService" // publish() = page-version publish
     );
 
     @Test
