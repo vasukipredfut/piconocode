@@ -118,12 +118,23 @@ public class CustomerDecisionAnalyzerAgent implements AiAgentHandler {
             log.info("decision-analyzer: turn-1 gave neither answer nor tool call — falling back");
             return null;
         }
-        if (!tools.has(parsed.tool)) {
-            log.info("decision-analyzer: LLM asked for unknown tool '{}' — falling back", parsed.tool);
-            return null;
+        // Weak local models often name the ENTITY (e.g. "Vendor") as the tool
+        // instead of calling entity.query with an entity arg. Remap that.
+        String tool = parsed.tool;
+        Map<String, Object> args = parsed.args;
+        if (!tools.has(tool)) {
+            if (isEntityCode(tool)) {
+                args = args == null ? new java.util.LinkedHashMap<>() : new java.util.LinkedHashMap<>(args);
+                args.putIfAbsent("entity", tool);
+                tool = "entity.query";
+                log.info("decision-analyzer: remapped entity '{}' -> entity.query", parsed.tool);
+            } else {
+                log.info("decision-analyzer: LLM asked for unknown tool '{}' — falling back", parsed.tool);
+                return null;
+            }
         }
 
-        AgentToolRegistry.ToolCallResult call = tools.call(parsed.tool, parsed.args, tenantId);
+        AgentToolRegistry.ToolCallResult call = tools.call(tool, args, tenantId);
 
         // Turn 2 is intentionally skipped for the CPU-bound Ollama path — a second
         // pass with the tool result stuffed into the prompt roughly doubles latency
@@ -229,19 +240,81 @@ public class CustomerDecisionAnalyzerAgent implements AiAgentHandler {
     private record Turn1(String action, String tool, Map<String, Object> args, String text) {}
     private record Turn2(String action, String text) {}
 
+    // Lenient reader — small local models emit single quotes / unquoted keys.
+    private static final com.fasterxml.jackson.databind.ObjectMapper LENIENT_JSON =
+            com.fasterxml.jackson.databind.json.JsonMapper.builder()
+                    .enable(com.fasterxml.jackson.core.json.JsonReadFeature.ALLOW_SINGLE_QUOTES)
+                    .enable(com.fasterxml.jackson.core.json.JsonReadFeature.ALLOW_UNQUOTED_FIELD_NAMES)
+                    .enable(com.fasterxml.jackson.core.json.JsonReadFeature.ALLOW_TRAILING_COMMA)
+                    .build();
+
     @SuppressWarnings("unchecked")
     private Turn1 parseTurn1(String raw) {
         if (raw == null) return null;
+        String body = extractJsonObject(raw);
+        String s = body != null ? body : raw;
+        // 1. strict, then 2. lenient (single quotes / unquoted keys) on the
+        //    balanced object (trailing model garbage already stripped).
+        for (com.fasterxml.jackson.databind.ObjectMapper m :
+                new com.fasterxml.jackson.databind.ObjectMapper[]{JSON, LENIENT_JSON}) {
+            try {
+                Map<String, Object> j = m.readValue(s, Map.class);
+                String action = strOrNull(j.get("action"));
+                if (action != null) {
+                    Map<String, Object> args = j.get("args") instanceof Map ? (Map<String, Object>) j.get("args") : null;
+                    return new Turn1(action, strOrNull(j.get("tool")), args, strOrNull(j.get("text")));
+                }
+            } catch (Exception ignored) { }
+        }
+        // 3. regex salvage — recover action/tool/filter from mangled output.
+        String action = firstMatch(s, "[\"']?action[\"']?\\s*:\\s*[\"']?([a-zA-Z_]+)");
+        if (action == null) return null;
+        String tool = firstMatch(s, "[\"']?tool[\"']?\\s*:\\s*[\"']?([A-Za-z0-9_.]+)");
+        Map<String, Object> args = null;
+        String field = firstMatch(s, "[\"']?field[\"']?\\s*:\\s*[\"']?([A-Za-z0-9_]+)");
+        if (field != null) {
+            Map<String, Object> f = new java.util.LinkedHashMap<>();
+            f.put("field", field);
+            String op = firstMatch(s, "[\"']?op[\"']?\\s*:\\s*[\"']?([A-Za-z_]+)");
+            if (op != null) f.put("op", op);
+            String value = firstMatch(s, "[\"']?value[\"']?\\s*:\\s*[\"']?([^\"'\\],}]+)");
+            if (value != null) f.put("value", value.trim());
+            args = new java.util.LinkedHashMap<>();
+            args.put("filter", java.util.List.of(f));
+            String limit = firstMatch(s, "[\"']?limit[\"']?\\s*:\\s*(\\d+)");
+            if (limit != null) args.put("limit", Integer.parseInt(limit));
+        }
+        return new Turn1(action, tool, args, firstMatch(s, "[\"']?text[\"']?\\s*:\\s*\"([^\"]+)\""));
+    }
+
+    /** First balanced {...} object in the text (strips markdown fences + trailing model junk). */
+    private static String extractJsonObject(String raw) {
+        int start = raw.indexOf('{');
+        if (start < 0) return null;
+        int depth = 0; boolean inStr = false; char q = 0;
+        for (int i = start; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            if (inStr) { if (c == q && raw.charAt(i - 1) != '\\') inStr = false; }
+            else if (c == '"' || c == '\'') { inStr = true; q = c; }
+            else if (c == '{') depth++;
+            else if (c == '}') { if (--depth == 0) return raw.substring(start, i + 1); }
+        }
+        return null;
+    }
+
+    private static String firstMatch(String s, String regex) {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(regex).matcher(s);
+        return m.find() ? m.group(1) : null;
+    }
+
+    private boolean isEntityCode(String code) {
+        if (code == null || code.isBlank()) return false;
         try {
-            Map<String, Object> j = JSON.readValue(raw, Map.class);
-            String action = strOrNull(j.get("action"));
-            String tool   = strOrNull(j.get("tool"));
-            Map<String, Object> args = j.get("args") instanceof Map ? (Map<String, Object>) j.get("args") : null;
-            String text   = strOrNull(j.get("text"));
-            if (action == null) return null;
-            return new Turn1(action, tool, args, text);
+            Integer n = jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM entity_registry WHERE code=?", Integer.class, code);
+            return n != null && n > 0;
         } catch (Exception e) {
-            return null;
+            return false;
         }
     }
 
