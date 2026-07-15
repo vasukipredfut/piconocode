@@ -44,8 +44,7 @@ import java.util.Map;
             "com.aria.entity_registry.dao",
             "com.aria.action.dao",
             "com.aria.datasource.dao",
-            // Round 2 — M10 gate-pass + tenant-config packages
-            "com.aria.dispatch.dao",
+            // tenant-config packages (gate-pass is now a generic projection — no JPA package)
             "com.aria.tenant.dao"
         })
 public class M0PageJpaConfig {
@@ -71,7 +70,6 @@ public class M0PageJpaConfig {
                 "com.aria.entity_registry.model",
                 "com.aria.action.model",
                 "com.aria.datasource.model",
-                "com.aria.dispatch.model",
                 "com.aria.tenant.model");
         return bean;
     }

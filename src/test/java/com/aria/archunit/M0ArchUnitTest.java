@@ -47,9 +47,15 @@ class M0ArchUnitTest {
     private static final java.util.regex.Pattern BANNED_NAMES =
             java.util.regex.Pattern.compile("(?i)^(approve|reject|cancel|submit|close|finalize|publish)\\w*$");
 
+    // The substrate (formerly com.aria.m0.*) was promoted to capability-named
+    // top-level packages (workflow/page/entity/action/...). Import that set.
     private final JavaClasses classes = new ClassFileImporter()
             .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
-            .importPackages("com.aria.m0");
+            .importPackages("com.aria.workflow", "com.aria.page", "com.aria.entity",
+                    "com.aria.entity_registry", "com.aria.action", "com.aria.datasource",
+                    "com.aria.designer", "com.aria.savedview", "com.aria.pivot",
+                    "com.aria.tenant", "com.aria.onboarding", "com.aria.audit",
+                    "com.aria.document", "com.aria.reminder");
 
     @Test
     void ruleG_workflowDrivenFields_onlyMutatedByEnginePackage() {

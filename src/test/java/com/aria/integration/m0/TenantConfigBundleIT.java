@@ -113,7 +113,7 @@ class TenantConfigBundleIT {
     @Import({RedisConfig.class})
     @EnableJpaRepositories(basePackages = {
             "com.aria.page.dao", "com.aria.workflow.dao",
-            "com.aria.entity_registry.dao", "com.aria.dispatch.dao"
+            "com.aria.entity_registry.dao"
     },
             transactionManagerRef = "m0PageTransactionManager",
             entityManagerFactoryRef = "entityManagerFactory")
@@ -124,14 +124,13 @@ class TenantConfigBundleIT {
                     "com.aria.page.dao",
                     "com.aria.workflow.dao",
                     "com.aria.entity_registry",
-                    "com.aria.dispatch",
             },
             excludeFilters = @ComponentScan.Filter(
                     type = org.springframework.context.annotation.FilterType.ASSIGNABLE_TYPE,
                     classes = com.aria.page.dao.M0PageJpaConfig.class))
     @org.springframework.boot.autoconfigure.domain.EntityScan(basePackages = {
             "com.aria.page.model", "com.aria.workflow.model",
-            "com.aria.entity_registry.model", "com.aria.dispatch.model"
+            "com.aria.entity_registry.model"
     })
     public static class TenantConfigTestApp {
         @org.springframework.context.annotation.Bean(name = "m0PageTransactionManager")
