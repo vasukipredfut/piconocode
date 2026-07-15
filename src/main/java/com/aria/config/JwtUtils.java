@@ -16,8 +16,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import com.aria.dao.UserActivityRepository;
-import com.aria.model.UserActivity;
 import org.springframework.security.core.userdetails.UserDetails;
 
 import io.jsonwebtoken.Claims;
@@ -37,9 +35,6 @@ public class JwtUtils {
 
     @Value("${jwt.ExpirationMs}")
     private int jwtExpirationMs;
-
-    @Autowired
-    private UserActivityRepository userActivityRepository;
 
     /**
      * Derives a HMAC-SHA512-compatible key from the configured secret.
@@ -64,42 +59,6 @@ public class JwtUtils {
         }
     }
 
-    public void logUserActivity(String username, String token, String activityType, HttpServletRequest request) {
-        try {
-            Claims claims = Jwts.parser().verifyWith(signingKey()).build().parseSignedClaims(token).getPayload();
-            LocalDateTime expiryDate = claims.getExpiration().toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime();
-
-            UserActivity activity = new UserActivity();
-            activity.setUsername(username);
-            activity.setActivityType(activityType);
-            activity.setIpAddress(request.getRemoteAddr());
-            activity.setUserAgent(request.getHeader("User-Agent"));
-            activity.setActivityTime(LocalDateTime.now());
-            activity.setTokenExpiryTime(expiryDate);
-            userActivityRepository.save(activity);
-
-            logger.info("JWT usage logged for user: {}, Activity: {}, Expiry: {}", username, activityType, expiryDate);
-        } catch (ExpiredJwtException e) {
-            UserActivity activity = new UserActivity();
-            activity.setUsername(e.getClaims().getSubject());
-            activity.setActivityType(activityType);
-            activity.setIpAddress(request.getRemoteAddr());
-            activity.setUserAgent(request.getHeader("User-Agent"));
-            activity.setActivityTime(LocalDateTime.now());
-            activity.setTokenExpiryTime(e.getClaims().getExpiration().toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime());
-            userActivityRepository.save(activity);
-            logger.warn("Attempted to log expired JWT for user: {}. Token: {}", username, token);
-        } catch (Exception e) {
-            UserActivity activity = new UserActivity();
-            activity.setUsername(null);
-            activity.setActivityType(activityType);
-            activity.setIpAddress(request.getRemoteAddr());
-            activity.setUserAgent(request.getHeader("User-Agent"));
-            activity.setActivityTime(LocalDateTime.now());
-            userActivityRepository.save(activity);
-            logger.warn("Attempted to log invalid JWT for Token: {}",  token);
-        }
-    }
 
     public String generateJwtToken(UserDetails userPrincipal) {
         return generateTokenFromUsername(userPrincipal.getUsername(), tenantIdFor(userPrincipal));
@@ -170,19 +129,14 @@ public class JwtUtils {
             return true;
         } catch (SignatureException e) {
             logger.error("Invalid JWT signature: {}", e.getMessage());
-            logUserActivity(null, authToken, "VALIDATION_FAILED_SIGNATURE", request);
         } catch (MalformedJwtException e) {
             logger.error("Invalid JWT token: {}", e.getMessage());
-            logUserActivity(null, authToken, "VALIDATION_FAILED_MALFORMED", request);
         } catch (ExpiredJwtException e) {
             logger.error("JWT token is expired: {}", e.getMessage());
-            logUserActivity(null, authToken, "VALIDATION_FAILED_EXPIRED", request);
         } catch (UnsupportedJwtException e) {
             logger.error("JWT token is unsupported: {}", e.getMessage());
-            logUserActivity(null, authToken, "VALIDATION_FAILED_OTHER", request);
         } catch (IllegalArgumentException e) {
             logger.error("JWT claims string is empty: {}", e.getMessage());
-            logUserActivity(null, authToken, "VALIDATION_FAILED_MALFORMED", request);
         }
         return false;
     }

@@ -24,10 +24,6 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 @Configuration
 public class CorsConfiguration implements WebMvcConfigurer {
-	
-	@Autowired
-    private ResponseLoggingInterceptor responseLoggingInterceptor;
-
 
     @Override
     public void addCorsMappings(CorsRegistry registry) {
@@ -66,8 +62,7 @@ public class CorsConfiguration implements WebMvcConfigurer {
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        registry.addInterceptor(responseLoggingInterceptor);
-
+        // no application interceptors (legacy exception-log interceptor removed)
     }
 
     @Override

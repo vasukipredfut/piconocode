@@ -147,7 +147,7 @@ for path in staged:
         # Both prefixes are allowed (some ported files still live under idayam).
         allowed_pkgs = ("com.aria.m0.", "com.aria.m11.adapter.",
                         "com.aria.m6.gst.", "com.aria.m7.govforms.",
-                        "com.aria.ai.",
+                        "com.aria.ai.", "com.aria.auth.",
                         "com.idayam.m0.", "com.idayam.m11.adapter.",
                         "com.idayam.m6.gst.", "com.idayam.m7.govforms.",
                         "com.idayam.ai.")  # AI substrate is a first-class package

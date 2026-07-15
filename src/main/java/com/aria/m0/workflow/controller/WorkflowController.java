@@ -9,8 +9,6 @@ import com.aria.m0.workflow.engine.WorkflowGuardErrorException;
 import com.aria.m0.workflow.engine.WorkflowInstanceNotFoundException;
 import com.aria.m0.workflow.engine.WorkflowTransitionConflictException;
 import com.aria.m0.workflow.engine.WorkflowTransitionNotFoundException;
-import com.aria.model.User;
-import com.aria.dao.UserRepository;
 import com.aria.auth.AuthUserDetails;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -37,7 +35,6 @@ import java.util.Map;
 public class WorkflowController {
 
     @Autowired private WorkflowEngineService engine;
-    @Autowired(required = false) private UserRepository userRepository;
 
     // ---- Requests ------------------------------------------------------
     public static class StartInstanceRequest {
@@ -152,9 +149,6 @@ public class WorkflowController {
         if (auth == null) return null;
         Object principal = auth.getPrincipal();
         if (principal instanceof AuthUserDetails udi) return udi.getId();
-        if (principal instanceof String username && userRepository != null) {
-            return userRepository.findByUsername(username).map(User::getId).orElse(null);
-        }
         return null;
     }
 }

@@ -17,7 +17,6 @@ import org.springframework.boot.autoconfigure.security.servlet.SecurityAutoConfi
 import org.springframework.boot.autoconfigure.sql.init.SqlInitializationAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.ComponentScan;
-import org.springframework.context.annotation.FilterType;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -66,13 +65,7 @@ public abstract class BaseRedisIntegrationTest {
             SecurityAutoConfiguration.class
     })
     @Import({RedisAutoConfiguration.class, RedisConfig.class})
-    @ComponentScan(
-            basePackages = "com.aria.redis",
-            // MasterCacheFacade pulls HsnService -> the JPA layer. Exclude it here;
-            // the IT for cache behaviour uses CacheManager directly.
-            excludeFilters = @ComponentScan.Filter(
-                    type = FilterType.ASSIGNABLE_TYPE,
-                    classes = {com.aria.redis.MasterCacheFacade.class}))
+    @ComponentScan(basePackages = "com.aria.redis")
     public static class RedisOnlyTestApplication {
     }
 }
