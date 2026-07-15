@@ -153,20 +153,28 @@ for path in staged:
                         "com.idayam.ai.")  # AI substrate is a first-class package
         allowed = any(pkg.replace(".", "/") in path for pkg in allowed_pkgs)
 
+        # Rules 1/2/3 are about NEWLY INTRODUCED bespoke JPA/controllers, so
+        # they only fire on ADDED (or renamed) files — same grandfather policy
+        # as R11. Modifying a pre-existing legacy file (e.g. a transitional
+        # auth-repoint on UserController during the legacy-deletion program) is
+        # NOT a new violation; blocking it contradicts each rule's own "new X"
+        # wording and stalls the very refactors that retire those files.
+        is_new_file = path in added_paths
+
         # Rule 1 — new @Entity
-        if re.search(r"^\s*@Entity\b", content, re.MULTILINE) and not allowed:
+        if is_new_file and re.search(r"^\s*@Entity\b", content, re.MULTILINE) and not allowed:
             add("CRITICAL", "R1-new-jpa-entity", path, 0,
                 "new @Entity class outside com.idayam.m0.*",
                 "use entity_registry + entity_field_registry rows in a Vn migration")
 
         # Rule 2 — new JpaRepository
-        if re.search(r"extends\s+(JpaRepository|CrudRepository|Repository)\b", content) and not allowed:
+        if is_new_file and re.search(r"extends\s+(JpaRepository|CrudRepository|Repository)\b", content) and not allowed:
             add("CRITICAL", "R2-new-jpa-repo", path, 0,
                 "new *Repository interface outside com.idayam.m0.*",
                 "GenericEntityController handles CRUD via JdbcTemplate — delete this file")
 
         # Rule 3 — new *Controller.java
-        if p.name.endswith("Controller.java") and re.search(r"@RestController\b|@Controller\b", content):
+        if is_new_file and p.name.endswith("Controller.java") and re.search(r"@RestController\b|@Controller\b", content):
             if not allowed:
                 add("CRITICAL", "R3-new-bespoke-controller", path, 0,
                     "new *Controller outside allowed packages",
