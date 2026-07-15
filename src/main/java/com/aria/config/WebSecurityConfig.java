@@ -1,6 +1,7 @@
 package com.aria.config;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -14,7 +15,7 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 import com.aria.security.TenantContextFilter;
-import com.aria.service.UserDetailsServiceImpl;
+import com.aria.auth.AuthUserDetailsService;
 
 /**
  * Spring Security configuration, migrated from Spring Security 5
@@ -25,7 +26,7 @@ import com.aria.service.UserDetailsServiceImpl;
 public class WebSecurityConfig {
 
     @Autowired
-    UserDetailsServiceImpl userDetailsService;
+    AuthUserDetailsService userDetailsService;
 
     @Autowired
     private AuthEntryPointJwt unauthorizedHandler;
@@ -36,6 +37,25 @@ public class WebSecurityConfig {
     @Bean
     public AuthTokenFilter authenticationJwtTokenFilter() {
         return new AuthTokenFilter();
+    }
+
+    /**
+     * Prevent Spring Boot from auto-registering {@link AuthTokenFilter} as a
+     * plain servlet filter. Because it is a {@code Filter}-typed bean, Boot
+     * would otherwise run it once in the servlet container (BEFORE Spring
+     * Security's {@code FilterChainProxy}) — where it sets the authentication
+     * and marks the request "filtered" via {@code OncePerRequestFilter}. The
+     * chain's {@code SecurityContextHolderFilter} then resets the context to
+     * empty (stateless), and the in-chain copy of this filter is skipped by
+     * the once-per-request guard, leaving authorization with no authentication
+     * (→ 401 on every protected endpoint). Disabling the servlet registration
+     * makes the filter run ONLY where we explicitly add it in the chain.
+     */
+    @Bean
+    public FilterRegistrationBean<AuthTokenFilter> authTokenFilterRegistration(AuthTokenFilter filter) {
+        FilterRegistrationBean<AuthTokenFilter> registration = new FilterRegistrationBean<>(filter);
+        registration.setEnabled(false);
+        return registration;
     }
 
     @Bean
@@ -56,6 +76,13 @@ public class WebSecurityConfig {
             .exceptionHandling(eh -> eh.authenticationEntryPoint(unauthorizedHandler))
             .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
+                // Container ERROR/FORWARD dispatches (e.g. Boot's /error page after a
+                // controller 4xx/5xx) re-enter the security chain as ANONYMOUS. Without
+                // this, a real 404/500 gets masked by a 401 on /error. Permit those
+                // internal dispatches; the ORIGINAL request was already authorized.
+                .dispatcherTypeMatchers(jakarta.servlet.DispatcherType.ERROR,
+                        jakarta.servlet.DispatcherType.FORWARD,
+                        jakarta.servlet.DispatcherType.ASYNC).permitAll()
                 .requestMatchers(
                     "/api/auth/**",
                     // Builder palette is permit-all so the page-author UI can

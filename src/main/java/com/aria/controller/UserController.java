@@ -13,6 +13,7 @@ import jakarta.validation.Valid;
 import com.aria.dao.*;
 import com.aria.model.*;
 import com.aria.service.*;
+import com.aria.auth.AuthUserDetails;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -76,9 +77,6 @@ public class UserController {
     RefreshTokenService refreshTokenService;
 
     @Autowired
-    UserDetailsServiceImpl userDetails;
-
-    @Autowired
     UserService userService;
 
     @Autowired
@@ -118,7 +116,7 @@ public class UserController {
 
             SecurityContextHolder.getContext().setAuthentication(authentication);
 
-            UserDetailsImpl userDetails = (UserDetailsImpl) authentication.getPrincipal();
+            AuthUserDetails userDetails = (AuthUserDetails) authentication.getPrincipal();
 
             // 2️⃣ Fetch User
             Optional<User> optionalUser = userRepository.findById(userDetails.getId());

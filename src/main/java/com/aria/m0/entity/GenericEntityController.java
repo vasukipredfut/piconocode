@@ -2,7 +2,7 @@ package com.aria.m0.entity;
 
 import com.aria.m11.secrets.TenantSecretCodec;
 import com.aria.security.TenantContext;
-import com.aria.service.UserDetailsImpl;
+import com.aria.auth.AuthUserDetails;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.http.HttpStatus;
@@ -314,7 +314,7 @@ public class GenericEntityController {
         Authentication a = SecurityContextHolder.getContext().getAuthentication();
         if (a == null) return null;
         Object p = a.getPrincipal();
-        if (p instanceof UserDetailsImpl uid) return uid.getId();
+        if (p instanceof AuthUserDetails uid) return uid.getId();
         return null;
     }
 

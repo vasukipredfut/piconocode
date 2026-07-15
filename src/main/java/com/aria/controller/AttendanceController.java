@@ -48,7 +48,7 @@ import com.aria.model.Shifts;
 import com.aria.model.User;
 import com.aria.service.AttendanceService;
 import com.aria.service.RefreshTokenService;
-import com.aria.service.UserDetailsImpl;
+import com.aria.auth.AuthUserDetails;
 
 @RestController
 @RequestMapping("/api")
@@ -290,7 +290,7 @@ public class AttendanceController {
 
         SecurityContextHolder.getContext().setAuthentication(authentication);
 
-        UserDetailsImpl userDetails = (UserDetailsImpl) authentication.getPrincipal();
+        AuthUserDetails userDetails = (AuthUserDetails) authentication.getPrincipal();
         Long empId = userDetails.getId();
         LocalDate date = LocalDate.now();
         Long roleid = null;

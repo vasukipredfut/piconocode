@@ -18,7 +18,7 @@ import org.springframework.stereotype.Component;
 
 import com.aria.dao.UserActivityRepository;
 import com.aria.model.UserActivity;
-import com.aria.service.UserDetailsImpl;
+import org.springframework.security.core.userdetails.UserDetails;
 
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.ExpiredJwtException;
@@ -101,7 +101,7 @@ public class JwtUtils {
         }
     }
 
-    public String generateJwtToken(UserDetailsImpl userPrincipal) {
+    public String generateJwtToken(UserDetails userPrincipal) {
         return generateTokenFromUsername(userPrincipal.getUsername(), tenantIdFor(userPrincipal));
     }
 
@@ -154,12 +154,12 @@ public class JwtUtils {
     /**
      * Derives the tenant id for token issuance. The {@code employee_details}
      * table now carries a {@code tenant_id} column (Flyway V4); the legacy
-     * {@link UserDetailsImpl} doesn't expose it yet — Round 1G surfaces it
+     * {@code AuthUserDetails} doesn't expose it yet — Round 1G surfaces it
      * via the principal. For now we default to tenant 1 (the only seeded
      * tenant) at issuance time; the column populates correctly via the
      * schema default so the filter-side scoping is unaffected.
      */
-    private Long tenantIdFor(UserDetailsImpl principal) {
+    private Long tenantIdFor(UserDetails principal) {
         // Round 1G: replace with principal.getTenantId().
         return com.aria.security.TenantContext.DEFAULT_TENANT_ID;
     }

@@ -1,7 +1,7 @@
 package com.aria.ai;
 
 import com.aria.security.TenantContext;
-import com.aria.service.UserDetailsImpl;
+import com.aria.auth.AuthUserDetails;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
@@ -105,7 +105,7 @@ public class AiInvocationController {
     private Long currentUserId() {
         try {
             Authentication a = SecurityContextHolder.getContext().getAuthentication();
-            if (a == null || !(a.getPrincipal() instanceof UserDetailsImpl u)) return null;
+            if (a == null || !(a.getPrincipal() instanceof AuthUserDetails u)) return null;
             return u.getId();
         } catch (Exception e) {
             return null;
