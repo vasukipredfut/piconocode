@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.*;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -35,6 +36,11 @@ public class PrintController {
     private final JdbcTemplate jdbc;
     private final TenantSettings settings;
 
+    // Optional — routes label output to a configured printer (M11). When absent
+    // (e.g. unit tests), /send returns the rendered ZPL instead of printing.
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.aria.integration.service.IntegrationOutboundCaller outboundCaller;
+
     public PrintController(JdbcTemplate jdbc, TenantSettings settings) {
         this.jdbc = jdbc;
         this.settings = settings;
@@ -52,6 +58,39 @@ public class PrintController {
         return doRender(code, id);
     }
 
+    /** Send a label document to its configured printer integration (or render ZPL if none). */
+    @PostMapping(value = {"/api/print/{code}/{id}/send", "/api/m10/print/{code}/{id}/send"})
+    public ResponseEntity<?> send(@PathVariable String code, @PathVariable long id) {
+        Long tenantId = TenantContext.get();
+        Map<String, Object> tpl;
+        try {
+            tpl = jdbc.queryForMap("SELECT * FROM print_template WHERE code=? AND tenant_id=?", code, tenantId);
+        } catch (Exception e) {
+            return ResponseEntity.status(404).body(Map.of("ok", false, "error", "no template '" + code + "'"));
+        }
+        Map<String, Object> row;
+        try {
+            row = jdbc.queryForMap("SELECT * FROM " + ident((String) tpl.get("target_table")) + " WHERE id=?", id);
+        } catch (Exception e) {
+            return ResponseEntity.status(404).body(Map.of("ok", false, "error", code + " #" + id + " not found"));
+        }
+        String zpl = renderZpl(tpl, row);
+        String printer = (String) tpl.get("printer_integration_code");
+        if (printer == null || printer.isBlank() || outboundCaller == null) {
+            return ResponseEntity.ok(Map.of("ok", true, "printed", false, "zpl", zpl,
+                    "note", printer == null ? "no printer configured" : "printer routing unavailable"));
+        }
+        try {
+            Long instanceId = jdbc.queryForObject(
+                    "SELECT id FROM integration_instance WHERE code=? AND tenant_id=?",
+                    Long.class, printer, tenantId);
+            Object result = outboundCaller.invoke(instanceId, "printZpl", Map.of("zpl", zpl));
+            return ResponseEntity.ok(Map.of("ok", true, "printed", true, "printer", printer, "result", result));
+        } catch (Exception e) {
+            return ResponseEntity.status(502).body(Map.of("ok", false, "error", e.getMessage(), "zpl", zpl));
+        }
+    }
+
     private ResponseEntity<String> doRender(String code, long id) {
         Long tenantId = TenantContext.get();
         Map<String, Object> tpl;
@@ -67,6 +106,13 @@ public class PrintController {
             row = jdbc.queryForMap("SELECT * FROM " + table + " WHERE id=?", id);
         } catch (Exception e) {
             return ResponseEntity.status(404).body(errorPage(code + " #" + id + " not found"));
+        }
+        // Label documents preview as their ZPL (real QR via ^BQ; sent to a
+        // printer through POST .../send). HTML documents render the voucher.
+        if ("label".equalsIgnoreCase(s(tpl.get("output_kind")))) {
+            return ResponseEntity.ok()
+                    .header("Content-Type", "text/plain; charset=utf-8")
+                    .body(renderZpl(tpl, row));
         }
         List<Map<String, Object>> lines = List.of();
         String childTable = (String) tpl.get("child_table");
@@ -167,6 +213,33 @@ public class PrintController {
           .append(LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME))
           .append("</div></div></body></html>");
         return sb.toString();
+    }
+
+    private static final Pattern PLACEHOLDER = Pattern.compile("\\{\\{(\\w+)\\}\\}");
+
+    /** Render a ZPL label template: {{company}}, {{copies}}, and {{column}} from the row. */
+    private String renderZpl(Map<String, Object> tpl, Map<String, Object> row) {
+        String zpl = s(tpl.get("label_zpl"));
+        if (zpl.isBlank()) return "";
+        int copies = tpl.get("copies") == null ? 1 : ((Number) tpl.get("copies")).intValue();
+        Matcher m = PLACEHOLDER.matcher(zpl);
+        StringBuffer out = new StringBuffer();
+        while (m.find()) {
+            String key = m.group(1);
+            String val = switch (key) {
+                case "company" -> settings.get("company_name", "Company");
+                case "copies"  -> String.valueOf(copies);
+                default        -> s(row.get(key));
+            };
+            m.appendReplacement(out, Matcher.quoteReplacement(zplEsc(val)));
+        }
+        m.appendTail(out);
+        return out.toString();
+    }
+
+    /** Strip ZPL control chars (^ ~) from substituted field values. */
+    private static String zplEsc(String s) {
+        return s == null ? "" : s.replace("^", " ").replace("~", " ");
     }
 
     private static String mapValue(JsonNode rowSpec, String raw) {
