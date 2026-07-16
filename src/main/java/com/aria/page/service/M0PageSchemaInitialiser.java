@@ -1059,6 +1059,34 @@ public class M0PageSchemaInitialiser {
                 }
             } catch (Exception probe) { log.warn("V91 probe failed: {}", probe.getMessage()); }
 
+            // V143 — "Record First Weight" fields on GatePassWeighment: Date,
+            // Entry Time, Weighment Officer Name (weight_kg relabeled to
+            // "Actual Weight"), plus matching fields on pico:weighment-capture.
+            try {
+                // Guard on the entity_field_registry row the .sql script itself
+                // creates (not just the column, which addColumnIfMissing below
+                // makes idempotent on its own) — otherwise a DB where the column
+                // add succeeded but the script later failed (e.g. the
+                // entity_registry FK gap this migration also fixes) would never
+                // retry the script on a later boot.
+                Integer missingWeighOfficerField = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM entity_field_registry WHERE entity_code='GatePassWeighment' AND field_code='weight_officer'",
+                        Integer.class);
+                if (tableExists(jdbc, "gate_pass_weighment") && (missingWeighOfficerField == null || missingWeighOfficerField == 0)) {
+                    log.info("Date/Entry Time/Weighment Officer fields missing on gate_pass_weighment; applying V143");
+                    // Add columns here in plain JDBC, not via the .sql file's
+                    // ALTER TABLE — "ADD COLUMN IF NOT EXISTS" is a MariaDB-only
+                    // extension that 42000-errors on a plain MySQL dev instance,
+                    // and ScriptUtils can't parse a DELIMITER $$ guard procedure
+                    // (see V134's identical workaround above).
+                    addColumnIfMissing(jdbc, "gate_pass_weighment", "weighment_date", "DATE NULL");
+                    addColumnIfMissing(jdbc, "gate_pass_weighment", "entry_time", "TIME NULL");
+                    addColumnIfMissing(jdbc, "gate_pass_weighment", "weight_officer", "VARCHAR(128) NULL");
+                    try { runScript(c, "db/migration/V143__weighment_first_weight_fields.sql"); }
+                    catch (RuntimeException e) { log.warn("V143 application failed: {}", e.getMessage()); }
+                }
+            } catch (Exception probe) { log.warn("V143 probe failed: {}", probe.getMessage()); }
+
             clearPageCache();
             log.info("M0 page-schema bootstrap complete");
         } catch (SQLException e) {
@@ -1077,6 +1105,22 @@ public class M0PageSchemaInitialiser {
             }
         } catch (Exception e) {
             log.warn("page cache clear failed (Redis may be unavailable): {}", e.getMessage());
+        }
+    }
+
+    /** Adds a column via plain JDBC only if it's absent — portable across MariaDB/MySQL. */
+    private void addColumnIfMissing(JdbcTemplate jdbc, String table, String column, String ddl) {
+        try {
+            Integer present = jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM information_schema.columns " +
+                    "WHERE table_schema=DATABASE() AND table_name=? AND column_name=?",
+                    Integer.class, table, column);
+            if (present == null || present == 0) {
+                jdbc.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + ddl);
+                log.info("added column {}.{}", table, column);
+            }
+        } catch (Exception e) {
+            log.warn("addColumnIfMissing({}.{}) failed: {}", table, column, e.getMessage());
         }
     }
 

@@ -1,5 +1,6 @@
 package com.aria._base;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.extension.BeforeAllCallback;
 import org.junit.jupiter.api.extension.ExtensionContext;
 import org.testcontainers.containers.GenericContainer;
@@ -46,13 +47,18 @@ public class EarmsContainersExtension implements BeforeAllCallback {
     public void beforeAll(ExtensionContext context) {
         synchronized (EarmsContainersExtension.class) {
             if (!started) {
-                MARIADB.start();
-                REDIS.start();
-                Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                    try { REDIS.stop(); } catch (Exception ignored) {}
-                    try { MARIADB.stop(); } catch (Exception ignored) {}
-                }));
-                started = true;
+                try {
+                    MARIADB.start();
+                    REDIS.start();
+                    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                        try { REDIS.stop(); } catch (Exception ignored) {}
+                        try { MARIADB.stop(); } catch (Exception ignored) {}
+                    }));
+                    started = true;
+                } catch (IllegalStateException e) {
+                    Assumptions.assumeTrue(false,
+                            "Docker unavailable — skipping container-backed integration tests: " + e.getMessage());
+                }
             }
         }
     }
