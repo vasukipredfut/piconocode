@@ -296,10 +296,10 @@ public class M0PageSchemaInitialiser {
                 }
             } catch (Exception probe) { log.warn("V142 probe failed: {}", probe.getMessage()); }
 
-            // V143 — pico:parking-scan: swap free-text gp_number + manual
+            // V144 — pico:parking-scan: swap free-text gp_number + manual
             // Direction (V137) for a live GatePass dropdown + auto-fill and
             // automatic IN/OUT toggling. Probe on the ABSENCE of the new
-            // "gpNumber" field (V143's own marker) rather than presence of
+            // "gpNumber" field (V144's own marker) rather than presence of
             // the old "direction" field — the DB's current body may not
             // exactly match what any single prior migration produced (this
             // page has been hand-edited/partially-migrated before), so
@@ -311,11 +311,29 @@ public class M0PageSchemaInitialiser {
                         "  AND pv.body_json NOT LIKE '%gpNumber%'",
                         Integer.class);
                 if (notYetApplied != null && notYetApplied > 0) {
-                    log.info("pico:parking-scan missing gpNumber dropdown; applying V143");
+                    log.info("pico:parking-scan missing gpNumber dropdown; applying V144");
                     try { runScript(c, "db/migration/V144__parking_scan_gatepass_dropdown_autoinout.sql"); }
-                    catch (RuntimeException e) { log.warn("V143 application failed: {}", e.getMessage()); }
+                    catch (RuntimeException e) { log.warn("V144 application failed: {}", e.getMessage()); }
                 }
-            } catch (Exception probe) { log.warn("V143 probe failed: {}", probe.getMessage()); }
+            } catch (Exception probe) { log.warn("V144 probe failed: {}", probe.getMessage()); }
+
+            // V145 — pico:dispatch-vehicle-details: swap the plain-text
+            // vehicleNo field for a live GatePass dropdown + auto-fill
+            // (flowVariantCode/loadingType/instanceId) and add the Dispatch
+            // role's OPEN queue to the same page. Probe on the ABSENCE of
+            // the new "instanceId" field (V145's own marker).
+            try {
+                Integer dvdNotYetApplied = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM page_version pv JOIN page_definition pd ON pd.id=pv.page_id " +
+                        "WHERE pd.code='pico:dispatch-vehicle-details' AND pv.status='PUBLISHED' " +
+                        "  AND pv.body_json NOT LIKE '%instanceId%'",
+                        Integer.class);
+                if (dvdNotYetApplied != null && dvdNotYetApplied > 0) {
+                    log.info("pico:dispatch-vehicle-details missing vehicle dropdown; applying V145");
+                    try { runScript(c, "db/migration/V145__dispatch_vehicle_details_vehicle_dropdown.sql"); }
+                    catch (RuntimeException e) { log.warn("V145 application failed: {}", e.getMessage()); }
+                }
+            } catch (Exception probe) { log.warn("V145 probe failed: {}", probe.getMessage()); }
 
             // V133-V136 range: pico:dispatch-parking-scan (V135/V137/V139/V140, all
             // since removed) is not wanted — only pico:parking-scan handles parking
