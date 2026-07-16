@@ -296,6 +296,27 @@ public class M0PageSchemaInitialiser {
                 }
             } catch (Exception probe) { log.warn("V142 probe failed: {}", probe.getMessage()); }
 
+            // V143 — pico:parking-scan: swap free-text gp_number + manual
+            // Direction (V137) for a live GatePass dropdown + auto-fill and
+            // automatic IN/OUT toggling. Probe on the ABSENCE of the new
+            // "gpNumber" field (V143's own marker) rather than presence of
+            // the old "direction" field — the DB's current body may not
+            // exactly match what any single prior migration produced (this
+            // page has been hand-edited/partially-migrated before), so
+            // checking for V143's own output is the only reliable signal.
+            try {
+                Integer notYetApplied = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM page_version pv JOIN page_definition pd ON pd.id=pv.page_id " +
+                        "WHERE pd.code='pico:parking-scan' AND pv.status='PUBLISHED' " +
+                        "  AND pv.body_json NOT LIKE '%gpNumber%'",
+                        Integer.class);
+                if (notYetApplied != null && notYetApplied > 0) {
+                    log.info("pico:parking-scan missing gpNumber dropdown; applying V143");
+                    try { runScript(c, "db/migration/V143__parking_scan_gatepass_dropdown_autoinout.sql"); }
+                    catch (RuntimeException e) { log.warn("V143 application failed: {}", e.getMessage()); }
+                }
+            } catch (Exception probe) { log.warn("V143 probe failed: {}", probe.getMessage()); }
+
             // V133-V136 range: pico:dispatch-parking-scan (V135/V137/V139/V140, all
             // since removed) is not wanted — only pico:parking-scan handles parking
             // scan/bay-assignment. Defensive cleanup, inline (no .sql file — this
