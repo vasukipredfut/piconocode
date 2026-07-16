@@ -158,6 +158,33 @@ public class M0PageSchemaInitialiser {
                 }
             } catch (Exception e) { log.warn("entity_registry.lifecycle_kind backfill failed: {}", e.getMessage()); }
 
+            // entity_field_registry.widget_kind / visible_when / required_when /
+            // computed_from — V19 and V78 add these further down this same probe
+            // list, but V133/V134/V136/V141 above that point need them NOW. On a
+            // fresh DB, probe ORDER in this file matters more than which V-number
+            // is "supposed" to run first — backfill defensively before anything
+            // that inserts into entity_field_registry runs.
+            try {
+                Integer hasWidgetKind = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM information_schema.columns " +
+                        "WHERE table_schema=DATABASE() AND table_name='entity_field_registry' AND column_name='widget_kind'",
+                        Integer.class);
+                if (hasWidgetKind == null || hasWidgetKind == 0) {
+                    log.info("entity_field_registry.widget_kind missing; adding it");
+                    jdbc.execute("ALTER TABLE entity_field_registry ADD COLUMN widget_kind VARCHAR(32) NULL");
+                }
+                Integer hasVisibleWhen = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM information_schema.columns " +
+                        "WHERE table_schema=DATABASE() AND table_name='entity_field_registry' AND column_name='visible_when'",
+                        Integer.class);
+                if (hasVisibleWhen == null || hasVisibleWhen == 0) {
+                    log.info("entity_field_registry.visible_when/required_when/computed_from missing; adding them");
+                    jdbc.execute("ALTER TABLE entity_field_registry ADD COLUMN visible_when TEXT NULL");
+                    jdbc.execute("ALTER TABLE entity_field_registry ADD COLUMN required_when TEXT NULL");
+                    jdbc.execute("ALTER TABLE entity_field_registry ADD COLUMN computed_from TEXT NULL");
+                }
+            } catch (Exception e) { log.warn("entity_field_registry column backfill failed: {}", e.getMessage()); }
+
             // V123 — generic workflow->row projection config table. No prior probe
             // existed for this file; V134 below ALTERs this table, so it must exist
             // first. Missing on any DB never booted through a hand-seeded dump.
@@ -267,6 +294,22 @@ public class M0PageSchemaInitialiser {
                     catch (RuntimeException e) { log.warn("V136 application failed: {}", e.getMessage()); }
                 }
             } catch (Exception probe) { log.warn("V136 probe failed: {}", probe.getMessage()); }
+
+            // V141 — fix pico:front-gate-create's Vehicle No field: text had
+            // drifted to say "enter WITHOUT spaces", contradicting warnWhen
+            // (still fires when no space is present) and the original ask.
+            try {
+                Integer stillWrong = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM page_version pv JOIN page_definition pd ON pd.id=pv.page_id " +
+                        "WHERE pd.code='pico:front-gate-create' AND pv.status='PUBLISHED' " +
+                        "  AND pv.body_json LIKE '%Enter without spaces%'",
+                        Integer.class);
+                if (stillWrong != null && stillWrong > 0) {
+                    log.info("pico:front-gate-create vehicleNo text still inverted; applying V141");
+                    try { runScript(c, "db/migration/V141__fix_vehicleno_warning_direction.sql"); }
+                    catch (RuntimeException e) { log.warn("V141 application failed: {}", e.getMessage()); }
+                }
+            } catch (Exception probe) { log.warn("V141 probe failed: {}", probe.getMessage()); }
 
             // M10 outbound dispatch (Tanker-Outbound / Packing / FG loading flow —
             // Gate Pass -> Parking -> Dispatch Entry -> QC -> Weighment x3 ->
