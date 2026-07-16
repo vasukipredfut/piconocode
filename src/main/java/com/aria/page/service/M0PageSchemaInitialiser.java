@@ -239,25 +239,22 @@ public class M0PageSchemaInitialiser {
                 }
             } catch (Exception probe) { log.warn("V134 probe failed: {}", probe.getMessage()); }
 
-            // V135 — superseded by V137 (merged into pico:parking-scan instead of a
-            // separate page). No probe here anymore: applying V135 would recreate
-            // the page V137 deletes, and the two would fight on every boot.
-
-            // V137 — drop pico:dispatch-parking-scan (V135's separate page,
-            // superseded by reusing the existing pico:parking-scan page as-is;
-            // the parking in/out log write now happens via
-            // ParkingBayEntryTransitionListener on pico:parking-scan's existing
-            // Direction field, no page-body change needed there).
+            // V133-V136 range: pico:dispatch-parking-scan (V135/V137/V139/V140, all
+            // since removed) is not wanted — only pico:parking-scan handles parking
+            // scan/bay-assignment. Defensive cleanup, inline (no .sql file — this
+            // page was never shipped as a final migration): remove it if an older
+            // partial deploy left it behind.
             try {
-                Integer stillSeparatePage = jdbc.queryForObject(
+                Integer stillPresent = jdbc.queryForObject(
                         "SELECT COUNT(*) FROM page_definition WHERE code='pico:dispatch-parking-scan'",
                         Integer.class);
-                if (stillSeparatePage != null && stillSeparatePage > 0) {
-                    log.info("pico:dispatch-parking-scan still present; applying V137 to remove it");
-                    try { runScript(c, "db/migration/V137__merge_parking_scan_dropdown.sql"); }
-                    catch (RuntimeException e) { log.warn("V137 application failed: {}", e.getMessage()); }
+                if (stillPresent != null && stillPresent > 0) {
+                    log.info("pico:dispatch-parking-scan present from an earlier attempt; removing it");
+                    jdbc.execute("DELETE pv FROM page_version pv JOIN page_definition pd ON pd.id=pv.page_id " +
+                            "WHERE pd.code='pico:dispatch-parking-scan'");
+                    jdbc.execute("DELETE FROM page_definition WHERE code='pico:dispatch-parking-scan'");
                 }
-            } catch (Exception probe) { log.warn("V137 probe failed: {}", probe.getMessage()); }
+            } catch (Exception probe) { log.warn("pico:dispatch-parking-scan cleanup failed: {}", probe.getMessage()); }
 
             // V136 — front-gate-create: Loading Type / Vehicle Category / dynamic
             // Flow Variant + real QR print template for gate pass.
@@ -270,22 +267,6 @@ public class M0PageSchemaInitialiser {
                     catch (RuntimeException e) { log.warn("V136 application failed: {}", e.getMessage()); }
                 }
             } catch (Exception probe) { log.warn("V136 probe failed: {}", probe.getMessage()); }
-
-            // V138 — fix Flow Variant field on front-gate-create: "optionsSource"
-            // entity-dropdown silently rendered nothing on this Form component;
-            // switch to a plain static options list (confirmed pattern elsewhere).
-            try {
-                Integer stillDynamic = jdbc.queryForObject(
-                        "SELECT COUNT(*) FROM page_version pv JOIN page_definition pd ON pd.id=pv.page_id " +
-                        "WHERE pd.code='pico:front-gate-create' AND pv.status='PUBLISHED' " +
-                        "  AND pv.body_json LIKE '%flowVariant%optionsSource%'",
-                        Integer.class);
-                if (stillDynamic != null && stillDynamic > 0) {
-                    log.info("pico:front-gate-create flowVariant still optionsSource-based; applying V138");
-                    try { runScript(c, "db/migration/V138__fix_flow_variant_static_options.sql"); }
-                    catch (RuntimeException e) { log.warn("V138 application failed: {}", e.getMessage()); }
-                }
-            } catch (Exception probe) { log.warn("V138 probe failed: {}", probe.getMessage()); }
 
             // M10 outbound dispatch (Tanker-Outbound / Packing / FG loading flow —
             // Gate Pass -> Parking -> Dispatch Entry -> QC -> Weighment x3 ->
