@@ -142,6 +142,120 @@ public class M0PageSchemaInitialiser {
                 }
             } catch (Exception probe) { log.warn("V132 probe failed: {}", probe.getMessage()); }
 
+            // V133 — Parking Bay Entry (per-vehicle in/out log against a bay,
+            // distinct from dispatch_parking_bay master data).
+            try {
+                if (!tableExists(jdbc, "dispatch_parking_bay_entry")) {
+                    log.info("dispatch_parking_bay_entry missing; applying V133");
+                    try { runScript(c, "db/migration/V133__parking_bay_entry.sql"); }
+                    catch (RuntimeException e) { log.warn("V133 application failed: {}", e.getMessage()); }
+                }
+            } catch (Exception probe) { log.warn("V133 probe failed: {}", probe.getMessage()); }
+
+            // V134 — Dispatch Vehicle Details as its own entity (Tanker/Packing/FG
+            // variant fields) + Parking Queue page.
+            try {
+                if (!tableExists(jdbc, "dispatch_vehicle_detail")) {
+                    log.info("dispatch_vehicle_detail table missing; applying V134");
+                    try { runScript(c, "db/migration/V134__dispatch_vehicle_details_variants.sql"); }
+                    catch (RuntimeException e) { log.warn("V134 application failed: {}", e.getMessage()); }
+                }
+            } catch (Exception probe) { log.warn("V134 probe failed: {}", probe.getMessage()); }
+
+            // V135 — Dispatch Parking Bay In screen (gate-pass picker + auto-filled
+            // vehicle/flow/loading context).
+            try {
+                Integer missingScanPage = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM page_definition WHERE code='pico:dispatch-parking-scan'",
+                        Integer.class);
+                if (missingScanPage == null || missingScanPage == 0) {
+                    log.info("pico:dispatch-parking-scan missing; applying V135");
+                    try { runScript(c, "db/migration/V135__dispatch_parking_bay_scan.sql"); }
+                    catch (RuntimeException e) { log.warn("V135 application failed: {}", e.getMessage()); }
+                }
+            } catch (Exception probe) { log.warn("V135 probe failed: {}", probe.getMessage()); }
+
+            // V136 — front-gate-create: Loading Type / Vehicle Category / dynamic
+            // Flow Variant + real QR print template for gate pass.
+            try {
+                Integer missingPrintTpl = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM print_template WHERE code='gate-pass'", Integer.class);
+                if (missingPrintTpl == null || missingPrintTpl == 0) {
+                    log.info("print_template 'gate-pass' missing; applying V136");
+                    try { runScript(c, "db/migration/V136__front_gate_create_variants_and_print.sql"); }
+                    catch (RuntimeException e) { log.warn("V136 application failed: {}", e.getMessage()); }
+                }
+            } catch (Exception probe) { log.warn("V136 probe failed: {}", probe.getMessage()); }
+
+            // M10 outbound dispatch (Tanker-Outbound / Packing / FG loading flow —
+            // Gate Pass -> Parking -> Dispatch Entry -> QC -> Weighment x3 ->
+            // Loading -> Sealing -> PMT check -> Billing -> Gate Pass Closure).
+            // V87/V127/V129/V130/V131 shipped as files but had no boot hook, so on
+            // any DB not seeded by hand they silently never took effect (gate_pass
+            // was missing the dispatch/QC/weight columns and pico:loading-order-sheet
+            // didn't exist at all). Order matters: V87 creates the page rows +
+            // workflow bodies that V127/V131 then repair/extend.
+            try {
+                Integer missingDispatchPage = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM page_definition WHERE code='pico:dispatch-vehicle-details'",
+                        Integer.class);
+                if (missingDispatchPage == null || missingDispatchPage == 0) {
+                    log.info("M10 loading workflows/pages (V87) missing; applying");
+                    try { runScript(c, "db/migration/V87__m10_loading_workflows.sql"); }
+                    catch (RuntimeException e) { log.warn("V87 application failed: {}", e.getMessage()); }
+                }
+            } catch (Exception probe) { log.warn("V87 probe failed: {}", probe.getMessage()); }
+
+            try {
+                Integer needsFrontGateRepair = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM page_version pv JOIN page_definition pd ON pd.id = pv.page_id " +
+                        "WHERE pd.code='pico:front-gate-create' AND pv.status='PUBLISHED' " +
+                        "  AND pv.body_json NOT LIKE '%WorkflowQueueList%'",
+                        Integer.class);
+                if (needsFrontGateRepair != null && needsFrontGateRepair > 0) {
+                    log.info("pico:front-gate-create still regressed to list-only body; applying V127");
+                    try { runScript(c, "db/migration/V127__front_gate_create_form.sql"); }
+                    catch (RuntimeException e) { log.warn("V127 application failed: {}", e.getMessage()); }
+                }
+            } catch (Exception probe) { log.warn("V127 probe failed: {}", probe.getMessage()); }
+
+            try {
+                Integer missingGatePassCols = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM information_schema.columns " +
+                        "WHERE table_schema=DATABASE() AND table_name='gate_pass' AND column_name='broker_name'",
+                        Integer.class);
+                if (tableExists(jdbc, "gate_pass") && (missingGatePassCols == null || missingGatePassCols == 0)) {
+                    log.info("M10 outbound dispatch/QC/weight/loading fields missing on gate_pass; applying V129");
+                    try { runScript(c, "db/migration/V129__m10_outbound_dispatch_fields.sql"); }
+                    catch (RuntimeException e) { log.warn("V129 application failed: {}", e.getMessage()); }
+                }
+            } catch (Exception probe) { log.warn("V129 probe failed: {}", probe.getMessage()); }
+
+            try {
+                Integer missingOrderLineCols = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM information_schema.columns " +
+                        "WHERE table_schema=DATABASE() AND table_name='m5_sales_order_line' AND column_name='offer'",
+                        Integer.class);
+                if (tableExists(jdbc, "m5_sales_order_line") && (missingOrderLineCols == null || missingOrderLineCols == 0)) {
+                    log.info("Loading order-sheet fields missing on m5_sales_order_line; applying V130");
+                    try { runScript(c, "db/migration/V130__order_line_loading_fields.sql"); }
+                    catch (RuntimeException e) { log.warn("V130 application failed: {}", e.getMessage()); }
+                }
+            } catch (Exception probe) { log.warn("V130 probe failed: {}", probe.getMessage()); }
+
+            try {
+                Integer needsLoadingSheetPage = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM page_version pv JOIN page_definition pd ON pd.id = pv.page_id " +
+                        "WHERE pd.code='pico:loading-order-sheet' AND pv.status='PUBLISHED' " +
+                        "  AND pv.body_json NOT LIKE '%ListView%'",
+                        Integer.class);
+                if (needsLoadingSheetPage != null && needsLoadingSheetPage > 0) {
+                    log.info("pico:loading-order-sheet still on the upload-only body; applying V131");
+                    try { runScript(c, "db/migration/V131__loading_order_sheet_page.sql"); }
+                    catch (RuntimeException e) { log.warn("V131 application failed: {}", e.getMessage()); }
+                }
+            } catch (Exception probe) { log.warn("V131 probe failed: {}", probe.getMessage()); }
+
             // V4_1 is conditional: only applies when the legacy
             // employee_details + role tables exist (production DB does,
             // testcontainer slim DB does not).

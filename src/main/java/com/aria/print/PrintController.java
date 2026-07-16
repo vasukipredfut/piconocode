@@ -4,16 +4,23 @@ import com.aria.security.TenantContext;
 import com.aria.tenant.TenantSettings;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.zxing.BarcodeFormat;
+import com.google.zxing.WriterException;
+import com.google.zxing.common.BitMatrix;
+import com.google.zxing.qrcode.QRCodeWriter;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.*;
 
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import javax.imageio.ImageIO;
 
 /**
  * Print — a first-class, config-driven feature. A printable document is a
@@ -146,8 +153,14 @@ public class PrintController {
           .append("</small></div><div class='gp-no'><div class='lbl'>").append(esc(docLabel))
           .append("</div><div class='num'>").append(esc(number)).append("</div></div></div>");
 
-        if (spec.path("showQr").asBoolean(false) && !number.isBlank())
-            sb.append("<div class='qr-placeholder'>QR: ").append(esc(number)).append("</div>");
+        if (spec.path("showQr").asBoolean(false) && !number.isBlank()) {
+            String dataUri = qrDataUri(number, 160);
+            if (dataUri != null)
+                sb.append("<div class='qr-box'><img class='qr-img' src='").append(dataUri)
+                  .append("' alt='QR ").append(esc(number)).append("'></div>");
+            else
+                sb.append("<div class='qr-placeholder'>QR: ").append(esc(number)).append("</div>");
+        }
 
         // key/value rows
         sb.append("<table class='kv'>");
@@ -242,6 +255,22 @@ public class PrintController {
         return s == null ? "" : s.replace("^", " ").replace("~", " ");
     }
 
+    /** Real, scannable QR (PNG data URI) for {@code content}, or null if encoding fails. */
+    private static String qrDataUri(String content, int size) {
+        try {
+            BitMatrix matrix = new QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, size, size);
+            BufferedImage img = new BufferedImage(size, size, BufferedImage.TYPE_INT_RGB);
+            for (int x = 0; x < size; x++)
+                for (int y = 0; y < size; y++)
+                    img.setRGB(x, y, matrix.get(x, y) ? 0x000000 : 0xFFFFFF);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            ImageIO.write(img, "png", out);
+            return "data:image/png;base64," + Base64.getEncoder().encodeToString(out.toByteArray());
+        } catch (WriterException | java.io.IOException e) {
+            return null;
+        }
+    }
+
     private static String mapValue(JsonNode rowSpec, String raw) {
         JsonNode map = rowSpec.path("map");
         if (map.isObject() && raw != null && map.has(raw)) return map.get(raw).asText();
@@ -256,6 +285,7 @@ public class PrintController {
                ".header h1{margin:0;font-size:22px;color:#0d47a1;letter-spacing:1px}.header small{color:#777;font-size:12px}" +
                ".gp-no{text-align:right}.gp-no .lbl{font-size:11px;color:#888;letter-spacing:2px}.gp-no .num{font-size:24px;font-weight:700;color:#0d47a1}" +
                ".qr-placeholder{display:inline-block;border:2px dashed #aaa;padding:18px 22px;margin:8px 0;font-family:monospace;font-size:13px;color:#666;background:#f5f5f5}" +
+               ".qr-box{margin:8px 0}.qr-img{width:160px;height:160px;image-rendering:pixelated}" +
                "table{width:100%;border-collapse:collapse;margin:12px 0}" +
                "table.kv td{padding:6px 8px;border-bottom:1px dotted #ddd;font-size:13px}table.kv td:first-child{font-weight:600;color:#555;width:40%}" +
                "table.wt th,table.lines th{background:#f0f4f8;text-align:left;padding:8px;border-bottom:1px solid #ccc;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#555}" +

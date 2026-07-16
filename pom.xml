@@ -299,6 +299,12 @@
 			<groupId>io.lettuce</groupId>
 			<artifactId>lettuce-core</artifactId>
 		</dependency>
+		<!-- Real scannable QR generation for com.aria.print.PrintController (gate pass voucher) -->
+		<dependency>
+			<groupId>com.google.zxing</groupId>
+			<artifactId>core</artifactId>
+			<version>3.5.3</version>
+		</dependency>
 
 	</dependencies>
 
