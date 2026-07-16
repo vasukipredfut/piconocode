@@ -142,6 +142,22 @@ public class M0PageSchemaInitialiser {
                 }
             } catch (Exception probe) { log.warn("V132 probe failed: {}", probe.getMessage()); }
 
+            // entity_registry.lifecycle_kind — V123/V124/V116/V120 all INSERT into
+            // this column, but the original V5 CREATE TABLE never had it and no
+            // probe here ever added it. On a DB seeded from an older baseline
+            // dump (like this one) that leaves entity_registry short a column,
+            // silently failing every later migration's entity_registry INSERT.
+            try {
+                Integer hasLifecycleKind = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM information_schema.columns " +
+                        "WHERE table_schema=DATABASE() AND table_name='entity_registry' AND column_name='lifecycle_kind'",
+                        Integer.class);
+                if (hasLifecycleKind == null || hasLifecycleKind == 0) {
+                    log.info("entity_registry.lifecycle_kind missing; adding it");
+                    jdbc.execute("ALTER TABLE entity_registry ADD COLUMN lifecycle_kind VARCHAR(32) NULL DEFAULT 'DEFINED'");
+                }
+            } catch (Exception e) { log.warn("entity_registry.lifecycle_kind backfill failed: {}", e.getMessage()); }
+
             // V123 — generic workflow->row projection config table. No prior probe
             // existed for this file; V134 below ALTERs this table, so it must exist
             // first. Missing on any DB never booted through a hand-seeded dump.
@@ -198,6 +214,26 @@ public class M0PageSchemaInitialiser {
                         Integer.class);
                 if (!tableExists(jdbc, "dispatch_vehicle_detail") || missingQueuePage == null || missingQueuePage == 0) {
                     log.info("dispatch_vehicle_detail table or pico:dispatch-parking-queue missing; applying V134");
+                    // Widen m0_workflow_projection's unique key in plain JDBC first —
+                    // ScriptUtils (the runner runScript() uses) splits on literal ';'
+                    // and does NOT understand the MySQL-CLI-only "DELIMITER $$"
+                    // convention, so a stored-procedure guard inside the .sql file
+                    // gets shredded mid-statement. V134's own script no longer
+                    // attempts this; it assumes the key is already widened by here.
+                    try {
+                        if (tableExists(jdbc, "m0_workflow_projection")) {
+                            Integer alreadyWidened = jdbc.queryForObject(
+                                    "SELECT COUNT(*) FROM information_schema.statistics " +
+                                    "WHERE table_schema=DATABASE() AND table_name='m0_workflow_projection' " +
+                                    "  AND index_name='uq_wf_projection' AND column_name='target_table'",
+                                    Integer.class);
+                            if (alreadyWidened == null || alreadyWidened == 0) {
+                                jdbc.execute("ALTER TABLE m0_workflow_projection DROP INDEX uq_wf_projection");
+                                jdbc.execute("ALTER TABLE m0_workflow_projection ADD UNIQUE KEY uq_wf_projection (tenant_id, workflow_code, target_table)");
+                                log.info("widened m0_workflow_projection.uq_wf_projection to include target_table");
+                            }
+                        }
+                    } catch (Exception e) { log.warn("widening uq_wf_projection failed: {}", e.getMessage()); }
                     try { runScript(c, "db/migration/V134__dispatch_vehicle_details_variants.sql"); }
                     catch (RuntimeException e) { log.warn("V134 application failed: {}", e.getMessage()); }
                 }

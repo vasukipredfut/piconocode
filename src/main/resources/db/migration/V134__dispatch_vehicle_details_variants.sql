@@ -23,7 +23,9 @@
 -- which allows just one target_table per workflow. Widening it to include
 -- target_table lets a SECOND projection row target dispatch_vehicle_detail
 -- for the same M10.TankerOutbound/PackLoading/FGLoading codes that already
--- project into gate_pass — no new Java, same listener, same button.
+-- project into gate_pass — same listener, same button. The key-widening
+-- ALTER itself runs in Java (M0PageSchemaInitialiser), not in this script —
+-- see the note at step 3 below for why.
 -- =====================================================================
 
 -- 1) dispatch_vehicle_detail table --------------------------------------
@@ -114,25 +116,13 @@ INSERT INTO entity_field_registry (entity_code, field_code, display_label, data_
     '#form.flow_variant_code == ''M10.PackLoading'' || #form.flow_variant_code == ''M10.FGLoading'''
   WHERE NOT EXISTS (SELECT 1 FROM entity_field_registry WHERE entity_code='DispatchVehicleDetail' AND field_code='packing_fg_stock_details');
 
--- 3) widen m0_workflow_projection's unique key so a workflow_code can
---    project into MORE THAN ONE target_table (needed for the same
---    transition to also write dispatch_vehicle_detail).
-DROP PROCEDURE IF EXISTS v134_widen_wf_projection_key;
-DELIMITER $$
-CREATE PROCEDURE v134_widen_wf_projection_key()
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.statistics
-    WHERE table_schema=DATABASE() AND table_name='m0_workflow_projection'
-      AND index_name='uq_wf_projection' AND column_name='target_table'
-  ) THEN
-    ALTER TABLE m0_workflow_projection DROP INDEX uq_wf_projection;
-    ALTER TABLE m0_workflow_projection ADD UNIQUE KEY uq_wf_projection (tenant_id, workflow_code, target_table);
-  END IF;
-END$$
-DELIMITER ;
-CALL v134_widen_wf_projection_key();
-DROP PROCEDURE v134_widen_wf_projection_key;
+-- 3) m0_workflow_projection's unique key (tenant_id, workflow_code,
+--    target_table) is widened in Java by M0PageSchemaInitialiser BEFORE
+--    this script runs — NOT here. Spring's ScriptUtils (the runner used
+--    to execute this file) splits on literal ';' and does not understand
+--    the MySQL-CLI-only "DELIMITER $$" convention, so a stored-procedure
+--    guard placed in this .sql file gets shredded mid-statement and
+--    aborts the whole script. Plain JDBC in Java has no such limitation.
 
 -- 4) second projection row per outbound workflow, targeting
 --    dispatch_vehicle_detail (in addition to whatever already targets
