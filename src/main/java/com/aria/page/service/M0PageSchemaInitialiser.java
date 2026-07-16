@@ -49,6 +49,18 @@ public class M0PageSchemaInitialiser {
 
     @Autowired private DataSource dataSource;
 
+    // Optional — Redis may be absent (tests, some envs). PageRendererService
+    // caches published page bodies at m0:page:{tenant}:{code} with a 1-hour
+    // TTL, evicted only from the publish/rollback/retire API path. Every
+    // migration in this class updates page_version.body_json via raw JDBC,
+    // bypassing that path entirely — so without this, a migration can fix a
+    // page in the DB and the Renderer keeps serving the stale cached body
+    // for up to an hour. Since this bootstrap runs once per app start, the
+    // cheap fix is to drop the whole tenant-1 page cache at the end of a run
+    // that actually changed something, rather than evict piecemeal per page.
+    @Autowired(required = false)
+    private org.springframework.data.redis.core.StringRedisTemplate redis;
+
     @Value("${earms.m0.pages.bootstrap.enabled:true}")
     private boolean enabled;
 
@@ -265,6 +277,24 @@ public class M0PageSchemaInitialiser {
                     catch (RuntimeException e) { log.warn("V134 application failed: {}", e.getMessage()); }
                 }
             } catch (Exception probe) { log.warn("V134 probe failed: {}", probe.getMessage()); }
+
+            // V142 — seed the base m0_workflow_projection rows targeting gate_pass
+            // for all 6 M10 workflows. No migration anywhere ever INSERTs these
+            // (V129/V134 only UPDATE field_map_json assuming they exist) — without
+            // them, workflow transitions succeed but never write a gate_pass row.
+            // Placed after V134 so the widened (tenant_id, workflow_code,
+            // target_table) unique key already exists for the 3 codes V134 also
+            // projects into dispatch_vehicle_detail.
+            try {
+                Integer missingGatePassProjection = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM m0_workflow_projection WHERE tenant_id=1 AND workflow_code='M10.PackUnload' AND target_table='gate_pass'",
+                        Integer.class);
+                if (missingGatePassProjection == null || missingGatePassProjection == 0) {
+                    log.info("gate_pass workflow-projection rows missing; applying V142");
+                    try { runScript(c, "db/migration/V142__seed_gate_pass_projection_rows.sql"); }
+                    catch (RuntimeException e) { log.warn("V142 application failed: {}", e.getMessage()); }
+                }
+            } catch (Exception probe) { log.warn("V142 probe failed: {}", probe.getMessage()); }
 
             // V133-V136 range: pico:dispatch-parking-scan (V135/V137/V139/V140, all
             // since removed) is not wanted — only pico:parking-scan handles parking
@@ -1008,9 +1038,24 @@ public class M0PageSchemaInitialiser {
                 }
             } catch (Exception probe) { log.warn("V91 probe failed: {}", probe.getMessage()); }
 
+            clearPageCache();
             log.info("M0 page-schema bootstrap complete");
         } catch (SQLException e) {
             log.error("M0 page-schema bootstrap FAILED — controller endpoints will 500 until repaired", e);
+        }
+    }
+
+    /** Drop every cached page body for tenant 1 — see the {@code redis} field javadoc. */
+    private void clearPageCache() {
+        if (redis == null) return;
+        try {
+            java.util.Set<String> keys = redis.keys("m0:page:1:*");
+            if (keys != null && !keys.isEmpty()) {
+                redis.delete(keys);
+                log.info("cleared {} cached page bodies (tenant 1) after bootstrap", keys.size());
+            }
+        } catch (Exception e) {
+            log.warn("page cache clear failed (Redis may be unavailable): {}", e.getMessage());
         }
     }
 
