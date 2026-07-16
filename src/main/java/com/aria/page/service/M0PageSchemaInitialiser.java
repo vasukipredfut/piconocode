@@ -142,6 +142,38 @@ public class M0PageSchemaInitialiser {
                 }
             } catch (Exception probe) { log.warn("V132 probe failed: {}", probe.getMessage()); }
 
+            // V123 — generic workflow->row projection config table. No prior probe
+            // existed for this file; V134 below ALTERs this table, so it must exist
+            // first. Missing on any DB never booted through a hand-seeded dump.
+            try {
+                if (!tableExists(jdbc, "m0_workflow_projection")) {
+                    log.info("m0_workflow_projection missing; applying V123");
+                    try { runScript(c, "db/migration/V123__workflow_projection.sql"); }
+                    catch (RuntimeException e) { log.warn("V123 application failed: {}", e.getMessage()); }
+                }
+            } catch (Exception probe) { log.warn("V123 probe failed: {}", probe.getMessage()); }
+
+            // V124/V125 — print_template (config-driven print/voucher feature).
+            // V136 below INSERTs into this table, so it must exist first.
+            try {
+                if (!tableExists(jdbc, "print_template")) {
+                    log.info("print_template missing; applying V124");
+                    try { runScript(c, "db/migration/V124__print_template.sql"); }
+                    catch (RuntimeException e) { log.warn("V124 application failed: {}", e.getMessage()); }
+                }
+            } catch (Exception probe) { log.warn("V124 probe failed: {}", probe.getMessage()); }
+            try {
+                Integer missingOutputKind = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM information_schema.columns " +
+                        "WHERE table_schema=DATABASE() AND table_name='print_template' AND column_name='output_kind'",
+                        Integer.class);
+                if (tableExists(jdbc, "print_template") && (missingOutputKind == null || missingOutputKind == 0)) {
+                    log.info("print_template.output_kind missing; applying V125");
+                    try { runScript(c, "db/migration/V125__print_template_label.sql"); }
+                    catch (RuntimeException e) { log.warn("V125 application failed: {}", e.getMessage()); }
+                }
+            } catch (Exception probe) { log.warn("V125 probe failed: {}", probe.getMessage()); }
+
             // V133 — Parking Bay Entry (per-vehicle in/out log against a bay,
             // distinct from dispatch_parking_bay master data).
             try {
@@ -153,10 +185,19 @@ public class M0PageSchemaInitialiser {
             } catch (Exception probe) { log.warn("V133 probe failed: {}", probe.getMessage()); }
 
             // V134 — Dispatch Vehicle Details as its own entity (Tanker/Packing/FG
-            // variant fields) + Parking Queue page.
+            // variant fields) + Parking Queue page. Guard on the LAST artifact the
+            // script creates (pico:dispatch-parking-queue), not just the table —
+            // a DB that already has dispatch_vehicle_detail from a prior partial
+            // run (aborted once it hit the not-yet-existent m0_workflow_projection
+            // ALTER) must still re-run the rest; every statement in V134 is its own
+            // idempotent IF NOT EXISTS/WHERE NOT EXISTS guard, so re-running in full
+            // is safe.
             try {
-                if (!tableExists(jdbc, "dispatch_vehicle_detail")) {
-                    log.info("dispatch_vehicle_detail table missing; applying V134");
+                Integer missingQueuePage = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM page_definition WHERE code='pico:dispatch-parking-queue'",
+                        Integer.class);
+                if (!tableExists(jdbc, "dispatch_vehicle_detail") || missingQueuePage == null || missingQueuePage == 0) {
+                    log.info("dispatch_vehicle_detail table or pico:dispatch-parking-queue missing; applying V134");
                     try { runScript(c, "db/migration/V134__dispatch_vehicle_details_variants.sql"); }
                     catch (RuntimeException e) { log.warn("V134 application failed: {}", e.getMessage()); }
                 }
