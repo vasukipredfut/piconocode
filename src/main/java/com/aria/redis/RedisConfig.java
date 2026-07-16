@@ -43,6 +43,9 @@ public class RedisConfig {
     @Value("${earms.cache.ttl.master-seconds:3600}")
     private long masterTtlSeconds;
 
+    @Value("${earms.cache.clear-on-startup:true}")
+    private boolean clearOnStartup;
+
     /**
      * Cache names registered up-front so {@code @Cacheable} can reference them
      * with per-cache TTLs (rather than the global default).
@@ -118,6 +121,13 @@ public class RedisConfig {
     @Bean
     public RedisBootProbe redisBootProbe(RedisConnectionFactory connectionFactory) {
         return new RedisBootProbe(connectionFactory);
+    }
+
+    @Bean
+    public RedisStartupCacheClearer redisStartupCacheClearer(RedisConnectionFactory connectionFactory) {
+        RedisStartupCacheClearer clearer = new RedisStartupCacheClearer(connectionFactory, clearOnStartup);
+        clearer.clearIfEnabled();
+        return clearer;
     }
 
     private static ObjectMapper buildCacheObjectMapper() {
