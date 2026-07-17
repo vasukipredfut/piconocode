@@ -11,9 +11,17 @@ import java.util.Optional;
 @Repository
 public interface WorkflowDefinitionRepository extends JpaRepository<WorkflowDefinition, Long> {
 
+    /**
+     * Latest PUBLISHED for a code, resolving tenant-override -> global (-1).
+     *
+     * <p>Ordered tenant-first (real ids are > -1), then newest version. So a
+     * tenant that has forked a flow gets their own; everyone else inherits the
+     * product flow. Without the -1 arm, moving the catalogue global would make
+     * startInstance fail for every workflow.
+     */
     @Query("SELECT w FROM WorkflowDefinition w " +
-            "WHERE w.tenantId = :tenantId AND w.code = :code AND w.status = 'PUBLISHED' " +
-            "ORDER BY w.version DESC")
+            "WHERE w.tenantId IN (:tenantId, -1) AND w.code = :code AND w.status = 'PUBLISHED' " +
+            "ORDER BY w.tenantId DESC, w.version DESC")
     java.util.List<WorkflowDefinition> findLatestPublished(
             @Param("tenantId") Long tenantId, @Param("code") String code);
 
@@ -21,5 +29,13 @@ public interface WorkflowDefinitionRepository extends JpaRepository<WorkflowDefi
         return findLatestPublished(tenantId, code).stream().findFirst();
     }
 
+    /**
+     * Exact definition by (owner, code, version).
+     *
+     * <p>The owner is the tenant that OWNS the definition (-1 for a product flow,
+     * N for a tenant's fork) — not the tenant running the instance. An instance
+     * records its owner at start so it keeps resolving the same body even after
+     * the tenant later forks the flow and starts its own version numbering.
+     */
     Optional<WorkflowDefinition> findByTenantIdAndCodeAndVersion(Long tenantId, String code, Integer version);
 }

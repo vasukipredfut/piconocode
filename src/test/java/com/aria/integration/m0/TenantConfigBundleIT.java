@@ -1,6 +1,7 @@
 package com.aria.integration.m0;
 
 import com.aria._base.EarmsContainersExtension;
+import com.aria._base.TenantConfigFixture;
 import com.aria.tenant.TenantConfigBundleService;
 import com.aria.redis.RedisConfig;
 import org.junit.jupiter.api.DisplayName;
@@ -12,7 +13,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
-import org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration;
 import org.springframework.boot.autoconfigure.freemarker.FreeMarkerAutoConfiguration;
 import org.springframework.boot.autoconfigure.security.servlet.SecurityAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -61,7 +61,7 @@ class TenantConfigBundleIT {
     @Order(1)
     @DisplayName("apply Pico bundle: positive counts across all sections")
     void firstApply() {
-        TenantConfigBundleService.ApplyResult r = service.applyPicoBundle();
+        TenantConfigBundleService.ApplyResult r = service.apply(1L, TenantConfigFixture.sampleBundle());
         // The V7 + V7_2 Flyway scripts seed some content at boot; service
         // applies the remainder. Workflows: TenantConfig bundle has 10
         // workflowDefinitions; V7 seeds 10 (Tanker v2 + 9 others); service
@@ -94,7 +94,7 @@ class TenantConfigBundleIT {
     @Order(2)
     @DisplayName("re-apply Pico bundle: idempotent — zero new rows in any section")
     void secondApply() {
-        TenantConfigBundleService.ApplyResult r = service.applyPicoBundle();
+        TenantConfigBundleService.ApplyResult r = service.apply(1L, TenantConfigFixture.sampleBundle());
         assertThat(r.rolesAdded).isZero();
         assertThat(r.workflowsAdded).isZero();
         assertThat(r.fieldsAdded).isZero();
@@ -106,7 +106,6 @@ class TenantConfigBundleIT {
     // ---- slim app -------------------------------------------------------
     @SpringBootConfiguration
     @EnableAutoConfiguration(exclude = {
-            FlywayAutoConfiguration.class,
             FreeMarkerAutoConfiguration.class,
             SecurityAutoConfiguration.class
     })

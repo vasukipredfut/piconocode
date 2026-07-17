@@ -14,12 +14,11 @@ import java.util.Map;
 /**
  * REST surface for tenant-configuration bundle application.
  *
- * <p>Two endpoints:
- * <ul>
- *   <li>{@code POST /api/m0/tenant-config/apply} — body {tenantId,bundleJson}</li>
- *   <li>{@code POST /api/m0/tenant-config/apply-pico} — loads the bundled
- *       Pico bundle from classpath and applies for tenant_id=1</li>
- * </ul>
+ * <p>{@code POST /api/m0/tenant-config/apply} — body {tenantId, bundleJson}.
+ *
+ * <p>One endpoint, deliberately. A customer's TENANT-CONFIG is supplied by the
+ * caller and applied to the tenant they name, so onboarding any customer is the
+ * same call with a different payload. Nothing customer-specific ships in the jar.
  */
 @RestController
 @RequestMapping("/api/m0/tenant-config")
@@ -42,13 +41,6 @@ public class TenantConfigBundleController {
         }
         JsonNode node = json.valueToTree(req.bundleJson);
         TenantConfigBundleService.ApplyResult r = service.apply(req.tenantId, node);
-        return ResponseEntity.ok(toMap(r));
-    }
-
-    @PostMapping("/apply-pico")
-    @Operation(summary = "Apply the bundled Pico TENANT-CONFIG for tenant_id=1.")
-    public ResponseEntity<Map<String, Object>> applyPico() {
-        TenantConfigBundleService.ApplyResult r = service.applyPicoBundle();
         return ResponseEntity.ok(toMap(r));
     }
 

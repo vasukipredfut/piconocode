@@ -19,7 +19,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
-import org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration;
 import org.springframework.boot.autoconfigure.freemarker.FreeMarkerAutoConfiguration;
 import org.springframework.boot.autoconfigure.security.servlet.SecurityAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -198,7 +197,6 @@ class WorkflowEngineIT {
     // ============================================================ slim app
     @SpringBootConfiguration
     @EnableAutoConfiguration(exclude = {
-            FlywayAutoConfiguration.class,
             FreeMarkerAutoConfiguration.class,
             SecurityAutoConfiguration.class
     })

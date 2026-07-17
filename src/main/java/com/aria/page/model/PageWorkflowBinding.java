@@ -15,7 +15,7 @@ import java.time.Instant;
  *
  * <p>Examples:
  * <ul>
- *   <li>{@code pico:weighment-capture} -> {@code M10.TankerInbound /
+ *   <li>{@code aria:weighment-capture} -> {@code M10.TankerInbound /
  *       WB_LOADED_WEIGHED} as INPUT — i.e. when the workflow advances to
  *       that step, the workflow engine looks up this page and serves it.</li>
  *   <li>OUTPUT bindings let a downstream step read submitted data via

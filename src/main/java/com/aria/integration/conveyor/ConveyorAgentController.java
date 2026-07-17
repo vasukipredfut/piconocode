@@ -200,7 +200,7 @@ public class ConveyorAgentController {
 
     private static String computeShiftNo(java.time.LocalDate d) {
         // vvscwprint: 3 shifts/day, (3*(day-1))+factor where factor depends
-        // on hour-of-day. Same formula so labels match Pico's existing prints.
+        // on hour-of-day. Same formula the plant's existing label printers use.
         int hour = java.time.LocalTime.now().getHour();
         int factor = (hour >= 5 && hour < 14) ? 1
                     : (hour >= 14 && hour < 22) ? 2 : 3;
@@ -252,7 +252,7 @@ public class ConveyorAgentController {
         } catch (EmptyResultDataAccessException e) {
             return ResponseEntity.status(404).body(Map.of(
                 "error","agent_not_registered",
-                "message","Register agent at /configurable/pico:agents first"));
+                "message","Register agent at /configurable/aria:agents first"));
         }
         // Active acceptance scopes for this agent — include flow_steps_json
         List<Map<String, Object>> scopes;

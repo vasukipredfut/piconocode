@@ -34,7 +34,10 @@ class DataSourceQueryServiceTest {
     void setUp() {
         registry = mock(EntityRegistryService.class);
         jdbc = mock(JdbcTemplate.class);
-        svc = new DataSourceQueryService(registry, jdbc);
+        // m0_vendor carries a tenant_id; city/state are shared lookups that do
+        // not. In production this membership is read from information_schema.
+        svc = new DataSourceQueryService(registry, jdbc,
+                com.aria.security.TenantScope.forTables("m0_vendor"));
         com.aria.security.TenantContext.set(1L);
 
         // Common entity defs
@@ -69,7 +72,7 @@ class DataSourceQueryServiceTest {
                 s.contains("FROM m0_vendor")
                 && s.contains("m0_vendor.id")
                 && s.contains("m0_vendor.name")
-                && s.contains("WHERE m0_vendor.tenant_id = ?")
+                && s.contains("WHERE m0_vendor.tenant_id IN (?, -1)")
                 && s.contains("LIMIT 25")), any(Object[].class));
     }
 

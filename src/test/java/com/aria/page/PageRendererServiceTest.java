@@ -48,7 +48,7 @@ class PageRendererServiceTest {
         PageDefinition d = new PageDefinition();
         d.setId(10L); d.setTenantId(1L); d.setCode("p"); d.setTitle("T");
         d.setStatus("PUBLISHED"); d.setCurrentVersionId(20L);
-        when(defRepo.findByTenantIdAndCode(1L, "p")).thenReturn(Optional.of(d));
+        when(defRepo.resolveByCode(1L, "p")).thenReturn(Optional.of(d));
         PageVersion v = PageVersion.builder().id(20L).pageId(10L).version(3)
                 .status("PUBLISHED").bodyJson("{\"layout\":{}}").build();
         when(versionRepo.findById(20L)).thenReturn(Optional.of(v));
@@ -70,7 +70,7 @@ class PageRendererServiceTest {
         PageDefinition d = new PageDefinition();
         d.setId(10L); d.setTenantId(1L); d.setCode("p"); d.setTitle("T");
         d.setStatus("PUBLISHED"); d.setCurrentVersionId(20L);
-        when(defRepo.findByTenantIdAndCode(1L, "p")).thenReturn(Optional.of(d));
+        when(defRepo.resolveByCode(1L, "p")).thenReturn(Optional.of(d));
         PageVersion v = PageVersion.builder().id(20L).pageId(10L).version(3)
                 .status("PUBLISHED").bodyJson("{\"a\":1}").build();
         when(versionRepo.findById(20L)).thenReturn(Optional.of(v));
@@ -95,7 +95,7 @@ class PageRendererServiceTest {
         when(valueOps.get(any())).thenReturn(null);
         PageDefinition d = new PageDefinition();
         d.setId(10L); d.setCode("p"); d.setStatus("RETIRED"); d.setCurrentVersionId(20L);
-        when(defRepo.findByTenantIdAndCode(1L, "p")).thenReturn(Optional.of(d));
+        when(defRepo.resolveByCode(1L, "p")).thenReturn(Optional.of(d));
         assertThat(svc.loadPublishedFor(1L, "p")).isEmpty();
     }
 
@@ -103,7 +103,7 @@ class PageRendererServiceTest {
     void unknownPageReturnsEmpty() {
         when(redis.opsForValue()).thenReturn(valueOps);
         when(valueOps.get(any())).thenReturn(null);
-        when(defRepo.findByTenantIdAndCode(1L, "p")).thenReturn(Optional.empty());
+        when(defRepo.resolveByCode(1L, "p")).thenReturn(Optional.empty());
         assertThat(svc.loadPublishedFor(1L, "p")).isEmpty();
     }
 

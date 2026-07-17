@@ -6,14 +6,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import javax.sql.DataSource;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -21,13 +18,13 @@ import java.util.List;
 /**
  * Applies a tenant-configuration bundle JSON to the live M0 substrate.
  *
- * <p>The bundle shape follows {@code docs/customers/pico-power/TENANT-CONFIG.json}.
- * Each section is upserted idempotently: re-applying the same bundle is a
+ * <p>Each section is upserted idempotently: re-applying the same bundle is a
  * cheap no-op (counts are reported as 0-new).
  *
- * <p>This is the runtime mirror of the V7 / V7_1 / V7_2 Flyway scripts:
- * on a fresh DB the scripts seed the same content; on a running tenant the
- * service applies updates pushed from the admin UI.
+ * <p>The bundle is always supplied by the caller and applied to the tenant they
+ * name. No customer's config ships inside the jar — onboarding any customer is
+ * the same call with a different payload, which is what keeps one build usable
+ * for every deployment.
  */
 @Service
 public class TenantConfigBundleService {
@@ -68,19 +65,6 @@ public class TenantConfigBundleService {
         public int total() {
             return rolesAdded + workflowsAdded + fieldsAdded
                  + layoutsAdded + viewsAdded + notificationsAdded;
-        }
-    }
-
-    /** Convenience: load the bundled Pico file from classpath and apply. */
-    @Transactional("m0PageTransactionManager")
-    public ApplyResult applyPicoBundle() {
-        try (InputStream is = new ClassPathResource(
-                "customers/pico-power/TENANT-CONFIG.json").getInputStream()) {
-            byte[] bytes = is.readAllBytes();
-            JsonNode bundle = json.readTree(new String(bytes, StandardCharsets.UTF_8));
-            return apply(1L, bundle);
-        } catch (Exception e) {
-            throw new IllegalStateException("Cannot load Pico bundle from classpath", e);
         }
     }
 

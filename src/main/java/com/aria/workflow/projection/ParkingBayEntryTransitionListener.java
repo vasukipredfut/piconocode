@@ -12,14 +12,14 @@ import java.util.Map;
 
 /**
  * Parking bay in/out log (dispatch_parking_bay_entry) driven by
- * pico:parking-scan. Kept as its own listener, separate from
+ * aria:parking-scan. Kept as its own listener, separate from
  * WorkflowProjectionListener, because the write here is genuinely
  * conditional (open row exists -> close it with out_time; no open row ->
  * insert a new one with in_time) — the generic config-driven projection
  * can only map submitted fields onto columns unconditionally, it can't
  * express "only touch this column sometimes."
  *
- * <p>V143 removed the page's manual Direction field: pico:parking-scan is
+ * <p>V143 removed the page's manual Direction field: aria:parking-scan is
  * bound (V7_14) to four M10.TankerInbound transitions
  * (GATE_PASS_CREATED-&gt;PARKING_IN, QC_APPROVED-&gt;PARKING_OUT_AFTER_QC,
  * WEIGHMENT_EMPTY-&gt;PARKING_IN_AFTER_UNLOAD,
@@ -35,7 +35,7 @@ import java.util.Map;
  * this listener runs), and gate_pass already has those columns from when
  * the pass was created.
  *
- * <p>Not scoped to a single workflow code — pico:parking-scan is reused
+ * <p>Not scoped to a single workflow code — aria:parking-scan is reused
  * across all 6 M10 gate-pass workflows (TankerInbound, PackUnload,
  * ReturnStockIn, TankerOutbound, PackLoading, FGLoading), so this only
  * gates on a submitted gpNumber/gp_number key being present.

@@ -27,7 +27,7 @@ import java.util.Map;
  * </ul>
  *
  * <p>Config: {@code { "brokerUrl": "tcp://factory.local:1883",
- *   "clientId": "earms-pico", "topicBase": "factory/conveyor", "dryRun": true }}.
+ *   "clientId": "earms-edge", "topicBase": "factory/conveyor", "dryRun": true }}.
  */
 @Component
 public class ConveyorMqttAdapter implements IntegrationAdapter {

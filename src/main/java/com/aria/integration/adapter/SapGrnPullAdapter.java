@@ -100,7 +100,7 @@ public class SapGrnPullAdapter implements IntegrationAdapter {
             Map<String, Object> body = new HashMap<>();
             body.put("dryRun", true);
             body.put("sapDocNo", docNo);
-            body.put("sapPlant", p.getOrDefault("sapPlant", "PICO-CBE"));
+            body.put("sapPlant", p.getOrDefault("sapPlant", ""));
             body.put("suggestedGrnNumber", grnNo);
             body.put("vendor", "TESTRO Industries (auto-pulled)");
             body.put("lines", List.of(

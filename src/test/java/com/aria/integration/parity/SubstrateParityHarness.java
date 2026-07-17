@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * </ol>
  *
  * <p>Wiring: reuses {@link M0SubstrateTestApp} (already boots green across the
- * IT suite; {@code M0PageSchemaInitialiser} builds the real
+ * IT suite; Flyway (V1 + V2) builds the real
  * {@code entity_registry} / {@code entity_field_registry} tables). The
  * controller is a plain class taking a {@link JdbcTemplate}, so we construct it
  * directly from the test template — no new Spring wiring, no risk to sibling ITs.

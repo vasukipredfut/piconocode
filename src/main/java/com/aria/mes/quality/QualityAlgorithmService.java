@@ -22,7 +22,7 @@ import java.util.Map;
  * </pre>
  *
  * <p>Also exposes a REST endpoint that runs the algorithm against the
- * stock-movement ledger (filtering by item or bin) so the {@code pico:rpt-quality}
+ * stock-movement ledger (filtering by item or bin) so the {@code aria:rpt-quality}
  * page's "Run Algorithm" action has a real backend to call.
  */
 @Service

@@ -19,7 +19,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
-import org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration;
 import org.springframework.boot.autoconfigure.freemarker.FreeMarkerAutoConfiguration;
 import org.springframework.boot.autoconfigure.security.servlet.SecurityAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -50,9 +49,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * SQL-Server pool) — full-boot IT for the page substrate will land with
  * the {@code TASK_M0_TENANT_AUTH} task.
  *
- * <p>The {@link com.aria.page.service.M0PageSchemaInitialiser} runs at
- * context start and applies V3 / V3_2 against the fresh testcontainer DB,
- * so we get the same schema + the 7 Pico pages seeded for free.
+ * <p>Schema comes from Flyway: the container starts empty, so V1 (schema)
+ * and V2 (the Aria product catalogue at tenant_id = -1) both run from
+ * scratch. That is deliberately the SAME path a new customer install
+ * takes, so an IT failing here means a customer install would fail too.
+ * It replaces M0PageSchemaInitialiser, which used to build this schema by
+ * probing for data and re-running migrations it guessed were missing.
  */
 @ExtendWith({SpringExtension.class, EarmsContainersExtension.class})
 @SpringBootTest(classes = PageDefinitionIT.PageSubstrateTestApp.class)
@@ -213,7 +215,6 @@ class PageDefinitionIT {
     // ---- Slim Spring application for the M0 page substrate. -----------
     @SpringBootConfiguration
     @EnableAutoConfiguration(exclude = {
-            FlywayAutoConfiguration.class,
             FreeMarkerAutoConfiguration.class,
             SecurityAutoConfiguration.class
     })

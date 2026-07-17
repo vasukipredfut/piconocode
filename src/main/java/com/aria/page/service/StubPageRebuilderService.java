@@ -16,7 +16,7 @@ import java.util.*;
 /**
  * Replaces "stub" workflow-step pages with real Inbox-style list bodies.
  *
- * <p>Many V1 seed pages (pico:mr-approve, pico:grn-qc, pico:dispatch-load-entry, …)
+ * <p>Many V1 seed pages (aria:mr-approve, aria:grn-qc, aria:dispatch-load-entry, …)
  * were stamped as a single-Section Markdown placeholder — "click here to approve".
  * That made them functionally useless: the user opened them and saw a paragraph,
  * not a list of pending records with action buttons.

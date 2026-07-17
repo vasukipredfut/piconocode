@@ -5,6 +5,7 @@ import com.aria.page.dao.PageVersionRepository;
 import com.aria.page.dto.PageResponse;
 import com.aria.page.model.PageDefinition;
 import com.aria.page.model.PageVersion;
+import com.aria.security.TenantContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -12,6 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Read-path for the runtime Renderer.
@@ -60,8 +62,9 @@ public class PageRendererService {
             return Optional.of(deserialise(cached));
         }
 
-        // Miss: hit the DB.
-        Optional<PageDefinition> defOpt = defRepo.findByTenantIdAndCode(tenantId, code);
+        // Miss: hit the DB. Resolve tenant-override -> global product page, so a
+        // tenant inherits the whole catalogue and only owns what they changed.
+        Optional<PageDefinition> defOpt = defRepo.resolveByCode(tenantId, code);
         if (defOpt.isEmpty()) return Optional.empty();
         PageDefinition def = defOpt.get();
         if ("RETIRED".equals(def.getStatus()) || def.getCurrentVersionId() == null) {
@@ -91,10 +94,34 @@ public class PageRendererService {
         return Optional.of(resp);
     }
 
-    /** Drop the cached entry. Called on publish, rollback, retire. */
+    /**
+     * Drop the cached entry. Called on publish, rollback, retire.
+     *
+     * <p>Editing a GLOBAL ({@link TenantContext#GLOBAL_TENANT_ID}) page must
+     * invalidate that code for <em>every</em> tenant, not just one: each tenant
+     * caches its own <em>resolved</em> view under {@code m0:page:{tenant}:{code}},
+     * and a tenant with no override is caching the global body. Evicting only
+     * key -1 would leave every tenant serving the pre-edit page for up to the
+     * 1-hour TTL — the same staleness class that made direct-SQL edits look like
+     * they had silently failed.
+     */
     public void evict(Long tenantId, String code) {
         try {
-            redis.delete(cacheKey(tenantId, code));
+            if (TenantContext.GLOBAL_TENANT_ID.equals(tenantId)) {
+                evictAllTenants(code);
+            } else {
+                redis.delete(cacheKey(tenantId, code));
+            }
+        } catch (RuntimeException ignored) {
+            // tolerate Redis outage; next read will repopulate.
+        }
+    }
+
+    /** Evict one page code across every tenant that has it cached. */
+    public void evictAllTenants(String code) {
+        try {
+            Set<String> keys = redis.keys("m0:page:*:" + code);
+            if (keys != null && !keys.isEmpty()) redis.delete(keys);
         } catch (RuntimeException ignored) {
             // tolerate Redis outage; next read will repopulate.
         }

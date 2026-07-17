@@ -29,7 +29,7 @@ import java.util.Map;
  *
  * <p>Config:
  * <pre>{@code
- * { "baseUrl": "http://localhost:9000", "companyName": "PICO POWER PROJECT",
+ * { "baseUrl": "http://localhost:9000", "companyName": "ACME FOODS LTD",
  *   "dryRun": true }
  * }</pre>
  *

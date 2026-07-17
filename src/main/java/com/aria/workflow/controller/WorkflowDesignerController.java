@@ -106,12 +106,29 @@ public class WorkflowDesignerController {
     public Map<String, Object> putBody(@PathVariable String code, @RequestBody Map<String, Object> body) {
         assertSafe(code);
         try {
-            String bodyJson = json.writeValueAsString(body.get("body"));
+            String bodyJson = json.writeValueAsString(unwrapWorkflow(body));
             String rationale = str(body.getOrDefault("rationale", "via designer"));
             return publish(code, bodyJson, rationale);
         } catch (Exception e) {
             return Map.of("ok", false, "error", e.getMessage());
         }
+    }
+
+    /**
+     * Accepts either shape of PUT payload:
+     * <pre>
+     *   {"body": {"initialState":..., "states":[...]}, "rationale": "..."}   // wrapped (canonical, mirrors GET)
+     *   {"initialState":..., "states":[...], "transitions":[...]}            // bare workflow at top level
+     * </pre>
+     * The bare shape is what the visual designer sends. Previously it fell through
+     * {@code body.get("body")} -> null -> the literal string "null", which published
+     * a bricked definition while reporting success.
+     */
+    private Object unwrapWorkflow(Map<String, Object> body) {
+        if (body.get("body") != null) return body.get("body");
+        Map<String, Object> bare = new LinkedHashMap<>(body);
+        bare.remove("rationale");
+        return bare;
     }
 
     // ====================================================================
@@ -242,18 +259,79 @@ public class WorkflowDesignerController {
     }
 
     private Map<String, Object> publish(String code, String bodyJson, String rationale) {
+        // Validate BEFORE touching any existing row. A malformed body must never be
+        // able to supersede a working definition.
+        try {
+            assertPublishable(bodyJson);
+        } catch (IllegalArgumentException bad) {
+            return Map.of("ok", false, "error", "Refusing to publish: " + bad.getMessage());
+        }
         try {
             Integer next = jdbc.queryForObject(
                 "SELECT COALESCE(MAX(version),0) + 1 FROM workflow_definition WHERE code=?",
                 Integer.class, code);
-            // Mark prior versions as superseded
-            jdbc.update("UPDATE workflow_definition SET status='SUPERSEDED' WHERE code=? AND status='PUBLISHED'", code);
+            // Insert FIRST, then demote the others. If the insert fails, nothing was
+            // superseded and the prior version still serves. (The reverse order could
+            // leave the workflow with zero PUBLISHED rows, which bricks startInstance.)
             jdbc.update(
                 "INSERT INTO workflow_definition (tenant_id, code, version, status, body_json) " +
                 "VALUES (1, ?, ?, 'PUBLISHED', ?)", code, next, bodyJson);
+            jdbc.update(
+                "UPDATE workflow_definition SET status='SUPERSEDED' " +
+                "WHERE code=? AND status='PUBLISHED' AND version <> ?", code, next);
             return Map.of("ok", true, "code", code, "version", next, "rationale", rationale);
         } catch (Exception ex) {
             return Map.of("ok", false, "error", ex.getMessage());
+        }
+    }
+
+    /**
+     * Structural gate for a workflow body. Rejects the shapes that the engine cannot
+     * run — chiefly the literal "null" the visual designer used to publish, but also
+     * bodies whose transitions point at states that were never declared.
+     *
+     * @throws IllegalArgumentException with an admin-readable reason
+     */
+    private void assertPublishable(String bodyJson) {
+        JsonNode root;
+        try {
+            root = json.readTree(bodyJson);
+        } catch (Exception e) {
+            throw new IllegalArgumentException("body is not valid JSON (" + e.getMessage() + ")");
+        }
+        if (root == null || root.isNull() || !root.isObject())
+            throw new IllegalArgumentException("body must be a JSON object, got: " + bodyJson);
+
+        JsonNode statesNode = root.get("states");
+        if (statesNode == null || !statesNode.isArray() || statesNode.isEmpty())
+            throw new IllegalArgumentException("body.states must be a non-empty array");
+
+        Set<String> codes = new LinkedHashSet<>();
+        for (JsonNode s : statesNode) {
+            String c = s.path("code").asText(null);
+            if (c == null || c.isBlank())
+                throw new IllegalArgumentException("every state needs a non-blank code");
+            codes.add(c);
+        }
+
+        String initial = root.path("initialState").asText(null);
+        if (initial == null || initial.isBlank())
+            throw new IllegalArgumentException("body.initialState is required");
+        if (!codes.contains(initial))
+            throw new IllegalArgumentException("initialState '" + initial + "' is not a declared state");
+
+        JsonNode trans = root.get("transitions");
+        if (trans != null && !trans.isNull()) {
+            if (!trans.isArray())
+                throw new IllegalArgumentException("body.transitions must be an array");
+            for (JsonNode t : trans) {
+                String from = t.path("from").asText(null);
+                String to = t.path("to").asText(null);
+                if (from == null || !codes.contains(from))
+                    throw new IllegalArgumentException("transition.from '" + from + "' is not a declared state");
+                if (to == null || !codes.contains(to))
+                    throw new IllegalArgumentException("transition.to '" + to + "' is not a declared state");
+            }
         }
     }
 

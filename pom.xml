@@ -122,12 +122,17 @@
 			<artifactId>mssql-jdbc</artifactId>
 			<scope>runtime</scope>
 		</dependency>
-		<!-- Schema migrations. Wired but DORMANT (spring.flyway.enabled=false).
-		     Enable only once the primary datasource is MySQL (see application.properties).
-		     On Spring Boot 3 / Flyway 9+, also add org.flywaydb:flyway-mysql. -->
+		<!-- Schema migrations. ACTIVE (spring.flyway.enabled=true).
+		     flyway-mysql carries the MySQL/MariaDB dialect, which Flyway 9+ split
+		     out of core: without it, Flyway starts and then fails to recognise the
+		     database at boot. -->
 		<dependency>
 			<groupId>org.flywaydb</groupId>
 			<artifactId>flyway-core</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-mysql</artifactId>
 		</dependency>
 
 

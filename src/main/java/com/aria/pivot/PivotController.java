@@ -1,5 +1,6 @@
 package com.aria.pivot;
 
+import com.aria.security.TenantContext;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.*;
 
@@ -46,13 +47,19 @@ public class PivotController {
         String measure = String.valueOf(req.getOrDefault("measureField", "id"));
         String aggKind = String.valueOf(req.getOrDefault("aggKind", "SUM")).toUpperCase();
         if (!ALLOWED_AGGS.contains(aggKind)) aggKind = "SUM";
-        long tenantId = req.containsKey("tenantId") ? ((Number) req.get("tenantId")).longValue() : 1L;
+        // Tenant comes from the authenticated context, never the request body.
+        // This previously read `req.get("tenantId")`, so any caller could pivot
+        // over another firm's data simply by naming their id — client-controlled
+        // tenancy, the exact thing tenant scoping exists to prevent. It defaulted
+        // to 1 when absent, which is why it never looked broken in a single-tenant
+        // world.
+        long tenantId = TenantContext.get();
 
         String table;
         try {
             table = jdbc.queryForObject(
-                    "SELECT table_name FROM entity_registry WHERE code=?",
-                    String.class, entity);
+                    "SELECT table_name FROM entity_registry WHERE code=? AND tenant_id IN (?, -1) ORDER BY tenant_id DESC LIMIT 1",
+                    String.class, entity, tenantId);
         } catch (Exception e) {
             return Map.of("error", "Unknown entity " + entity);
         }

@@ -45,6 +45,21 @@ public class WorkflowInstance {
     @Column(name = "workflow_version", nullable = false)
     private Integer workflowVersion;
 
+    /**
+     * Tenant that OWNS the definition this instance runs: -1 for a product flow,
+     * N for a tenant's own fork. Not the same as {@link #tenantId}, which is the
+     * tenant the instance belongs to.
+     *
+     * <p>Why it exists: the engine pins (code, version) at start and re-reads
+     * that exact definition on every transition. Resolving that pin by the
+     * INSTANCE's tenant breaks twice — a global (-1) flow is never found at all,
+     * and once a tenant forks the flow their fork restarts version numbering, so
+     * "v3" would silently resolve to a completely different state machine
+     * mid-flight. Pinning the owner makes the reference unambiguous.
+     */
+    @Column(name = "workflow_owner_tenant_id")
+    private Long workflowOwnerTenantId;
+
     @WorkflowDriven(reason = "engine-only mutation; ArchUnit Rule G")
     @Column(name = "current_state", nullable = false, length = 64)
     private String currentState;

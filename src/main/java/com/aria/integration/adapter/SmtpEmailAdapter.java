@@ -30,7 +30,7 @@ import java.util.Properties;
  *   "useTls": true,                    // STARTTLS, default true
  *   "useSsl": false,                   // SMTPS, default false
  *   "from": "noreply@picopower.in",    // required
- *   "fromName": "Pico Power Project",  // optional display name
+ *   "fromName": "Acme Foods Ltd",     // optional display name
  *   "dryRun": true                     // log only, default false
  * }
  * }</pre>

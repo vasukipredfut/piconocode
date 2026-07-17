@@ -52,17 +52,31 @@ public class DataSourceQueryService {
     private static final Logger log = LoggerFactory.getLogger(DataSourceQueryService.class);
 
     /** Allowed operator codes. Anything else triggers a 422. */
+    /**
+     * Allowlisted filter ops, lower-cased.
+     *
+     * <p>MUST stay lower-case: compileFilter lower-cases the incoming op before
+     * testing membership, so a camelCase entry here can never match. The switch
+     * below is already lower-cased; this set was not, which silently killed the
+     * four camelCase ops -- startsWith, endsWith, isNull, isNotNull -- for every
+     * page that used them. They were allowlisted, implemented, and unreachable,
+     * and the only symptom was "Unsupported filter op" on the one page that
+     * happened to use one.
+     */
     private static final Set<String> OPS = Set.of(
             "eq","ne","lt","lte","gt","gte","in","nin",
-            "contains","startsWith","endsWith","isNull","isNotNull","between");
+            "contains","startswith","endswith","isnull","isnotnull","between");
 
     /** Field codes are letters/digits/underscores; alias-prefixed via a dot.
      *  This guards against SQL injection through field codes (Schema V2 §3.3). */
     private static final Pattern IDENT = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?");
 
     /** Tables that have a {@code tenant_id} column — informs auto-scoping. */
-    private static final Set<String> TENANT_SCOPED = Set.of(
-            "m0_vendor","page_definition","workflow_instance","workflow_definition","tenant_list_view");
+    // The hand-maintained TENANT_SCOPED allowlist that used to live here named 5
+    // tables; the schema has 146 with a tenant_id. Everything it omitted was
+    // silently unscoped. TenantScope derives membership from the schema itself,
+    // so a new tenant table is protected the moment it is created.
+    @Autowired private com.aria.security.TenantScope tenantScope;
 
     @Autowired private EntityRegistryService registry;
 
@@ -74,9 +88,11 @@ public class DataSourceQueryService {
     }
 
     /** Test-only constructor. */
-    DataSourceQueryService(EntityRegistryService registry, JdbcTemplate jdbc) {
+    DataSourceQueryService(EntityRegistryService registry, JdbcTemplate jdbc,
+                           com.aria.security.TenantScope tenantScope) {
         this.registry = registry;
         this.jdbc = jdbc;
+        this.tenantScope = tenantScope;
     }
 
     public DataSourceQueryService() {}
@@ -124,9 +140,10 @@ public class DataSourceQueryService {
         List<String> whereClauses = new ArrayList<>();
 
         // Auto tenant-scope (root entity).
-        if (TENANT_SCOPED.contains(root.getTableName())) {
-            whereClauses.add(root.getTableName() + ".tenant_id = ?");
-            args.add(TenantContext.get());
+        String rootScope = tenantScope.readPredicate(root.getTableName(), root.getTableName());
+        if (!rootScope.isEmpty()) {
+            whereClauses.add(rootScope);
+            args.add(tenantScope.arg());
         }
         // User-supplied filter.
         if (spec.getFilter() != null) {
@@ -372,9 +389,8 @@ public class DataSourceQueryService {
         sql.append("SELECT COUNT(*) FROM ").append(rootTable);
         appendJoins(sql, spec, rootTable);
         List<String> wc = new ArrayList<>();
-        if (TENANT_SCOPED.contains(rootTable)) {
-            wc.add(rootTable + ".tenant_id = ?"); args.add(TenantContext.get());
-        }
+        String cntScope = tenantScope.readPredicate(rootTable, rootTable);
+        if (!cntScope.isEmpty()) { wc.add(cntScope); args.add(tenantScope.arg()); }
         if (spec.getFilter() != null) {
             String fc = compileFilter(spec.getFilter(), rootTable, aliasToTable, args, bindings);
             if (fc != null) wc.add(fc);

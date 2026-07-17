@@ -1,5 +1,6 @@
 package com.aria.page.controller;
 
+import com.aria.security.TenantContext;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -35,8 +36,16 @@ public class PageWorkflowLookupController {
 
     @GetMapping("/{code}/workflow")
     public Map<String, Object> getWorkflowsForPage(@PathVariable String code) {
+        // Resolve the caller's own flows plus the inherited product catalogue.
+        // This was pinned to `tenant_id=1`, which (a) served tenant 1's flows to
+        // every firm and (b) stopped returning anything at all once the workflow
+        // catalogue moved to -1 — silently breaking every WorkflowActionButton
+        // that auto-looks-up its workflow, with no error anywhere.
         List<Map<String, Object>> rows = jdbc.queryForList(
-                "SELECT code, body_json FROM workflow_definition WHERE tenant_id=1");
+                "SELECT code, body_json FROM workflow_definition " +
+                "WHERE tenant_id IN (?, " + TenantContext.GLOBAL_TENANT_ID + ") " +
+                "  AND status = 'PUBLISHED'",
+                TenantContext.get());
         List<String> matches = new ArrayList<>();
         for (Map<String, Object> r : rows) {
             String wfCode = (String) r.get("code");

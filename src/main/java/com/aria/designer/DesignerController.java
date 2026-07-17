@@ -1,8 +1,16 @@
 package com.aria.designer;
 
+import com.aria.page.service.PageRendererService;
+import com.aria.security.TenantContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.support.GeneratedKeyHolder;
+import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.web.bind.annotation.*;
 
+import java.sql.PreparedStatement;
+import java.sql.Statement;
 import java.util.*;
 import java.util.regex.Pattern;
 
@@ -34,11 +42,150 @@ import java.util.regex.Pattern;
 @RequestMapping("/api/m0/designer")
 public class DesignerController {
 
+    private static final Logger log = LoggerFactory.getLogger(DesignerController.class);
     private static final Pattern SAFE_IDENT = Pattern.compile("^[A-Za-z0-9_]+$");
     private final JdbcTemplate jdbc;
+    private final PageRendererService renderer;
 
-    public DesignerController(JdbcTemplate jdbc) {
+    public DesignerController(JdbcTemplate jdbc, PageRendererService renderer) {
         this.jdbc = jdbc;
+        this.renderer = renderer;
+    }
+
+    /**
+     * Resolve the page this tenant may WRITE to, forking the global row first if
+     * they have not customised it yet. Returns null when no such page exists.
+     *
+     * <h3>Why this exists</h3>
+     * Every write here used to be {@code WHERE code = ?} with no tenant filter.
+     * The product catalogue lives at tenant_id = -1 and is the ONLY row for most
+     * codes, so that predicate resolved to the global row and happily wrote to
+     * it. One tenant editing "aria:vendor-list" in the designer published their
+     * body onto the product page — changing that page for every other firm, and
+     * returning {@code {"ok":true}} while doing it. Nothing failed, so nothing
+     * surfaced; the only symptom would have been another customer's list quietly
+     * looking wrong.
+     *
+     * <p>This is exactly the case the substrate's read side already models:
+     * resolution is {@code tenant_id IN (tid, -1) ORDER BY tenant_id DESC},
+     * so a tenant row shadows the global one. The write side simply never
+     * created that tenant row. Customising a global page now COPIES it —
+     * definition + current body — into a row owned by the caller, and every
+     * subsequent write lands on the copy. The product is immutable from here.
+     */
+    private Long resolveWritablePageId(String code) {
+        Long tenantId = TenantContext.get();
+        List<Map<String, Object>> own = jdbc.queryForList(
+                "SELECT id FROM page_definition WHERE code=? AND tenant_id=?", code, tenantId);
+        if (!own.isEmpty()) return ((Number) own.get(0).get("id")).longValue();
+
+        List<Map<String, Object>> global = jdbc.queryForList(
+                "SELECT id, title, category, description, status FROM page_definition " +
+                "WHERE code=? AND tenant_id=?", code, TenantContext.GLOBAL_TENANT_ID);
+        if (global.isEmpty()) return null;
+
+        Map<String, Object> g = global.get(0);
+        Long globalId = ((Number) g.get("id")).longValue();
+        KeyHolder kh = new GeneratedKeyHolder();
+        jdbc.update(con -> {
+            PreparedStatement ps = con.prepareStatement(
+                    "INSERT INTO page_definition (tenant_id, code, title, category, description, status) " +
+                    "VALUES (?,?,?,?,?,?)", Statement.RETURN_GENERATED_KEYS);
+            ps.setLong(1, tenantId);
+            ps.setString(2, code);
+            ps.setString(3, (String) g.get("title"));
+            ps.setString(4, (String) g.get("category"));
+            ps.setString(5, (String) g.get("description"));
+            ps.setString(6, (String) g.get("status"));
+            return ps;
+        }, kh);
+        Long forkedId = kh.getKey().longValue();
+
+        // Carry the product's current body across, so a customisation starts from
+        // what the tenant can actually see rather than from an empty page.
+        jdbc.update(
+                "INSERT INTO page_version (page_id, version, body_json, status, published_at) " +
+                "SELECT ?, 1, pv.body_json, 'PUBLISHED', NOW() FROM page_version pv " +
+                " WHERE pv.page_id=? AND pv.status='PUBLISHED' ORDER BY pv.version DESC LIMIT 1",
+                forkedId, globalId);
+        jdbc.update("UPDATE page_definition pd SET current_version_id = " +
+                "(SELECT id FROM page_version WHERE page_id=pd.id ORDER BY version DESC LIMIT 1) " +
+                "WHERE pd.id=?", forkedId);
+        log.info("Tenant {} customised global page {} — forked to page_definition id {}",
+                tenantId, code, forkedId);
+        return forkedId;
+    }
+
+    /**
+     * Resolve the entity_field_registry row this tenant may WRITE to, forking the
+     * global one first if they have not customised it yet. Null when neither a
+     * tenant nor a global row exists.
+     *
+     * <p>Same defect as {@link #resolveWritablePageId}, on the field registry:
+     * {@code WHERE entity_code=? AND field_code=?} with no tenant filter resolved
+     * to the -1 product row, so one tenant relabelling a field relabelled it for
+     * every firm, and one tenant deleting a field DELETED IT FROM THE PRODUCT.
+     *
+     * <p>The schema already anticipated this and nothing used it: the unique key
+     * is {@code (tenant_id, entity_code, field_code)}, so a tenant row is designed
+     * to coexist with the global row and shadow it, and {@code hidden} exists to
+     * tombstone a global field the tenant does not want.
+     */
+    private Long resolveWritableFieldId(String entityCode, String fieldCode) {
+        Long tenantId = TenantContext.get();
+        List<Map<String, Object>> own = jdbc.queryForList(
+                "SELECT id FROM entity_field_registry " +
+                "WHERE entity_code=? AND field_code=? AND tenant_id=?", entityCode, fieldCode, tenantId);
+        if (!own.isEmpty()) return ((Number) own.get(0).get("id")).longValue();
+
+        // Copy the product's row, verbatim, into one this tenant owns.
+        int n = jdbc.update(
+                "INSERT INTO entity_field_registry " +
+                "  (tenant_id, entity_code, field_code, display_label, data_type, filterable, sortable, " +
+                "   searchable, required, default_value, options_source_json, relation_entity, widget_kind, " +
+                "   options_json, visible_when, required_when, computed_from, hidden) " +
+                "SELECT ?, entity_code, field_code, display_label, data_type, filterable, sortable, " +
+                "   searchable, required, default_value, options_source_json, relation_entity, widget_kind, " +
+                "   options_json, visible_when, required_when, computed_from, hidden " +
+                "  FROM entity_field_registry WHERE entity_code=? AND field_code=? AND tenant_id=?",
+                tenantId, entityCode, fieldCode, TenantContext.GLOBAL_TENANT_ID);
+        if (n == 0) return null;
+        log.info("Tenant {} customised global field {}.{} — forked a tenant copy", tenantId, entityCode, fieldCode);
+        return jdbc.queryForObject(
+                "SELECT id FROM entity_field_registry WHERE entity_code=? AND field_code=? AND tenant_id=?",
+                Long.class, entityCode, fieldCode, tenantId);
+    }
+
+    /**
+     * Publish a body as the page's single live version.
+     *
+     * <p>Callers MUST pass a pageId from {@link #resolveWritablePageId} — this
+     * method does not check ownership, and publishing onto a -1 page rewrites the
+     * product for every tenant.
+     *
+     * <p>Two invariants this restores, both of which the raw inserts here used to break:
+     * <ul>
+     *   <li><b>Exactly one PUBLISHED row per page.</b> Prior versions are demoted to
+     *       ARCHIVED. Leaving several PUBLISHED rows corrupts every SQL migration that
+     *       targets {@code WHERE status='PUBLISHED'} — it silently updates all of them.</li>
+     *   <li><b>The Redis body cache is evicted.</b> {@code m0:page:*} has a 1h TTL and is
+     *       only invalidated explicitly, so without this a freshly designed page serves
+     *       its stale predecessor for up to an hour.</li>
+     * </ul>
+     */
+    private void publishBody(Long pageId, String code, String bodyJson) {
+        jdbc.update(
+            "INSERT INTO page_version (page_id, version, body_json, status, published_at) " +
+            "VALUES (?, COALESCE((SELECT MAX(version)+1 FROM page_version pv WHERE pv.page_id=?), 1), ?, 'PUBLISHED', NOW())",
+            pageId, pageId, bodyJson);
+        Long newVersionId = jdbc.queryForObject(
+            "SELECT id FROM page_version WHERE page_id=? ORDER BY version DESC LIMIT 1", Long.class, pageId);
+        // Demote every other published row for this page.
+        jdbc.update(
+            "UPDATE page_version SET status='ARCHIVED' " +
+            "WHERE page_id=? AND status='PUBLISHED' AND id <> ?", pageId, newVersionId);
+        jdbc.update("UPDATE page_definition SET current_version_id=? WHERE id=?", newVersionId, pageId);
+        renderer.evict(TenantContext.get(), code);
     }
 
     // ===== Entities =========================================================
@@ -189,24 +336,61 @@ public class DesignerController {
             sets.append(e.getKey()).append("=?");
             args.add(e.getValue());
         }
-        args.add(code);
-        args.add(fc);
         try {
+            // Fork-on-write: customise a COPY, never the -1 product row.
+            Long fieldId = resolveWritableFieldId(code, fc);
+            if (fieldId == null) return Map.of("ok", false, "error", "No such field: " + code + "." + fc);
+            args.add(fieldId);
+            args.add(TenantContext.get());
             int n = jdbc.update("UPDATE entity_field_registry SET " + sets +
-                                " WHERE entity_code=? AND field_code=?", args.toArray());
+                                " WHERE id=? AND tenant_id=?", args.toArray());
             return Map.of("ok", n > 0, "updated", n, "entity", code, "field", fc);
         } catch (Exception ex) {
             return Map.of("ok", false, "error", ex.getMessage());
         }
     }
 
+    /**
+     * Remove a field FOR THIS TENANT.
+     *
+     * <p>Two different removals hide behind one button:
+     * <ul>
+     *   <li><b>Their own field</b> — a row they added. Really delete it.</li>
+     *   <li><b>A product field</b> — shared at -1 with every other firm. You cannot
+     *       delete a shared row for one owner, so this <b>tombstones</b>: fork a
+     *       tenant copy and set {@code hidden=1}. The field vanishes from their
+     *       forms and lists; every other tenant still has it.</li>
+     * </ul>
+     *
+     * <p>This ran {@code DELETE FROM entity_field_registry WHERE entity_code=? AND
+     * field_code=?} — unscoped. One tenant removing a field they did not want
+     * deleted that field from the PRODUCT, for every customer, and reported
+     * {@code "ok": true}. The read path already filters {@code hidden=0} and
+     * prefers the tenant row, so the tombstone needed no new machinery.
+     *
+     * <p>The underlying table column is never dropped either way: data outlives a
+     * registry entry, and un-hiding must stay possible.
+     */
     @DeleteMapping("/entities/{code}/fields/{fc}")
     public Map<String, Object> deleteField(@PathVariable String code, @PathVariable String fc) {
         assertSafe(code);
         assertSafe(fc);
+        Long tenantId = TenantContext.get();
         try {
-            int n = jdbc.update("DELETE FROM entity_field_registry WHERE entity_code=? AND field_code=?", code, fc);
-            return Map.of("ok", n > 0, "deleted", n, "note", "column on underlying table NOT dropped (safe-by-default)");
+            int owned = jdbc.update(
+                    "DELETE FROM entity_field_registry WHERE entity_code=? AND field_code=? AND tenant_id=?",
+                    code, fc, tenantId);
+            if (owned > 0) {
+                return Map.of("ok", true, "deleted", owned, "tombstoned", false,
+                        "note", "column on underlying table NOT dropped (safe-by-default)");
+            }
+            // Not theirs: it is the product's. Hide it for them alone.
+            Long fieldId = resolveWritableFieldId(code, fc);
+            if (fieldId == null) return Map.of("ok", false, "error", "No such field: " + code + "." + fc);
+            int n = jdbc.update("UPDATE entity_field_registry SET hidden=1 WHERE id=? AND tenant_id=?",
+                    fieldId, tenantId);
+            return Map.of("ok", n > 0, "deleted", 0, "tombstoned", true,
+                    "note", "product field hidden for this tenant only; other tenants keep it");
         } catch (Exception ex) {
             return Map.of("ok", false, "error", ex.getMessage());
         }
@@ -323,15 +507,7 @@ public class DesignerController {
                 code, title, category);
             // Body lives in page_version keyed by page_id (BIGINT FK to page_definition).
             Long pageId = jdbc.queryForObject("SELECT id FROM page_definition WHERE code=?", Long.class, code);
-            jdbc.update(
-                "INSERT INTO page_version (page_id, version, body_json, status, published_at) " +
-                "VALUES (?, COALESCE((SELECT MAX(version)+1 FROM page_version pv WHERE pv.page_id=?), 1), ?, 'PUBLISHED', NOW())",
-                pageId, pageId, bodyJson.toString());
-            // Point page_definition.current_version_id at the row we just inserted
-            jdbc.update(
-                "UPDATE page_definition SET current_version_id=" +
-                "  (SELECT id FROM page_version WHERE page_id=? ORDER BY version DESC LIMIT 1) " +
-                "WHERE id=?", pageId, pageId);
+            publishBody(pageId, code, bodyJson.toString());
             return Map.of("ok", true, "code", code, "category", category, "preview", "/configurable/" + code);
         } catch (Exception ex) {
             return Map.of("ok", false, "error", ex.getMessage());
@@ -341,18 +517,21 @@ public class DesignerController {
     @PutMapping("/pages/{code}")
     public Map<String, Object> updatePage(@PathVariable String code, @RequestBody Map<String, Object> body) {
         try {
+            // Fork-on-write: never touch the -1 product row. See resolveWritablePageId.
+            Long pid = resolveWritablePageId(code);
+            if (pid == null) return Map.of("ok", false, "error", "No such page: " + code);
+
             if (body.containsKey("title") || body.containsKey("category")) {
-                jdbc.update("UPDATE page_definition SET title=COALESCE(?, title), category=COALESCE(?, category) WHERE code=?",
-                        body.get("title"), body.get("category"), code);
+                jdbc.update("UPDATE page_definition SET title=COALESCE(?, title), category=COALESCE(?, category) " +
+                            "WHERE id=? AND tenant_id=?",
+                        body.get("title"), body.get("category"), pid, TenantContext.get());
             }
             if (body.containsKey("body_json")) {
-                Long pid = jdbc.queryForObject("SELECT id FROM page_definition WHERE code=?", Long.class, code);
-                jdbc.update(
-                    "INSERT INTO page_version (page_id, version, body_json, status, published_at) " +
-                    "VALUES (?, COALESCE((SELECT MAX(version)+1 FROM page_version pv WHERE pv.page_id=?), 1), ?, 'PUBLISHED', NOW())",
-                    pid, pid, body.get("body_json").toString());
-                jdbc.update("UPDATE page_definition SET current_version_id=" +
-                            "(SELECT id FROM page_version WHERE page_id=? ORDER BY version DESC LIMIT 1) WHERE id=?", pid, pid);
+                publishBody(pid, code, body.get("body_json").toString());
+            } else if (body.containsKey("title") || body.containsKey("category")) {
+                // Title/category live on page_definition, which the renderer caches alongside
+                // the body — a metadata-only edit still has to invalidate.
+                renderer.evict(TenantContext.get(), code);
             }
             return Map.of("ok", true);
         } catch (Exception ex) {
@@ -360,14 +539,31 @@ public class DesignerController {
         }
     }
 
+    /**
+     * Remove a page FOR THIS TENANT.
+     *
+     * <p>You cannot delete a shared row for one owner, so removing a product page
+     * is a <b>tombstone</b>, not a delete: fork the global row to the caller,
+     * then archive the copy. The resolver's NOT EXISTS clause suppresses the
+     * global row whenever a tenant row exists on that code — it does not look at
+     * the tenant row's status — so the archived copy hides the page for this
+     * tenant and leaves every other firm untouched.
+     *
+     * <p>Previously this ran {@code UPDATE page_definition SET status='ARCHIVED'
+     * WHERE code=?}, unscoped: one tenant deleting a page deleted it for the
+     * entire product.
+     */
     @DeleteMapping("/pages/{code}")
     public Map<String, Object> deletePage(@PathVariable String code) {
         try {
-            jdbc.update(
-                "UPDATE page_version SET status='ARCHIVED' WHERE page_id=" +
-                "(SELECT id FROM page_definition WHERE code=?)", code);
-            jdbc.update("UPDATE page_definition SET status='ARCHIVED' WHERE code=?", code);
-            return Map.of("ok", true);
+            Long pid = resolveWritablePageId(code);
+            if (pid == null) return Map.of("ok", false, "error", "No such page: " + code);
+            Long tenantId = TenantContext.get();
+            jdbc.update("UPDATE page_version SET status='ARCHIVED' WHERE page_id=?", pid);
+            jdbc.update("UPDATE page_definition SET status='ARCHIVED' WHERE id=? AND tenant_id=?",
+                    pid, tenantId);
+            renderer.evict(tenantId, code);
+            return Map.of("ok", true, "tombstoned", true);
         } catch (Exception ex) {
             return Map.of("ok", false, "error", ex.getMessage());
         }

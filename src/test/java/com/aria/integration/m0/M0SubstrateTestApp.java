@@ -3,7 +3,6 @@ package com.aria.integration.m0;
 import com.aria.redis.RedisConfig;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
-import org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration;
 import org.springframework.boot.autoconfigure.freemarker.FreeMarkerAutoConfiguration;
 import org.springframework.boot.autoconfigure.security.servlet.SecurityAutoConfiguration;
 import org.springframework.boot.autoconfigure.domain.EntityScan;
@@ -34,7 +33,6 @@ import jakarta.persistence.EntityManagerFactory;
  */
 @SpringBootConfiguration
 @EnableAutoConfiguration(exclude = {
-        FlywayAutoConfiguration.class,
         FreeMarkerAutoConfiguration.class,
         SecurityAutoConfiguration.class
 })
@@ -99,5 +97,18 @@ public class M0SubstrateTestApp {
     @Bean
     public JdbcTemplate testJdbcTemplate(DataSource ds) {
         return new JdbcTemplate(ds);
+    }
+
+    /**
+     * The tenant-scope authority. Lives in {@code com.aria.security}, which
+     * this slim context does not component-scan, so declare it explicitly
+     * rather than widen the scan and drag in the whole auth chain.
+     *
+     * <p>It reads its membership from the container's own information_schema,
+     * so the ITs scope against the real Flyway-built schema — not a fixture.
+     */
+    @Bean
+    public com.aria.security.TenantScope tenantScope(DataSource ds) {
+        return new com.aria.security.TenantScope(ds);
     }
 }

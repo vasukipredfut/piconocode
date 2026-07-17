@@ -55,6 +55,19 @@ public class WorkflowEngineService {
 
     private final ObjectMapper json = new ObjectMapper();
 
+    /**
+     * The tenant that owns this instance's definition.
+     *
+     * <p>Falls back to the instance's own tenant for rows created before the
+     * owner column existed: back then every definition was tenant-owned, so that
+     * is the correct historical answer and old instances keep resolving.
+     */
+    private Long ownerOf(WorkflowInstance inst) {
+        return inst.getWorkflowOwnerTenantId() != null
+                ? inst.getWorkflowOwnerTenantId()
+                : inst.getTenantId();
+    }
+
     // ---------------------------------------------------------------- start
     @Transactional("m0PageTransactionManager")
     public WorkflowInstance startInstance(String workflowCode, Map<String, Object> initialContext) {
@@ -70,6 +83,11 @@ public class WorkflowEngineService {
                 .tenantId(tenantId)
                 .workflowCode(def.getCode())
                 .workflowVersion(def.getVersion())
+                // Record WHICH definition this instance resolved to (-1 product
+                // flow, or the tenant's own fork). Every later transition re-reads
+                // by (owner, code, version), so a fork created after this instance
+                // started cannot silently swap its state machine.
+                .workflowOwnerTenantId(def.getTenantId())
                 .currentState(initialState)
                 .status("OPEN")
                 .assignedRole(assignedRole)
@@ -113,7 +131,7 @@ public class WorkflowEngineService {
 
         // Find transition.
         WorkflowDefinition def = definitions.findByTenantIdAndCodeAndVersion(
-                tenantId, inst.getWorkflowCode(), inst.getWorkflowVersion())
+                ownerOf(inst), inst.getWorkflowCode(), inst.getWorkflowVersion())
                 .orElseThrow(() -> new WorkflowDefinitionNotFoundException(
                         "definition gone for instance " + instanceId));
         Map<String, Object> body = parseBody(def);
@@ -356,9 +374,16 @@ public class WorkflowEngineService {
                 .filter(i -> i.getTenantId().equals(tenantId))
                 .orElseThrow(() -> new WorkflowInstanceNotFoundException(
                         "instance " + instanceId + " not found for tenant " + tenantId));
-        WorkflowDefinition def = definitions.findLatestPublishedSingle(tenantId, inst.getWorkflowCode())
+        // Read the version this instance was STARTED on, not the latest published.
+        // handlePageSubmission enforces the pinned version, so reading "latest" here
+        // meant that republishing a workflow made in-flight instances render buttons
+        // from the new definition while the engine still enforced the old one — the
+        // operator clicked and got a 409. Admins must be able to edit a live workflow
+        // without breaking vehicles already moving through the plant.
+        WorkflowDefinition def = definitions.findByTenantIdAndCodeAndVersion(
+                ownerOf(inst), inst.getWorkflowCode(), inst.getWorkflowVersion())
                 .orElseThrow(() -> new WorkflowDefinitionNotFoundException(
-                        "no PUBLISHED workflow for " + inst.getWorkflowCode()));
+                        "definition v" + inst.getWorkflowVersion() + " gone for instance " + instanceId));
         Map<String, Object> body = parseBody(def);
         return transitionsFor(body, inst.getCurrentState(), pageCode);
     }

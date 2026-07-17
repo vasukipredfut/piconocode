@@ -169,8 +169,8 @@ class RoundSixServicesTest {
     @Test
     void shiftRotation_writes_handover_row_when_boundary_crossed() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
-        when(jdbc.queryForObject(anyString(), eq(Integer.class))).thenReturn(3);
-        var s = new ShiftRotationScheduler(jdbc) {
+        when(jdbc.queryForObject(anyString(), eq(Integer.class), any(Object[].class))).thenReturn(3);
+        var s = new ShiftRotationScheduler(jdbc, mock(com.aria.security.TenantIterator.class)) {
             @Override
             protected java.util.List<java.util.Map<String, Object>> findShiftsStartingNow(LocalDateTime now) {
                 return java.util.List.of(Map.of("id", 2L, "shift_code", "B",
@@ -192,7 +192,7 @@ class RoundSixServicesTest {
 
     @Test
     void shiftRotation_noOp_when_not_at_boundary() {
-        var s = new ShiftRotationScheduler(mock(JdbcTemplate.class)) {
+        var s = new ShiftRotationScheduler(mock(JdbcTemplate.class), mock(com.aria.security.TenantIterator.class)) {
             @Override
             protected java.util.List<java.util.Map<String, Object>> findShiftsStartingNow(LocalDateTime now) {
                 return java.util.List.of();

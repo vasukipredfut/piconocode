@@ -74,23 +74,23 @@ public class GenericEntityController {
             // Fully-loaded row (includes V78 rule columns). Silently falls
             // back for pre-V78 dev DBs that haven't run the migration yet.
             fields = jdbc.queryForList(
-                    "SELECT field_code, display_label, data_type, filterable, sortable, " +
-                            "searchable, required, widget_kind, options_json, " +
-                            "visible_when, required_when, computed_from " +
-                            "FROM entity_field_registry " +
-                            "WHERE entity_code=? ORDER BY id", code);
+                    "SELECT f.field_code, f.display_label, f.data_type, f.filterable, f.sortable, " +
+                            "f.searchable, f.required, f.widget_kind, f.options_json, " +
+                            "f.visible_when, f.required_when, f.computed_from " +
+                            "FROM entity_field_registry f" +
+                            FIELD_RESOLUTION + "ORDER BY f.id", fieldArgs(code));
         } catch (Exception e) {
             try {
                 fields = jdbc.queryForList(
-                        "SELECT field_code, display_label, data_type, filterable, sortable, " +
-                                "searchable, required, widget_kind, options_json " +
-                                "FROM entity_field_registry " +
-                                "WHERE entity_code=? ORDER BY id", code);
+                        "SELECT f.field_code, f.display_label, f.data_type, f.filterable, f.sortable, " +
+                                "f.searchable, f.required, f.widget_kind, f.options_json " +
+                                "FROM entity_field_registry f" +
+                                FIELD_RESOLUTION + "ORDER BY f.id", fieldArgs(code));
             } catch (Exception e2) {
                 fields = jdbc.queryForList(
-                        "SELECT field_code, display_label, data_type, filterable, sortable, " +
-                                "searchable, required FROM entity_field_registry " +
-                                "WHERE entity_code=? ORDER BY id", code);
+                        "SELECT f.field_code, f.display_label, f.data_type, f.filterable, f.sortable, " +
+                                "f.searchable, f.required FROM entity_field_registry f" +
+                                FIELD_RESOLUTION + "ORDER BY f.id", fieldArgs(code));
             }
         }
         Map<String, Object> out = new LinkedHashMap<>();
@@ -104,6 +104,74 @@ public class GenericEntityController {
         return out;
     }
 
+    // ════════════════════════════════════════════════════════════════════
+    // Tenancy. Every registry-driven query is scoped by the caller's tenant —
+    // no allowlist to keep in sync, no table exempt by omission.
+    //
+    // READ  : tenant_id IN (tid, -1)  — your rows plus the inherited global
+    //         product catalogue. Business tables hold no -1 rows, so this
+    //         collapses to "= tid" for them.
+    // WRITE : tenant_id = tid, strictly. A tenant must never update or delete
+    //         a global (-1) row through generic CRUD; that would let one firm
+    //         mutate the product for every other firm. Customising a global
+    //         page forks a tenant copy instead.
+    // INSERT: tenant_id is forced from TenantContext and any client-supplied
+    //         value is discarded — otherwise a caller can plant rows into
+    //         another firm by naming its id.
+    //
+    // Tables with no tenant_id column (pure catalogues) get no predicate.
+    // ════════════════════════════════════════════════════════════════════
+
+    /** " AND tenant_id IN (?, -1)" for reads, or "" when the table is not tenant-scoped. */
+    private String readScope(String table) {
+        return tableHasColumn(table, "tenant_id") ? " AND tenant_id IN (?, -1)" : "";
+    }
+
+    /**
+     * WHERE clause resolving an entity's fields for the current tenant:
+     * inherited product fields (-1) plus this tenant's own, each appearing once.
+     *
+     * <p>Three behaviours fall out of one clause:
+     * <ul>
+     *   <li><b>ADD</b> — a tenant row with a new field_code simply unions in.</li>
+     *   <li><b>MODIFY</b> — a tenant row with the SAME field_code suppresses the
+     *       -1 row via NOT EXISTS, so the override wins.</li>
+     *   <li><b>REMOVE</b> — a tenant row with hidden=1 suppresses the -1 row the
+     *       same way, and is then dropped by {@code f.hidden = 0}. Net: the field
+     *       disappears for this tenant only. You cannot DELETE the shared -1 row
+     *       without removing the field for every other tenant, so removal has to
+     *       be a tombstone.</li>
+     * </ul>
+     *
+     * <p>Binds: entity_code, tenantId, tenantId, tenantId — see {@link #fieldArgs}.
+     */
+    private static final String FIELD_RESOLUTION =
+            " WHERE f.entity_code = ? " +
+            "   AND f.tenant_id IN (?, -1) " +
+            "   AND f.hidden = 0 " +
+            "   AND (f.tenant_id = ? " +
+            "        OR NOT EXISTS (SELECT 1 FROM entity_field_registry o " +
+            "                       WHERE o.entity_code = f.entity_code " +
+            "                         AND o.field_code  = f.field_code " +
+            "                         AND o.tenant_id   = ?)) ";
+
+    private Object[] fieldArgs(String entityCode) {
+        Long t = TenantContext.get();
+        return new Object[]{ entityCode, t, t, t };
+    }
+
+    /** " AND tenant_id = ?" for writes, or "" when the table is not tenant-scoped. */
+    private String writeScope(String table) {
+        return tableHasColumn(table, "tenant_id") ? " AND tenant_id = ?" : "";
+    }
+
+    /** Args for the predicate above — empty when the table is not tenant-scoped. */
+    private Object[] scopeArgs(String table, Object... leading) {
+        List<Object> a = new ArrayList<>(Arrays.asList(leading));
+        if (tableHasColumn(table, "tenant_id")) a.add(TenantContext.get());
+        return a.toArray();
+    }
+
     @GetMapping("/{code}/{id}")
     public ResponseEntity<?> getRow(@PathVariable String code, @PathVariable long id) {
         Map<String, Object> reg = lookupRegistry(code);
@@ -112,10 +180,14 @@ public class GenericEntityController {
         String table = (String) reg.get("table_name");
         assertSafe(table);
         try {
-            Map<String, Object> row = jdbc.queryForMap("SELECT * FROM " + table + " WHERE id=?", id);
+            Map<String, Object> row = jdbc.queryForMap(
+                    "SELECT * FROM " + table + " WHERE id=?" + readScope(table),
+                    scopeArgs(table, id));
             maskSecretsInPlace(code, row);
             return ResponseEntity.ok(row);
         } catch (Exception e) {
+            // A row belonging to another tenant is reported as not-found rather
+            // than forbidden: "exists but not yours" is itself a disclosure.
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
                 Map.of("error", "Row not found: id=" + id + " in " + table));
         }
@@ -157,13 +229,16 @@ public class GenericEntityController {
         assertSafe(table);
 
         Set<String> declared = jdbc.queryForList(
-                "SELECT field_code FROM entity_field_registry WHERE entity_code=?",
-                String.class, code).stream().collect(java.util.stream.Collectors.toSet());
+                "SELECT f.field_code FROM entity_field_registry f" + FIELD_RESOLUTION,
+                String.class, fieldArgs(code)).stream().collect(java.util.stream.Collectors.toSet());
         Map<String, Object> safe = new LinkedHashMap<>();
         for (Map.Entry<String, Object> e : body.entrySet()) {
             if (!SAFE_IDENT.matcher(e.getKey()).matches()) continue;
-            if ((declared.contains(e.getKey()) || e.getKey().equals("tenant_id"))
-                    && tableHasColumn(table, e.getKey())) {
+            // tenant_id is NEVER taken from the body: accepting it let a caller
+            // plant a row into another firm simply by naming its id. It is
+            // stamped from the authenticated context below instead.
+            if (e.getKey().equals("tenant_id")) continue;
+            if (declared.contains(e.getKey()) && tableHasColumn(table, e.getKey())) {
                 safe.put(e.getKey(), e.getValue());
             }
         }
@@ -171,7 +246,7 @@ public class GenericEntityController {
             return ResponseEntity.badRequest().body(
                 Map.of("error", "No valid fields in body (expected any of " + declared + ")"));
         }
-        if (!safe.containsKey("tenant_id") && tableHasColumn(table, "tenant_id")) {
+        if (tableHasColumn(table, "tenant_id")) {
             safe.put("tenant_id", TenantContext.get());
         }
         encryptSecretsInPlace(code, safe);
@@ -214,8 +289,8 @@ public class GenericEntityController {
         String table = (String) reg.get("table_name");
         assertSafe(table);
         Set<String> declared = jdbc.queryForList(
-                "SELECT field_code FROM entity_field_registry WHERE entity_code=?",
-                String.class, code).stream().collect(java.util.stream.Collectors.toSet());
+                "SELECT f.field_code FROM entity_field_registry f" + FIELD_RESOLUTION,
+                String.class, fieldArgs(code)).stream().collect(java.util.stream.Collectors.toSet());
         Map<String, Object> safe = new LinkedHashMap<>();
         for (Map.Entry<String, Object> e : body.entrySet()) {
             if (!SAFE_IDENT.matcher(e.getKey()).matches()) continue;
@@ -226,8 +301,15 @@ public class GenericEntityController {
         encryptSecretsInPlace(code, safe);
         if (safe.isEmpty()) return ResponseEntity.badRequest().body(Map.of("error", "no updatable fields"));
 
+        // Before-image is read with the WRITE scope: if the row is not this
+        // tenant's, we must not read it either -- and the update below will
+        // match nothing, so the audit entry would otherwise describe a row the
+        // caller never touched.
         Map<String, Object> before = null;
-        try { before = jdbc.queryForMap("SELECT * FROM " + table + " WHERE id=?", id); } catch (Exception ignored) {}
+        try {
+            before = jdbc.queryForMap("SELECT * FROM " + table + " WHERE id=?" + writeScope(table),
+                    scopeArgs(table, id));
+        } catch (Exception ignored) {}
 
         StringBuilder sets = new StringBuilder();
         for (String k : safe.keySet()) {
@@ -236,11 +318,18 @@ public class GenericEntityController {
         }
         List<Object> args = new ArrayList<>(safe.values());
         args.add(id);
-        String sql = "UPDATE " + table + " SET " + sets + " WHERE id=?";
+        if (tableHasColumn(table, "tenant_id")) args.add(TenantContext.get());
+        String sql = "UPDATE " + table + " SET " + sets + " WHERE id=?" + writeScope(table);
         try {
             int n = jdbc.update(sql, args.toArray());
+            if (n == 0) {
+                // Either no such row, or it belongs to another tenant. Same
+                // answer either way -- distinguishing them leaks existence.
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+                        Map.of("ok", false, "error", "Row not found: id=" + id + " in " + table));
+            }
             writeAudit("UPDATE", code, id, before, safe);
-            return ResponseEntity.ok(Map.of("ok", n > 0, "updated", n, "id", id));
+            return ResponseEntity.ok(Map.of("ok", true, "updated", n, "id", id));
         } catch (Exception ex) {
             return ResponseEntity.badRequest().body(
                 Map.of("ok", false, "error", ex.getClass().getSimpleName() + ": " + ex.getMessage()));
@@ -255,11 +344,19 @@ public class GenericEntityController {
         String table = (String) reg.get("table_name");
         assertSafe(table);
         Map<String, Object> before = null;
-        try { before = jdbc.queryForMap("SELECT * FROM " + table + " WHERE id=?", id); } catch (Exception ignored) {}
         try {
-            int n = jdbc.update("DELETE FROM " + table + " WHERE id=?", id);
+            before = jdbc.queryForMap("SELECT * FROM " + table + " WHERE id=?" + writeScope(table),
+                    scopeArgs(table, id));
+        } catch (Exception ignored) {}
+        try {
+            int n = jdbc.update("DELETE FROM " + table + " WHERE id=?" + writeScope(table),
+                    scopeArgs(table, id));
+            if (n == 0) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+                        Map.of("ok", false, "error", "Row not found: id=" + id + " in " + table));
+            }
             writeAudit("DELETE", code, id, before, null);
-            return ResponseEntity.ok(Map.of("ok", n > 0, "deleted", n, "id", id));
+            return ResponseEntity.ok(Map.of("ok", true, "deleted", n, "id", id));
         } catch (Exception ex) {
             return ResponseEntity.badRequest().body(
                 Map.of("ok", false, "error", ex.getClass().getSimpleName() + ": " + ex.getMessage()));
@@ -387,10 +484,16 @@ public class GenericEntityController {
         String table = (String) reg.get("table_name");
         assertSafe(table);
 
+        // Dropdowns are scoped too. Unscoped, a picker on any tenant-owned
+        // entity (Vendor, Driver, Vehicle, Employee...) listed every firm's
+        // values to every other firm -- a quiet cross-tenant disclosure, since
+        // nothing errors and the list simply looks longer than it should.
         if ("PageDefinition".equalsIgnoreCase(code) && "category".equalsIgnoreCase(type)) {
             return jdbc.queryForList(
                 "SELECT DISTINCT category AS value, category AS label FROM " + table +
-                " WHERE category IS NOT NULL ORDER BY category");
+                " WHERE category IS NOT NULL" + readScope(table).replace(" AND ", " AND ") +
+                " ORDER BY category",
+                scopeArgs(table));
         }
 
         String valueColumn = (String) reg.get("value_column");
@@ -401,9 +504,12 @@ public class GenericEntityController {
         assertSafe(valueColumn);
         assertSafe(displayColumn);
 
+        String scope = readScope(table);
+        String where = scope.isEmpty() ? "" : " WHERE " + scope.substring(" AND ".length());
         return jdbc.queryForList(
             "SELECT " + valueColumn + " AS value, " + displayColumn + " AS label " +
-            "FROM " + table + " ORDER BY " + displayColumn);
+            "FROM " + table + where + " ORDER BY " + displayColumn,
+            scopeArgs(table));
     }
 
     private Map<String, Object> lookupRegistryWithLookup(String code) {
@@ -413,7 +519,7 @@ public class GenericEntityController {
         try {
             return jdbc.queryForMap(
                 "SELECT code, display_name, table_name, value_column, display_column " +
-                "FROM entity_registry WHERE code=?", code);
+                "FROM entity_registry WHERE code=? AND tenant_id IN (?, -1) ORDER BY tenant_id DESC LIMIT 1", code, TenantContext.get());
         } catch (Exception e) {
             // V86 not applied yet — fall back to core lookup so /options
             // gracefully returns empty rather than 500.
@@ -433,10 +539,10 @@ public class GenericEntityController {
             try {
                 return jdbc.queryForMap(
                     "SELECT code, display_name, table_name, read_role, write_role, approver_role " +
-                    "FROM entity_registry WHERE code=?", code);
+                    "FROM entity_registry WHERE code=? AND tenant_id IN (?, -1) ORDER BY tenant_id DESC LIMIT 1", code, TenantContext.get());
             } catch (Exception eNew) {
                 return jdbc.queryForMap(
-                    "SELECT code, display_name, table_name FROM entity_registry WHERE code=?", code);
+                    "SELECT code, display_name, table_name FROM entity_registry WHERE code=? AND tenant_id IN (?, -1) ORDER BY tenant_id DESC LIMIT 1", code, TenantContext.get());
             }
         } catch (Exception e) {
             throw new IllegalArgumentException("Unknown entity: " + code);
@@ -464,7 +570,7 @@ public class GenericEntityController {
         String kind, wf;
         try {
             Map<String, Object> life = jdbc.queryForMap(
-                    "SELECT lifecycle_kind, workflow_code FROM entity_registry WHERE code=?", code);
+                    "SELECT lifecycle_kind, workflow_code FROM entity_registry WHERE code=? AND tenant_id IN (?, -1) ORDER BY tenant_id DESC LIMIT 1", code, TenantContext.get());
             kind = (String) life.get("lifecycle_kind");
             wf = (String) life.get("workflow_code");
         } catch (Exception e) {
@@ -480,7 +586,13 @@ public class GenericEntityController {
             if (tableHasColumn(table, "current_step")) { sets.append(", current_step=?"); args.add(inst.getCurrentState()); }
             else if (tableHasColumn(table, "current_state")) { sets.append(", current_state=?"); args.add(inst.getCurrentState()); }
             args.add(id);
-            jdbc.update("UPDATE " + table + " SET " + sets + " WHERE id=?", args.toArray());
+            // Scoped even though `id` is the row we just inserted and therefore
+            // always ours: keeping "no unscoped write in this class" as a rule with
+            // zero exceptions makes it greppable. An exception justified by a
+            // comment is how the next unscoped write gets added.
+            if (tableHasColumn(table, "tenant_id")) args.add(TenantContext.get());
+            jdbc.update("UPDATE " + table + " SET " + sets + " WHERE id=?" + writeScope(table),
+                    args.toArray());
         } catch (Exception ex) {
             // Never break entity creation because workflow start failed.
         }

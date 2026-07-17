@@ -164,16 +164,18 @@ public class PageDefinitionService {
         renderer.evict(tenantId, code);
     }
 
+    /**
+     * Listing always resolves tenant-override -> global (-1), so a tenant sees the
+     * whole product catalogue plus its own pages, each exactly once.
+     *
+     * <p>Default sidebar listing hides ARCHIVED so deleted/superseded pages stop
+     * appearing in the menu. Callers that want ARCHIVED back pass ?status=ARCHIVED,
+     * in which case the explicit status wins and no exclusion is applied.
+     */
     @Transactional(value = "m0PageTransactionManager", readOnly = true)
     public Page<PageDefinition> list(Long tenantId, String category, String status, Pageable pageable) {
-        if (category != null && status != null) {
-            return defRepo.findByTenantIdAndCategoryAndStatus(tenantId, category, status, pageable);
-        }
-        if (category != null) return defRepo.findByTenantIdAndCategory(tenantId, category, pageable);
-        if (status != null) return defRepo.findByTenantIdAndStatus(tenantId, status, pageable);
-        // Default sidebar listing: hide ARCHIVED so deleted/superseded pages stop
-        // appearing in the menu. Callers that want ARCHIVED back can pass ?status=ARCHIVED.
-        return defRepo.findByTenantIdAndStatusNot(tenantId, "ARCHIVED", pageable);
+        String excludeStatus = (status == null) ? "ARCHIVED" : null;
+        return defRepo.findResolved(tenantId, category, status, excludeStatus, pageable);
     }
 
     @Transactional(value = "m0PageTransactionManager", readOnly = true)
