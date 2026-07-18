@@ -409,10 +409,16 @@ public class DesignerController {
         }
         // Find pages whose body_json references the entity — join through
         // page_version because page_definition doesn't hold body_json.
+        // Hand-authored pages pretty-print body_json ("entity": "X", with a
+        // space after the colon); Designer-generated pages write it compact
+        // ("entity":"X"). Match both so hand-authored pages aren't invisible
+        // to this filter.
+        String compact = "%\"entity\":\"" + entity + "\"%";
+        String spaced  = "%\"entity\": \"" + entity + "\"%";
         return jdbc.queryForList(
             "SELECT pd.code, pd.title, pd.category FROM page_definition pd " +
             "JOIN page_version pv ON pv.id = pd.current_version_id " +
-            "WHERE pv.body_json LIKE ? ORDER BY pd.code", "%\"entity\":\"" + entity + "\"%");
+            "WHERE pv.body_json LIKE ? OR pv.body_json LIKE ? ORDER BY pd.code", compact, spaced);
     }
 
     @PostMapping("/pages")

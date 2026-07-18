@@ -192,6 +192,26 @@ public class GenericEntityController {
                 Map.of("error", "Row not found: id=" + id + " in " + table));
         }
     }
+    @GetMapping("/{code}/by-field/{fieldName}/{value}")
+    public ResponseEntity<?> getRowByField(@PathVariable String code,
+                                           @PathVariable String fieldName,
+                                           @PathVariable String value) {
+        Map<String, Object> reg = lookupRegistry(code);
+        ResponseEntity<?> denied = checkRole(reg, "read");
+        if (denied != null) return denied;
+        String table = (String) reg.get("table_name");
+        assertSafe(table);
+        assertSafe(fieldName);
+        try {
+            Map<String, Object> row = jdbc.queryForMap(
+                "SELECT * FROM " + table + " WHERE " + fieldName + "=?", value);
+            maskSecretsInPlace(code, row);
+            return ResponseEntity.ok(row);
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+                Map.of("error", "Row not found: " + fieldName + "=" + value + " in " + table));
+        }
+    }
 
     /** Rewrite any secret columns in a query result to the mask value in-place. */
     private void maskSecretsInPlace(String code, Map<String, Object> row) {
@@ -495,7 +515,107 @@ public class GenericEntityController {
                 " ORDER BY category",
                 scopeArgs(table));
         }
+     // GatePass + ?type=dispatchQueue — gate passes currently sitting in
+        // a state assigned to the "Dispatch" role (PARKING_IN_1 plus
+        // whatever else that role owns per workflow — PARKING_IN_2 in
+        // TankerOutbound, ORDER_SHEET_UPLOADED in Packing/FG), for the
+        // Dispatch Front Office vehicle-details screen's dropdown. Value
+        // is workflow_instance_id (resolved via GatePass/by-instance/{id}),
+        // matching what a list/inbox screen would separately get in full
+        // detail from GET /api/workflow/queue/Dispatch — this is that same
+        // role-scoped set, reshaped to {value,label} for a select field.
+        if ("GatePass".equalsIgnoreCase(code) && "dispatchQueue".equalsIgnoreCase(type)) {
+            return jdbc.queryForList(
+                "SELECT gp.workflow_instance_id AS value, " +
+                "CONCAT(gp.vehicle_no, ' (', wi.current_state, ')') AS label " +
+                "FROM " + table + " gp " +
+                "JOIN workflow_instance wi ON wi.id = gp.workflow_instance_id " +
+                "WHERE wi.assigned_role = 'Dispatch' AND wi.status = 'OPEN' " +
+                "ORDER BY gp.vehicle_no");
+        }
 
+        // GatePass + ?type=qcPending — gate passes with Dispatch Entry
+        // completed, awaiting QC Verification. Role-scoped like
+        // dispatchQueue, not state-scoped — DISPATCH_VEHICLE_ENTRY's
+        // assignedRole is "Planning" for Tanker/FG and "QC" for Packing
+        // (V87, unchanged — that's master-data role assignment, not a bug
+        // to fix), so both roles' open queues are combined here to cover
+        // all three flows. Value is workflow_instance_id, same
+        // by-instance lookup convention as dispatchQueue.
+        if ("GatePass".equalsIgnoreCase(code) && "qcPending".equalsIgnoreCase(type)) {
+            return jdbc.queryForList(
+                "SELECT gp.workflow_instance_id AS value, " +
+                "CONCAT(gp.vehicle_no, ' (', wi.current_state, ')') AS label " +
+                "FROM " + table + " gp " +
+                "JOIN workflow_instance wi ON wi.id = gp.workflow_instance_id " +
+                "WHERE wi.assigned_role IN ('Planning','QC') AND wi.status = 'OPEN' " +
+                "ORDER BY gp.vehicle_no");
+        }
+
+        // GatePass + ?type=qcPreloadPending — gate passes actually awaiting
+        // the QC pre-load decision handled by pico:qc-preload-approval:
+        // TankerOutbound's ORDER_SHEET_UPLOADED and PackLoading's
+        // DISPATCH_VEHICLE_ENTRY (both assignedRole "QC" per V87). FGLoading
+        // has no QC pre-load step at all so it's deliberately excluded —
+        // unlike qcPending above (which also pulls in FGLoading's
+        // Planning-assigned rows for a different, broader purpose).
+        if ("GatePass".equalsIgnoreCase(code) && "qcPreloadPending".equalsIgnoreCase(type)) {
+            return jdbc.queryForList(
+                "SELECT " +
+                "gp.workflow_instance_id AS value, " +
+                "gp.gp_number AS label, " +
+                "gp.vehicle_no AS vehicleNo, " +
+                "gp.driver_name AS driverName, " +
+                "gp.flow_variant_code AS flowVariant, " +
+                "wi.current_state AS currentState " +
+                "FROM " + table + " gp " +
+                "JOIN workflow_instance wi ON wi.id = gp.workflow_instance_id " +
+                "WHERE wi.assigned_role = 'QC' " +
+                "AND wi.status = 'OPEN' " +
+                "ORDER BY gp.vehicle_no");
+        }
+
+        // GatePass + ?type=recentVehicles — distinct vehicle numbers already
+        // seen on a gate pass (hired/vendor trucks aren't in the Vehicle
+        // fleet master, so the plain value_column/display_column path below
+        // would return one row per gate-pass record instead of one per
+        // vehicle).
+        if ("GatePass".equalsIgnoreCase(code) && "recentVehicles".equalsIgnoreCase(type)) {
+            return jdbc.queryForList(
+                "SELECT DISTINCT vehicle_no AS value, vehicle_no AS label FROM " + table +
+                " WHERE vehicle_no IS NOT NULL ORDER BY vehicle_no");
+        }
+
+        // GatePass + ?type=gpNumbers — pick an existing gate pass by its
+        // human-readable number, value is the row id (so the caller can
+        // then fetch/act on the full GatePass record). Excludes gate passes
+        // already closed/rejected — this same dropdown is reused at every
+        // Parking In/Out touchpoint (1st and 2nd) across all three loading
+        // flows, so it can't be narrowed to one specific current_step; the
+        // status is appended to the label so the operator can tell which
+        // stage each entry is at.
+        if ("GatePass".equalsIgnoreCase(code) && "gpNumbers".equalsIgnoreCase(type)) {
+            return jdbc.queryForList(
+                "SELECT gp_number AS value, CONCAT(gp_number, ' (', COALESCE(status, 'DRAFT'), ')') AS label " +
+                "FROM " + table +
+                " WHERE gp_number IS NOT NULL AND status NOT IN (" +
+                "'CLOSED','GATE_PASS_OUT_CLOSED','QC_REJECTED','QC_PRELOAD_REJECTED'," +
+                "'QC_SAMPLE_REJECTED','QC_FINAL_OUT_REJECTED','REJECTED_BY_MANAGER') " +
+                "ORDER BY gp_number DESC");
+        }
+
+        // WorkflowDefinition + ?type=gatePassFlows — the 6 gate-pass workflow
+        // codes, published only. workflow_definition has no display_name
+        // column (unlike the generic value_column/display_column path
+        // below) and holds one row per version, so a plain SELECT would
+        // otherwise repeat/mismatch.
+        if ("WorkflowDefinition".equalsIgnoreCase(code) && "gatePassFlows".equalsIgnoreCase(type)) {
+            return jdbc.queryForList(
+                "SELECT DISTINCT code AS value, code AS label FROM " + table +
+                " WHERE status='PUBLISHED' AND code IN " +
+                "('M10.TankerInbound','M10.TankerOutbound','M10.PackLoading','M10.PackUnload','M10.FGLoading','M10.ReturnStockIn') " +
+                "ORDER BY code");
+        }   
         String valueColumn = (String) reg.get("value_column");
         String displayColumn = (String) reg.get("display_column");
         if (valueColumn == null || displayColumn == null) {
