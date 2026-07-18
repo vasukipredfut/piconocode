@@ -47,6 +47,7 @@ public class PageDefinitionController {
     @Autowired private PageDefinitionService pages;
     @Autowired private PageRendererService renderer;
     @Autowired private PageElementCatalogRepository catalogRepo;
+    @Autowired private org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     @GetMapping("/api/m0/pages")
     @Operation(summary = "List pages (paginated). Optional category + status filters.")
@@ -56,6 +57,28 @@ public class PageDefinitionController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
         return ResponseEntity.ok(pages.list(tenant(), category, status, PageRequest.of(page, size)));
+    }
+
+    /**
+     * Sidebar category display metadata (label, icon, order), resolved per tenant.
+     *
+     * <p>The tenant row wins over the {@code -1} product row on the same code, so a
+     * factory can rename a group for itself alone. This replaces the hardcoded
+     * CATEGORY_META in the React shell — labels are data, not code, so renaming or
+     * reordering a group is a row edit, not a redeploy. Falls back gracefully:
+     * if the table is empty the frontend uses the raw category code.
+     */
+    @GetMapping("/api/m0/categories")
+    @Operation(summary = "Sidebar category labels/icons/order, resolved for the tenant.")
+    public ResponseEntity<List<java.util.Map<String, Object>>> categories() {
+        List<java.util.Map<String, Object>> rows = jdbc.queryForList(
+            "SELECT code, label, icon, sort_order FROM ( " +
+            "  SELECT code, label, icon, sort_order, " +
+            "         ROW_NUMBER() OVER (PARTITION BY code ORDER BY tenant_id DESC) rn " +
+            "  FROM page_category WHERE tenant_id IN (?, " + TenantContext.GLOBAL_TENANT_ID + ") " +
+            "    AND status='ACTIVE' " +
+            ") x WHERE rn = 1 ORDER BY sort_order, label", tenant());
+        return ResponseEntity.ok(rows);
     }
 
     @GetMapping("/api/m0/pages/{code}")

@@ -575,7 +575,93 @@ public class DesignerController {
         }
     }
 
+    /**
+     * Every page the tenant could see, each with its EFFECTIVE sidebar visibility.
+     *
+     * <p>Visibility resolves exactly like the sidebar: on a shared code the tenant
+     * row wins over the {@code -1} product row (ORDER BY tenant_id DESC), and the
+     * winning row's status decides — PUBLISHED shows, ARCHIVED (a tombstone, or an
+     * archived own-page) hides. This powers the Manage-Pages toggle screen; the
+     * switch state must match what the sidebar would actually do.
+     */
+    @GetMapping("/pages/visibility")
+    public List<Map<String, Object>> pageVisibility() {
+        Long tenantId = TenantContext.get();
+        return jdbc.queryForList(
+            "SELECT code, title, category, " +
+            "       CASE WHEN status='PUBLISHED' THEN 1 ELSE 0 END AS visible " +
+            "FROM ( " +
+            "  SELECT pd.code, pd.title, pd.category, pd.status, " +
+            "         ROW_NUMBER() OVER (PARTITION BY pd.code ORDER BY pd.tenant_id DESC) rn " +
+            "  FROM page_definition pd WHERE pd.tenant_id IN (?, " + TenantContext.GLOBAL_TENANT_ID + ") " +
+            ") x WHERE rn = 1 ORDER BY category, title", tenantId);
+    }
+
+    /**
+     * Show or hide a page in THIS tenant's sidebar — the no-code "toggle off a
+     * page we don't use" control.
+     *
+     * <p><b>hide</b> is a tombstone, identical to {@link #deletePage}: fork the
+     * product row if the tenant has no copy, then archive the copy. The resolver
+     * suppresses the {@code -1} page for this tenant only.
+     *
+     * <p><b>show</b> reverses the tombstone. If the code also exists at {@code -1},
+     * the tenant row is a fork whose only purpose was to hide — DELETE it so the
+     * product page resurfaces (cleaner than leaving an archived shadow that would
+     * also freeze the tenant on an old body). If the code exists only for this
+     * tenant, it is a genuinely-authored page — un-archive its current version.
+     */
+    @PutMapping("/pages/{code}/visibility")
+    public Map<String, Object> setPageVisibility(@PathVariable String code,
+                                                 @RequestBody Map<String, Object> body) {
+        Long tenantId = TenantContext.get();
+        boolean visible = bool(body.get("visible"));
+        try {
+            if (!visible) {
+                Long pid = resolveWritablePageId(code); // forks -1 → tenant if needed
+                if (pid == null) return Map.of("ok", false, "error", "No such page: " + code);
+                jdbc.update("UPDATE page_version SET status='ARCHIVED' WHERE page_id=?", pid);
+                jdbc.update("UPDATE page_definition SET status='ARCHIVED' WHERE id=? AND tenant_id=?",
+                        pid, tenantId);
+                renderer.evict(tenantId, code);
+                return Map.of("ok", true, "visible", false);
+            }
+            // show
+            Long tenantPid = firstLong(
+                "SELECT id FROM page_definition WHERE tenant_id=? AND code=?", tenantId, code);
+            if (tenantPid == null) {
+                // No tenant row: page is already the product's and visible, or absent.
+                renderer.evict(tenantId, code);
+                return Map.of("ok", true, "visible", true, "noop", true);
+            }
+            boolean productExists = firstLong(
+                "SELECT id FROM page_definition WHERE tenant_id=" + TenantContext.GLOBAL_TENANT_ID +
+                " AND code=? LIMIT 1", code) != null;
+            if (productExists) {
+                // Tombstone/fork of a product page → drop it so -1 resurfaces.
+                jdbc.update("DELETE FROM page_version WHERE page_id=?", tenantPid);
+                jdbc.update("DELETE FROM page_definition WHERE id=? AND tenant_id=?", tenantPid, tenantId);
+            } else {
+                // Tenant's own authored page → un-archive its current version.
+                jdbc.update("UPDATE page_definition SET status='PUBLISHED' WHERE id=? AND tenant_id=?",
+                        tenantPid, tenantId);
+                jdbc.update("UPDATE page_version SET status='PUBLISHED' " +
+                        "WHERE id=(SELECT current_version_id FROM page_definition WHERE id=?)", tenantPid);
+            }
+            renderer.evict(tenantId, code);
+            return Map.of("ok", true, "visible", true);
+        } catch (Exception ex) {
+            return Map.of("ok", false, "error", ex.getMessage());
+        }
+    }
+
     // ===== Helpers ==========================================================
+
+    /** queryForObject that returns null instead of throwing when no row matches. */
+    private Long firstLong(String sql, Object... args) {
+        try { return jdbc.queryForObject(sql, Long.class, args); }
+        catch (org.springframework.dao.EmptyResultDataAccessException e) { return null; }
+    }
 
     private String sqlTypeFor(String dataType) {
         switch (dataType.toUpperCase()) {
