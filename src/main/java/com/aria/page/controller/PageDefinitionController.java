@@ -81,6 +81,20 @@ public class PageDefinitionController {
         return ResponseEntity.ok(rows);
     }
 
+    @GetMapping("/api/m0/slip-fields/{flow}")
+    @Operation(summary = "Detail lines to print on a slip for a flow variant, resolved for the tenant.")
+    public ResponseEntity<List<java.util.Map<String, Object>>> slipFields(@PathVariable String flow) {
+        List<java.util.Map<String, Object>> rows = jdbc.queryForList(
+            "SELECT field, label FROM ( " +
+            "  SELECT field, label, sort_order, " +
+            "         ROW_NUMBER() OVER (PARTITION BY field ORDER BY tenant_id DESC) rn " +
+            "  FROM slip_field_map WHERE flow_variant_code = ? " +
+            "    AND tenant_id IN (?, " + TenantContext.GLOBAL_TENANT_ID + ") " +
+            "    AND status='ACTIVE' " +
+            ") x WHERE rn = 1 ORDER BY sort_order, label", flow, tenant());
+        return ResponseEntity.ok(rows);
+    }
+
     @GetMapping("/api/m0/pages/{code}")
     @Operation(summary = "Load the published version (404 if none).")
     public ResponseEntity<PageResponse> getPublished(@PathVariable String code) {
