@@ -95,6 +95,19 @@ public class PageDefinitionController {
         return ResponseEntity.ok(rows);
     }
 
+    @GetMapping("/api/m0/page-templates")
+    @Operation(summary = "Page-builder starter templates (body skeletons), resolved for the tenant.")
+    public ResponseEntity<List<java.util.Map<String, Object>>> pageTemplates() {
+        List<java.util.Map<String, Object>> rows = jdbc.queryForList(
+            "SELECT code, name, group_label, description, shape, body_json FROM ( " +
+            "  SELECT code, name, group_label, description, shape, body_json, sort_order, " +
+            "         ROW_NUMBER() OVER (PARTITION BY code ORDER BY tenant_id DESC) rn " +
+            "  FROM page_template WHERE tenant_id IN (?, " + TenantContext.GLOBAL_TENANT_ID + ") " +
+            "    AND status='ACTIVE' " +
+            ") x WHERE rn = 1 ORDER BY group_label, sort_order, name", tenant());
+        return ResponseEntity.ok(rows);
+    }
+
     @GetMapping("/api/m0/pages/{code}")
     @Operation(summary = "Load the published version (404 if none).")
     public ResponseEntity<PageResponse> getPublished(@PathVariable String code) {
