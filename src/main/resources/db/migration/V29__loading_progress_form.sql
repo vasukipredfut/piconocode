@@ -1,0 +1,10 @@
+-- V29 — Loading Progress: real Start-Loading transition, not a status flip.
+-- The page was a kind:list whose button did entity.update-field (flipping
+-- gate_pass.status to LOADING_IN_PROGRESS without advancing the workflow
+-- instance — a list row-action can't carry the instanceId the engine needs).
+-- Rebuilt as a Form: GP picker fills the instance, a WorkflowActionButton fires
+-- the real WEIGHMENT_1 -> LOADING_IN_PROGRESS transition, plus a View Order
+-- button. Idempotent; bodies served live so this backfills fresh DBs.
+UPDATE page_version pv JOIN page_definition pd ON pd.current_version_id=pv.id
+SET pv.body_json='{"kind": "layout", "schemaVersion": 2, "entity": "GatePass", "layout": [{"kind": "Grid", "columns": 12, "gap": 16, "children": [{"kind": "Section", "title": "Loading — Mark In Progress", "span": 12, "subtitle": "Vehicles that have taken their first weight and are ready to load. Pick the gate pass (scan / pick / type), optionally open its order, then Start Loading.", "children": [{"kind": "Form", "bindings": {"fields": [{"name": "gpNumber", "label": "Gate Pass # (scan / pick / type)", "type": "select", "required": true, "freeSolo": true, "scannable": true, "optionsSource": {"type": "entity", "entity": "GatePass", "lookupType": "gpNumbers", "valueField": "gp_number", "labelField": "gp_number"}, "onChangeFill": {"vehicle_no": "vehicle_no", "instanceId": "workflow_instance_id", "route_id": "route_id"}}, {"name": "vehicle_no", "label": "Vehicle", "type": "text", "readOnly": true}, {"name": "route_id", "label": "Route", "type": "text", "readOnly": true}]}}, {"kind": "Stack", "direction": "row", "gap": 12, "children": [{"kind": "WorkflowActionButton", "label": "▶ Start Loading", "action": "workflow.transition", "instanceId": "{{form.instanceId}}", "targetState": "LOADING_IN_PROGRESS", "color": "primary"}, {"kind": "WorkflowActionButton", "label": "📦 View Order", "action": "page.open", "page": "aria:loading-order", "color": "secondary"}]}]}]}]}'
+WHERE pd.code='aria:loading-in-progress' AND pv.body_json NOT LIKE '%WorkflowActionButton%';
