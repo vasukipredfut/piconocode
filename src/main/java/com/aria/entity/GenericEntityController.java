@@ -598,7 +598,7 @@ public class GenericEntityController {
             return jdbc.queryForList(
                 "SELECT gp_number AS value, CONCAT(gp_number, ' (', COALESCE(status, 'DRAFT'), ')') AS label " +
                 "FROM " + table +
-                " WHERE gp_number IS NOT NULL AND gp_number NOT LIKE 'probe-%' AND status NOT IN (" +
+                " WHERE gp_number IS NOT NULL AND status NOT IN (" +
                 "'CLOSED','GATE_PASS_OUT_CLOSED','QC_REJECTED','QC_PRELOAD_REJECTED'," +
                 "'QC_SAMPLE_REJECTED','QC_FINAL_OUT_REJECTED','REJECTED_BY_MANAGER') " +
                 "ORDER BY gp_number DESC");
