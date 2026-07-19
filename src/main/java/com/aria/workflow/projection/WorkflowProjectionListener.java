@@ -48,9 +48,16 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
         Long tenantId = TenantContext.get();
         List<Map<String, Object>> configs;
         try {
-            configs = jdbc.queryForList(
-                    "SELECT * FROM m0_workflow_projection WHERE workflow_code=? AND tenant_id=?",
-                    code, tenantId);
+            // Config resolves like the rest of the substrate: a product-default row
+            // at tenant_id=-1 applies to every tenant; a tenant-specific row (same
+            // target_table) overrides it. Without the -1 fallback, any tenant that
+            // wasn't hand-seeded projected nothing → its dispatch list came back empty.
+            List<Map<String, Object>> raw = jdbc.queryForList(
+                    "SELECT * FROM m0_workflow_projection WHERE workflow_code=? AND tenant_id IN (?, -1) "
+                            + "ORDER BY tenant_id DESC", code, tenantId);
+            LinkedHashMap<String, Map<String, Object>> byTable = new LinkedHashMap<>();
+            for (Map<String, Object> c : raw) byTable.putIfAbsent(String.valueOf(c.get("target_table")), c);
+            configs = new ArrayList<>(byTable.values());
         } catch (Exception e) {
             return; // table not applied yet — nothing to project
         }

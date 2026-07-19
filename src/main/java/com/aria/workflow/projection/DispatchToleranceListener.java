@@ -10,6 +10,8 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -62,10 +64,16 @@ public class DispatchToleranceListener implements WorkflowTransitionListener {
         Long tenantId = TenantContext.get();
         List<Map<String, Object>> configs;
         try {
-            configs = jdbc.queryForList(
+            // Product-default (tenant_id=-1) config applies to every tenant; a
+            // tenant-specific row for the same target_table overrides it.
+            List<Map<String, Object>> raw = jdbc.queryForList(
                     "SELECT target_table, key_column, tolerance_pct FROM m0_workflow_projection " +
-                            "WHERE workflow_code=? AND tenant_id=? AND tolerance_pct IS NOT NULL",
+                            "WHERE workflow_code=? AND tenant_id IN (?, -1) AND tolerance_pct IS NOT NULL " +
+                            "ORDER BY tenant_id DESC",
                     code, tenantId);
+            LinkedHashMap<String, Map<String, Object>> byTable = new LinkedHashMap<>();
+            for (Map<String, Object> c : raw) byTable.putIfAbsent(String.valueOf(c.get("target_table")), c);
+            configs = new ArrayList<>(byTable.values());
         } catch (Exception e) {
             return; // column/table not applied yet — nothing to enforce
         }
