@@ -71,7 +71,9 @@ public class PrintController {
         Long tenantId = TenantContext.get();
         Map<String, Object> tpl;
         try {
-            tpl = jdbc.queryForMap("SELECT * FROM print_template WHERE code=? AND tenant_id=?", code, tenantId);
+            tpl = jdbc.queryForMap(
+                    "SELECT * FROM print_template WHERE code=? AND tenant_id IN (?, -1) " +
+                    "ORDER BY tenant_id DESC LIMIT 1", code, tenantId);
         } catch (Exception e) {
             return ResponseEntity.status(404).body(Map.of("ok", false, "error", "no template '" + code + "'"));
         }
@@ -103,7 +105,8 @@ public class PrintController {
         Map<String, Object> tpl;
         try {
             tpl = jdbc.queryForMap(
-                    "SELECT * FROM print_template WHERE code=? AND tenant_id=?", code, tenantId);
+                    "SELECT * FROM print_template WHERE code=? AND tenant_id IN (?, -1) " +
+                    "ORDER BY tenant_id DESC LIMIT 1", code, tenantId);
         } catch (Exception e) {
             return ResponseEntity.status(404).body(errorPage("No print template '" + code + "'"));
         }
