@@ -3,7 +3,7 @@
 -- Idempotent throughout — safe to (re)run on any database.
 
 INSERT INTO `page_definition` (`tenant_id`, `code`, `title`, `category`, `status`)
-VALUES (1, 'aria:loading-point-list', 'Loading Points', 'M10', 'PUBLISHED')
+VALUES (1, 'aria:loading-point-list', 'Loading Points', 'Master', 'PUBLISHED')
 ON DUPLICATE KEY UPDATE `title` = VALUES(`title`), `category` = VALUES(`category`);
 
 INSERT IGNORE INTO `page_version` (`page_id`, `version`, `body_json`, `status`, `published_at`)
