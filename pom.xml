@@ -116,12 +116,6 @@
 			<artifactId>mariadb-java-client</artifactId>
 			<scope>runtime</scope>
 		</dependency>
-		<!-- add multiple database  -->
-		<dependency>
-			<groupId>com.microsoft.sqlserver</groupId>
-			<artifactId>mssql-jdbc</artifactId>
-			<scope>runtime</scope>
-		</dependency>
 		<!-- Schema migrations. ACTIVE (spring.flyway.enabled=true).
 		     flyway-mysql carries the MySQL/MariaDB dialect, which Flyway 9+ split
 		     out of core: without it, Flyway starts and then fails to recognise the

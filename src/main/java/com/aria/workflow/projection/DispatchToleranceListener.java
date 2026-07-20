@@ -99,7 +99,7 @@ public class DispatchToleranceListener implements WorkflowTransitionListener {
         Map<String, Object> gp;
         try {
             gp = jdbc.queryForMap(
-                    "SELECT w1_weight_kg, w2_weight_kg, route_id FROM gate_pass " +
+                    "SELECT w1_weight_kg, w2_weight_kg, route_id, ordered_qty FROM gate_pass " +
                             "WHERE workflow_instance_id=? AND tenant_id=?", instanceId, tenantId);
         } catch (Exception e) {
             return; // no gate_pass row yet
@@ -108,11 +108,17 @@ public class DispatchToleranceListener implements WorkflowTransitionListener {
         BigDecimal w1 = toBig(gp.get("w1_weight_kg"));
         BigDecimal w2 = toBig(gp.get("w2_weight_kg"));
         String route = (String) gp.get("route_id");
-        // Not enough to judge yet — leave the verdict untouched, don't block.
-        if (w1 == null || w2 == null || route == null || route.isBlank()) return;
+        BigDecimal ordered = toBig(gp.get("ordered_qty"));
+        // Not enough to judge yet — need both weighbridge reads. Don't block.
+        if (w1 == null || w2 == null) return;
 
-        BigDecimal expected = expectedWeightForRoute(route, tenantId);
-        if (expected == null || expected.signum() <= 0) return; // no SKU-weight basis → not applicable
+        // Prefer the linked OrderApp order's ordered weight — "OrderApp qty vs
+        // loading qty" is exactly what the PMT screen compares. Fall back to the
+        // route's SKU-weight basis when no order is linked to the gate pass.
+        BigDecimal expected = (ordered != null && ordered.signum() > 0)
+                ? ordered
+                : (route != null && !route.isBlank() ? expectedWeightForRoute(route, tenantId) : null);
+        if (expected == null || expected.signum() <= 0) return; // no basis → not applicable
 
         BigDecimal loaded = w1.subtract(w2).abs();
         BigDecimal variancePct = variancePct(loaded, expected);

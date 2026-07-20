@@ -97,6 +97,18 @@ public class WorkflowController {
         return ResponseEntity.ok(engine.queueForPersona(persona, page, size));
     }
 
+    @GetMapping("/queue-for-page")
+    @Operation(summary = "List open instances currently at a state this page acts on (step-scoped queue). "
+            + "404 when the page is not a workflow step, so the UI can fall back to the persona queue.")
+    public ResponseEntity<List<WorkflowQueueItem>> queueForPage(
+            @RequestParam("pageCode") String pageCode,
+            @RequestParam(defaultValue = "0") @Min(0) int page,
+            @RequestParam(defaultValue = "25") @Min(1) int size) {
+        List<WorkflowQueueItem> items = engine.queueForPage(pageCode, page, size);
+        if (items == null) return ResponseEntity.notFound().build();
+        return ResponseEntity.ok(items);
+    }
+
     @PostMapping("/instances/{id}/cancel")
     @Operation(summary = "Admin cancel of an open instance.")
     public ResponseEntity<Map<String, Object>> cancel(@PathVariable Long id, @RequestBody(required = false) CancelRequest req) {

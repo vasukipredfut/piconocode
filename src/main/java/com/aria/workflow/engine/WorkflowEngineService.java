@@ -23,10 +23,12 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Core workflow runtime. Single primary class — by design — that owns:
@@ -266,6 +268,49 @@ public class WorkflowEngineService {
         return instances.queueForPersona(tenantId, persona, p).getContent().stream()
                 .map(this::toQueueItem)
                 .toList();
+    }
+
+    /**
+     * Page-scoped work queue: only the open instances whose current state is
+     * a state this page acts on (the {@code from} of a transition that submits
+     * this page). Returns {@code null} when {@code pageCode} is not used by any
+     * transition — i.e. it is not a workflow step page (e.g. a persona inbox) —
+     * so the caller can fall back to the persona queue.
+     */
+    @Transactional(value = "m0PageTransactionManager", readOnly = true)
+    public List<WorkflowQueueItem> queueForPage(String pageCode, int page, int size) {
+        Long tenantId = TenantContext.get();
+        Set<String> states = statesForPage(tenantId, pageCode);
+        if (states.isEmpty()) return null; // not a step page — caller falls back
+        Pageable p = PageRequest.of(Math.max(page, 0), Math.max(1, Math.min(size, 100)));
+        return instances.queueForStates(tenantId, states, p).getContent().stream()
+                .map(this::toQueueItem)
+                .toList();
+    }
+
+    /** The {@code from} states of every transition (any workflow) that submits this page. */
+    @SuppressWarnings("unchecked")
+    private Set<String> statesForPage(Long tenantId, String pageCode) {
+        Set<String> states = new HashSet<>();
+        if (pageCode == null || pageCode.isBlank()) return states;
+        for (WorkflowDefinition def : definitions.findAllPublished(tenantId)) {
+            Map<String, Object> body;
+            try {
+                body = parseBody(def);
+            } catch (Exception e) {
+                continue; // skip a malformed def rather than fail the whole queue
+            }
+            Object raw = body.get("transitions");
+            if (!(raw instanceof List<?> list)) continue;
+            for (Object o : list) {
+                if (o instanceof Map<?, ?> t
+                        && pageCode.equals(t.get("pageCode"))
+                        && t.get("from") != null) {
+                    states.add(t.get("from").toString());
+                }
+            }
+        }
+        return states;
     }
 
     @Transactional(value = "m0PageTransactionManager", readOnly = true)

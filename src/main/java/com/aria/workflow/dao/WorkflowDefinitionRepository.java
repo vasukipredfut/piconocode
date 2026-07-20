@@ -30,6 +30,15 @@ public interface WorkflowDefinitionRepository extends JpaRepository<WorkflowDefi
     }
 
     /**
+     * Every PUBLISHED definition visible to a tenant (its own forks + product
+     * globals at -1). Used to resolve which states a given page acts on, for
+     * the page-scoped work queue.
+     */
+    @Query("SELECT w FROM WorkflowDefinition w " +
+            "WHERE w.tenantId IN (:tenantId, -1) AND w.status = 'PUBLISHED'")
+    java.util.List<WorkflowDefinition> findAllPublished(@Param("tenantId") Long tenantId);
+
+    /**
      * Exact definition by (owner, code, version).
      *
      * <p>The owner is the tenant that OWNS the definition (-1 for a product flow,

@@ -10,6 +10,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.Optional;
 
 @Repository
@@ -32,5 +33,19 @@ public interface WorkflowInstanceRepository extends JpaRepository<WorkflowInstan
     Page<WorkflowInstance> queueForPersona(
             @Param("tenantId") Long tenantId,
             @Param("persona") String persona,
+            Pageable pageable);
+
+    /**
+     * Open instances whose current state is one this page acts on — the
+     * "relevant gate passes for this step". Used by the page-scoped work
+     * queue so a step page shows only the vehicles actually at its step,
+     * not every open instance that happens to share the persona.
+     */
+    @Query("SELECT w FROM WorkflowInstance w " +
+            "WHERE w.tenantId = :tenantId AND w.currentState IN :states AND w.status = 'OPEN' " +
+            "ORDER BY w.updatedAt DESC")
+    Page<WorkflowInstance> queueForStates(
+            @Param("tenantId") Long tenantId,
+            @Param("states") Collection<String> states,
             Pageable pageable);
 }
