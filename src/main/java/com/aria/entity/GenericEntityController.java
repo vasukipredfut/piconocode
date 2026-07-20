@@ -300,6 +300,112 @@ public class GenericEntityController {
         }
     }
 
+    /**
+     * Bulk upsert — for loading spreadsheet/CSV data into any registry-backed
+     * entity without a bespoke migration per batch. Body: {@code {"rows": [ {...}, {...} ]}}.
+     *
+     * <p>Each row is filtered through the same {@code entity_field_registry} +
+     * {@code SAFE_IDENT} allowlist as the single-row {@link #insert}, then
+     * written with {@code INSERT ... ON DUPLICATE KEY UPDATE}: rows that hit
+     * an existing unique key (e.g. SkuMaster's {@code sku_code}) update in
+     * place, everything else inserts. Tables with no natural unique key just
+     * always insert, same as {@link #insert} called in a loop.
+     *
+     * <p>Rows are applied one at a time so one bad row (unknown column, bad
+     * type) doesn't abort the batch — its index and error are collected and
+     * returned alongside the rows that did succeed. Capped at 2000 rows per
+     * call; split larger files client-side.
+     */
+    @PostMapping("/{code}/bulk")
+    public ResponseEntity<?> bulkUpsert(@PathVariable String code, @RequestBody Map<String, Object> body) {
+        Map<String, Object> reg = lookupRegistry(code);
+        ResponseEntity<?> denied = checkRole(reg, "write");
+        if (denied != null) return denied;
+        String table = (String) reg.get("table_name");
+        assertSafe(table);
+
+        Object rowsObj = body.get("rows");
+        if (!(rowsObj instanceof List<?> rawRows) || rawRows.isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Expected a non-empty \"rows\" array"));
+        }
+        if (rawRows.size() > 2000) {
+            return ResponseEntity.badRequest().body(
+                Map.of("error", "Too many rows in one call (" + rawRows.size() + " > 2000); split into batches"));
+        }
+
+        Set<String> declared = jdbc.queryForList(
+                "SELECT f.field_code FROM entity_field_registry f" + FIELD_RESOLUTION,
+                String.class, fieldArgs(code)).stream().collect(java.util.stream.Collectors.toSet());
+        // One round-trip for the whole batch instead of tableHasColumn() per
+        // field per row — against a high-latency DB link, that per-cell check
+        // turned a few hundred rows into thousands of round-trips.
+        Set<String> tableColumns = jdbc.queryForList(
+                "SELECT column_name FROM information_schema.columns " +
+                "WHERE table_schema=DATABASE() AND table_name=? AND EXTRA NOT LIKE '%GENERATED%'",
+                String.class, table).stream().collect(java.util.stream.Collectors.toSet());
+        boolean hasTenant = tableColumns.contains("tenant_id");
+
+        int inserted = 0, updated = 0, unchanged = 0;
+        List<Map<String, Object>> errors = new ArrayList<>();
+
+        for (int i = 0; i < rawRows.size(); i++) {
+            Object rawRow = rawRows.get(i);
+            if (!(rawRow instanceof Map<?, ?> rawMap)) {
+                errors.add(Map.of("index", i, "error", "Row is not an object"));
+                continue;
+            }
+            Map<String, Object> safe = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> e : rawMap.entrySet()) {
+                String key = String.valueOf(e.getKey());
+                if (!SAFE_IDENT.matcher(key).matches()) continue;
+                // Same reasoning as insert(): tenant_id is stamped from context,
+                // never taken from the payload; id is never client-assigned here.
+                if (key.equals("tenant_id") || key.equals("id")) continue;
+                if (declared.contains(key) && tableColumns.contains(key)) {
+                    safe.put(key, e.getValue());
+                }
+            }
+            if (safe.isEmpty()) {
+                errors.add(Map.of("index", i, "error", "No valid fields in row (expected any of " + declared + ")"));
+                continue;
+            }
+            if (hasTenant) safe.put("tenant_id", TenantContext.get());
+            encryptSecretsInPlace(code, safe);
+
+            String cols = String.join(",", safe.keySet());
+            String marks = String.join(",", java.util.Collections.nCopies(safe.size(), "?"));
+            String updateClause = safe.keySet().stream()
+                    .map(k -> k + "=VALUES(" + k + ")")
+                    .collect(java.util.stream.Collectors.joining(", "));
+            String sql = "INSERT INTO " + table + " (" + cols + ") VALUES (" + marks + ") " +
+                    "ON DUPLICATE KEY UPDATE " + updateClause;
+            try {
+                int affected = jdbc.update(sql, safe.values().toArray());
+                // MariaDB/MySQL JDBC convention: 1 = fresh insert, 2 = existing
+                // row updated, 0 = duplicate hit but every value was identical.
+                if (affected == 1) inserted++;
+                else if (affected == 2) updated++;
+                else unchanged++;
+            } catch (Exception ex) {
+                errors.add(Map.of("index", i, "error", ex.getClass().getSimpleName() + ": " + ex.getMessage()));
+            }
+        }
+
+        writeAudit("BULK_CREATE", code, null, null, Map.of(
+                "total", rawRows.size(), "inserted", inserted, "updated", updated, "failed", errors.size()));
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("ok", errors.isEmpty());
+        result.put("entity", code);
+        result.put("total", rawRows.size());
+        result.put("inserted", inserted);
+        result.put("updated", updated);
+        result.put("unchanged", unchanged);
+        result.put("failed", errors.size());
+        if (!errors.isEmpty()) result.put("errors", errors);
+        return ResponseEntity.ok(result);
+    }
+
     @PutMapping("/{code}/{id}")
     public ResponseEntity<?> update(@PathVariable String code, @PathVariable long id,
                                        @RequestBody Map<String, Object> body) {
