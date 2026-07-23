@@ -46,6 +46,15 @@ public class DataSourceSpec {
     /** Hard cap on result rows; pagination uses LIMIT/OFFSET on top. */
     private Integer limit;
 
+    /**
+     * Optional GROUP BY field codes. When present, the query returns one row
+     * per distinct combination of these fields plus a {@code count} column
+     * (COUNT(*)) instead of raw entity rows — filter/sort/pagination still
+     * apply, sort just orders the groups. Absent (the default) leaves every
+     * other entity's query completely unchanged.
+     */
+    private List<String> groupBy;
+
     @Data @NoArgsConstructor @AllArgsConstructor @Builder
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class Filter {

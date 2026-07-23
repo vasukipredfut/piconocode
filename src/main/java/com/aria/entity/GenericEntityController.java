@@ -557,15 +557,38 @@ public class GenericEntityController {
             String beforeJson = before == null ? null : toJsonSafe(before);
             String afterJson = after == null ? null : toJsonSafe(after);
             String message = kind + " " + entityCode + (entityId != null ? "#" + entityId : "");
+            Map<String, Object> gatePassFields = resolveGatePassFields(kind, entityCode, entityId, before);
             jdbc.update(
-                "INSERT INTO m0_audit_log (tenant_id, ts, actor_id, action_kind, entity_code, entity_id, message, payload_json) " +
-                "VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO m0_audit_log (tenant_id, ts, actor_id, action_kind, entity_code, entity_id, " +
+                "vehicle_no, gp_number, message, payload_json) " +
+                "VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?)",
                 TenantContext.get(), currentUserId(), kind, entityCode, entityId,
+                gatePassFields.get("vehicle_no"), gatePassFields.get("gp_number"),
                 message, afterJson != null ? afterJson : beforeJson);
         } catch (Exception ignored) {
             // Audit-log writes must never break the mutation that triggered them.
             // The page returns ok and downstream consumers can compare DB to
             // payload if the audit row is missing.
+        }
+    }
+
+    /**
+     * Denormalizes vehicle_no/gp_number onto the audit row for GatePass
+     * mutations, so the Audit Tracker Group-By feature can group directly on
+     * m0_audit_log with no joins. DELETE reads the fields from the
+     * pre-delete snapshot (the row is already gone); CREATE/UPDATE re-select
+     * the current row (the write already happened by this point).
+     */
+    private Map<String, Object> resolveGatePassFields(String kind, String entityCode, Long entityId, Map<String, Object> before) {
+        if (!"GatePass".equals(entityCode)) return Map.of();
+        if ("DELETE".equals(kind)) {
+            return before == null ? Map.of() : before;
+        }
+        if (entityId == null) return Map.of();
+        try {
+            return jdbc.queryForMap("SELECT vehicle_no, gp_number FROM gate_pass WHERE id = ?", entityId);
+        } catch (Exception e) {
+            return Map.of();
         }
     }
 
