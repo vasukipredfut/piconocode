@@ -19,9 +19,19 @@ import java.util.Map;
  *   <li>{@code writeSingleRegister}  — payload {unitId, address, value}</li>
  *   <li>{@code readCoils}            — payload {unitId, address, count}</li>
  *   <li>{@code writeSingleCoil}      — payload {unitId, address, value(bool)}</li>
+ *   <li>{@code signalAccept}         — payload {} — pulses the configured accept coil</li>
+ *   <li>{@code signalReject}         — payload {} — pulses the configured reject coil</li>
  * </ul>
  *
- * <p>Config: {@code { "host":"plc-01.factory.local", "port":502, "timeoutMs":2000, "dryRun":true }}.
+ * <p>{@code signalAccept}/{@code signalReject} exist so the conveyor
+ * orchestration layer (see {@code com.aria.conveyor.service.PlcSignalService})
+ * never has to know a coil address — it just says "accept" or "reject" and
+ * this adapter maps that to whichever coil this PLC instance is configured
+ * with. That per-instance mapping is exactly what keeps "no hardcoded
+ * line-specific logic" true at the point where it matters.
+ *
+ * <p>Config: {@code { "host":"plc-01.factory.local", "port":502, "timeoutMs":2000,
+ * "acceptCoilAddress":10, "rejectCoilAddress":11, "pulseMs":250, "dryRun":true }}.
  * dryRun=true logs the request and returns synthetic values — lets shop-floor
  * pages drive end-to-end without a real PLC. Real impl would use j2mod's
  * {@code ModbusTCPMaster}.
@@ -63,8 +73,11 @@ public class ModbusTcpAdapter implements IntegrationAdapter {
                 case "writeSingleRegister" -> writeReg(payload, "HOLDING", dryRun);
                 case "readCoils" -> readRegs(payload, "COIL", dryRun);
                 case "writeSingleCoil" -> writeReg(payload, "COIL", dryRun);
+                case "signalAccept" -> pulseCoil(config, "acceptCoilAddress", "ACCEPT", dryRun);
+                case "signalReject" -> pulseCoil(config, "rejectCoilAddress", "REJECT", dryRun);
                 default -> OutboundResult.failed("unknown_op",
-                        "Modbus supports readHoldingRegisters/writeSingleRegister/readCoils/writeSingleCoil; got: " + operation);
+                        "Modbus supports readHoldingRegisters/writeSingleRegister/readCoils/writeSingleCoil/"
+                                + "signalAccept/signalReject; got: " + operation);
             };
         } catch (Exception e) {
             log.warn("Modbus invoke failed: {}", e.toString());
@@ -102,6 +115,22 @@ public class ModbusTcpAdapter implements IntegrationAdapter {
                     .build();
         }
         return OutboundResult.failed("not_implemented_live", "Live Modbus write unwired; flip dryRun=true");
+    }
+
+    private OutboundResult pulseCoil(Map<String, Object> config, String coilAddressConfigKey, String signal, boolean dryRun) throws IOException {
+        Object addr = config.get(coilAddressConfigKey);
+        if (addr == null) {
+            return OutboundResult.failed("bad_config", "instance config." + coilAddressConfigKey + " is required for " + signal);
+        }
+        int pulseMs = config.get("pulseMs") instanceof Number n ? n.intValue() : 250;
+        if (dryRun) {
+            log.info("Modbus DRY-RUN {} coil addr={} pulseMs={}", signal, addr, pulseMs);
+            return OutboundResult.builder().ok(true).status(200)
+                    .body(mapper.writeValueAsString(Map.of(
+                            "signal", signal, "coilAddress", addr, "pulseMs", pulseMs, "dryRun", true)))
+                    .build();
+        }
+        return OutboundResult.failed("not_implemented_live", "Live Modbus coil pulse unwired; flip dryRun=true");
     }
 
     @SuppressWarnings("unchecked")

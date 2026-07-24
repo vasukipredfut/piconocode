@@ -65,7 +65,7 @@ class RoundSixServicesTest {
 
     @Test
     void conveyor_start_dryRun_emits_topic() {
-        OutboundResult r = new ConveyorMqttAdapter().invoke(inst("{\"dryRun\":true,\"topicBase\":\"factory/conveyor\"}"),
+        OutboundResult r = new ConveyorMqttAdapter(null).invoke(inst("{\"dryRun\":true,\"topicBase\":\"factory/conveyor\"}"),
                 "start", Map.of("lineId", "PACK-1"), Map.of());
         assertThat(r.isOk()).isTrue();
         assertThat(r.getBody()).contains("factory/conveyor/PACK-1/cmd").contains("START");
@@ -73,7 +73,7 @@ class RoundSixServicesTest {
 
     @Test
     void conveyor_setSpeed_dryRun_emits_args() {
-        OutboundResult r = new ConveyorMqttAdapter().invoke(inst("{\"dryRun\":true}"),
+        OutboundResult r = new ConveyorMqttAdapter(null).invoke(inst("{\"dryRun\":true}"),
                 "setSpeed", Map.of("lineId", "PACK-1", "speedRpm", 240), Map.of());
         assertThat(r.isOk()).isTrue();
         assertThat(r.getBody()).contains("SET_SPEED").contains("240");
@@ -81,7 +81,7 @@ class RoundSixServicesTest {
 
     @Test
     void conveyor_divert_dryRun_emits_destination() {
-        OutboundResult r = new ConveyorMqttAdapter().invoke(inst("{\"dryRun\":true}"),
+        OutboundResult r = new ConveyorMqttAdapter(null).invoke(inst("{\"dryRun\":true}"),
                 "divert", Map.of("lineId", "PACK-1", "divertTo", "SPOIL-BIN"), Map.of());
         assertThat(r.isOk()).isTrue();
         assertThat(r.getBody()).contains("DIVERT").contains("SPOIL-BIN");
@@ -89,7 +89,7 @@ class RoundSixServicesTest {
 
     @Test
     void conveyor_missingLineId_isBadRequest() {
-        OutboundResult r = new ConveyorMqttAdapter().invoke(inst("{\"dryRun\":true}"),
+        OutboundResult r = new ConveyorMqttAdapter(null).invoke(inst("{\"dryRun\":true}"),
                 "start", Map.of(), Map.of());
         assertThat(r.isOk()).isFalse();
         assertThat(r.getErrorCode()).isEqualTo("bad_request");

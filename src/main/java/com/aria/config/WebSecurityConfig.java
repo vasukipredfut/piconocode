@@ -90,6 +90,11 @@ public class WebSecurityConfig {
                     "/api/m0/element-catalog",
                     // M11 inbound-webhook endpoint — auth carried in the URL token.
                     "/api/integrations/inbound/**",
+                    // Raspberry Pi conveyor devices — no interactive login on the
+                    // device, so these run tokenless (falls back to DEFAULT tenant
+                    // via TenantContextFilter, same as any other permit-all route).
+                    "/api/scanner/workflows/**",
+                    "/api/conveyor/**",
                     "/v2/api-docs",
                     "/v3/api-docs/**",
                     "/api-docs/**",

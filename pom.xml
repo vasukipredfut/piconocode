@@ -305,6 +305,15 @@
 			<version>3.5.3</version>
 		</dependency>
 
+		<!-- Real MQTT client for com.aria.integration.mqtt / ConveyorMqttAdapter
+		     (conveyor workflow orchestration) — MQTT v3.1.1 for broadest
+		     Raspberry-Pi/broker compatibility. -->
+		<dependency>
+			<groupId>org.eclipse.paho</groupId>
+			<artifactId>org.eclipse.paho.client.mqttv3</artifactId>
+			<version>1.2.5</version>
+		</dependency>
+
 	</dependencies>
 
 

@@ -19,4 +19,7 @@ public interface IntegrationInstanceRepository extends JpaRepository<Integration
     Optional<IntegrationInstance> findByIdAndTenantId(Long id, Long tenantId);
 
     boolean existsByTenantIdAndCode(Long tenantId, String code);
+
+    /** Across ALL tenants — used by background subscribers (e.g. MqttClientManager) that have no request-scoped tenant. */
+    List<IntegrationInstance> findByConnectorCodeAndStatus(String connectorCode, String status);
 }

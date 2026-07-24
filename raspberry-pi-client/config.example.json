@@ -1,0 +1,8 @@
+{
+  "baseUrl": "http://localhost:8080",
+  "workflowCode": "M12.ConveyorTest",
+  "stepCode": "SCANNING",
+  "bayCode": "BAY1",
+  "deviceId": "PI-BAY1",
+  "scannerIntegrationId": 10
+}
