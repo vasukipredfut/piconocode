@@ -25,6 +25,12 @@
 --    including a layout hint: dimension/filter selector on top, grouped
 --    summary list below it.
 
+ALTER TABLE m0_audit_log
+  ADD COLUMN IF NOT EXISTS vehicle_no VARCHAR(32) DEFAULT NULL AFTER entity_id,
+  ADD COLUMN IF NOT EXISTS gp_number VARCHAR(32) DEFAULT NULL AFTER vehicle_no,
+  ADD KEY IF NOT EXISTS idx_audit_vehicle (tenant_id, vehicle_no, ts),
+  ADD KEY IF NOT EXISTS idx_audit_gpnumber (tenant_id, gp_number, ts);
+
 CREATE OR REPLACE VIEW v_m0_audit_event AS
 SELECT
   al.id,
@@ -49,12 +55,6 @@ SELECT
   al.payload_json
 FROM m0_audit_log al
 LEFT JOIN workflow_instance wi ON wi.id = al.workflow_instance_id;
-
-ALTER TABLE m0_audit_log
-  ADD COLUMN IF NOT EXISTS vehicle_no VARCHAR(32) DEFAULT NULL AFTER entity_id,
-  ADD COLUMN IF NOT EXISTS gp_number VARCHAR(32) DEFAULT NULL AFTER vehicle_no,
-  ADD KEY IF NOT EXISTS idx_audit_vehicle (tenant_id, vehicle_no, ts),
-  ADD KEY IF NOT EXISTS idx_audit_gpnumber (tenant_id, gp_number, ts);
 
 -- Backfill historical rows from all three sources of vehicle/gate-pass
 -- identity (see the view comment above for the two business_ref conventions).

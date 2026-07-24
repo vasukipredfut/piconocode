@@ -13,8 +13,12 @@
 -- gate_pass_weighment.
 --
 -- Fix: create the real table under a name that doesn't collide
--- (weighment_capture_detail), then repoint the 4 existing projection rows at
--- it instead of deleting/reinserting (keeps their history/ids stable).
+-- (weighment_capture_detail). The 4 projection rows already pointed at
+-- weighment_capture_detail (ids 28/29/30/31 — pre-existing, byte-identical
+-- config to what V81 wrote for gate_pass_weighment) so there's nothing to
+-- repoint; just drop V81's redundant gate_pass_weighment rows instead of
+-- UPDATE-ing them onto a target_table that already has a row for the same
+-- (tenant_id, workflow_code), which would violate uq_wf_projection.
 
 -- 1. The real table, correctly named.
 CREATE TABLE IF NOT EXISTS weighment_capture_detail (
@@ -48,8 +52,10 @@ FROM (SELECT 'flow_variant_code' fc,'Flow Variant' lbl,'STRING' dt,1 filt,1 sort
       UNION ALL SELECT 'w3_weight_kg','Third Weight (kg)','DECIMAL',0,1,0,'number') c
 WHERE NOT EXISTS (SELECT 1 FROM entity_field_registry WHERE entity_code='WeighmentCaptureDetail' AND field_code=c.fc);
 
--- 3. Repoint the 4 projection rows V81 aimed at the colliding table.
-UPDATE m0_workflow_projection
-SET target_table = 'weighment_capture_detail'
-WHERE target_table = 'gate_pass_weighment'
+-- 3. Drop the 4 redundant projection rows V81 aimed at the colliding table —
+--    a row for weighment_capture_detail already exists for each of these
+--    (tenant_id, workflow_code) pairs, so repointing would collide with it.
+DELETE FROM m0_workflow_projection
+WHERE tenant_id = -1
+  AND target_table = 'gate_pass_weighment'
   AND workflow_code IN ('M10.FGLoading','M10.PackLoading','M10.TankerInbound','M10.TankerOutbound');
