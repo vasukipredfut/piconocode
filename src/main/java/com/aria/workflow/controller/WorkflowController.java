@@ -140,6 +140,10 @@ public class WorkflowController {
     public ResponseEntity<Map<String, String>> guardErr(WorkflowGuardErrorException e) {
         return ResponseEntity.status(409).body(Map.of("error", e.getMessage()));
     }
+    @ExceptionHandler(com.aria.workflow.engine.WorkflowValidationException.class)
+    public ResponseEntity<Map<String, String>> validationRejected(com.aria.workflow.engine.WorkflowValidationException e) {
+        return ResponseEntity.status(422).body(Map.of("error", "validation_failed", "message", e.getMessage()));
+    }
     @ExceptionHandler(com.aria.workflow.engine.WorkflowGuardRejectedException.class)
     public ResponseEntity<Map<String, Object>> guardRejected(
             com.aria.workflow.engine.WorkflowGuardRejectedException e) {

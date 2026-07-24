@@ -1,0 +1,34 @@
+-- V82 — Dispatch Vehicle Details (aria:dispatch-vehicle-details): capture
+-- the Gate Pass # alongside the vehicle detail, saved into
+-- dispatch_vehicle_detail itself (it only had workflow_instance_id before,
+-- no human-readable gp_number column).
+--
+-- gp_number is a native gate_pass column (never moved anywhere by V79-V81),
+-- so the existing vehicleNo picker's onChangeFill can pull it straight off
+-- the full GatePass row (GenericEntityController.getRowByField, unaffected
+-- by any of the earlier satellite-table changes) — no Java change needed,
+-- page-JSON only.
+
+-- 1. New column.
+ALTER TABLE dispatch_vehicle_detail ADD COLUMN IF NOT EXISTS gp_number VARCHAR(32) DEFAULT NULL;
+
+-- 2. Register the field.
+INSERT INTO entity_field_registry (id, tenant_id, entity_code, field_code, display_label, data_type, filterable, sortable, searchable, required, widget_kind)
+SELECT (SELECT COALESCE(MAX(id),0)+1 FROM entity_field_registry x), -1, 'DispatchVehicleDetail', 'gp_number', 'Gate Pass #', 'STRING', 1, 1, 1, 0, 'text'
+FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM entity_field_registry WHERE entity_code='DispatchVehicleDetail' AND field_code='gp_number');
+
+-- 3. Project it into dispatch_vehicle_detail (same 3 workflow_codes already
+--    configured for this target_table).
+UPDATE m0_workflow_projection
+SET field_map_json = JSON_MERGE_PATCH(COALESCE(field_map_json, JSON_OBJECT()),
+  JSON_OBJECT('gp_number', JSON_ARRAY('gp_number', 'gpNumber')))
+WHERE target_table='dispatch_vehicle_detail' AND workflow_code IN ('M10.FGLoading','M10.PackLoading','M10.TankerOutbound')
+  AND JSON_EXTRACT(field_map_json,'$.gp_number') IS NULL;
+
+-- 4. aria:dispatch-vehicle-details: add gpNumber to the vehicleNo picker's
+--    onChangeFill, plus a readOnly display field. Everything else (queue,
+--    ownership/driver/broker/invoice/PO/transport fields, Save button) is
+--    carried over unchanged from the live V69 body.
+UPDATE page_version pv JOIN page_definition pd ON pd.current_version_id=pv.id
+SET pv.body_json='{"kind": "layout", "schemaVersion": 2, "dataSources": [{"id": "dispatchQueue", "kind": "rest", "method": "GET", "url": "/api/workflow/queue/Dispatch"}], "layout": [{"kind": "Section", "title": "Dispatch Queue (Open)", "fields": [{"kind": "WorkflowQueueList", "persona": "Dispatch", "dataSource": "dispatchQueue", "pageSize": 25, "cardFields": ["vehicleNo", "gpNumber", "flowVariant", "currentState"]}]}, {"kind": "Section", "title": "Vehicle & Dispatch Details", "fields": [{"kind": "FormField", "type": "select", "name": "vehicleNo", "label": "Vehicle Number", "required": true, "placeholder": "Select vehicle awaiting dispatch entry", "optionsSource": {"type": "datasource", "spec": {"type": "entity", "entity": "GatePass", "joins": [{"entity": "WorkflowInstance", "as": "wi", "on": "gate_pass.workflow_instance_id = wi.id"}], "filter": {"and": [{"field": "wi.assigned_role", "op": "eq", "value": "Dispatch"}, {"field": "wi.status", "op": "eq", "value": "OPEN"}]}, "select": ["id", "vehicle_no"], "sort": [{"field": "vehicle_no", "dir": "asc"}]}, "valueField": "vehicle_no", "labelField": "vehicle_no"}, "onChangeFill": {"gpNumber": "gp_number", "flowVariantCode": "flow_variant_code", "loadingType": "loading_type", "instanceId": "workflow_instance_id"}}, {"kind": "FormField", "type": "text", "name": "gpNumber", "label": "Gate Pass #", "disabled": true}, {"kind": "FormField", "type": "text", "name": "flowVariantCode", "label": "Flow Variant", "disabled": true}, {"kind": "FormField", "type": "text", "name": "loadingType", "label": "Loading Type", "disabled": true}, {"kind": "FormField", "type": "text", "name": "instanceId", "label": "Workflow Instance", "disabled": true}, {"kind": "FormField", "type": "select", "name": "ownershipType", "label": "Ownership", "options": ["OWN VEHICLE", "HIRED VEHICLE"]}, {"kind": "FormField", "type": "text", "name": "driverName", "label": "Driver Name"}, {"kind": "FormField", "type": "text", "name": "driverPhone", "label": "Driver Contact"}, {"kind": "FormField", "type": "text", "name": "brokerName", "label": "Broker Details", "visibleWhen": "#form.flowVariantCode == \'M10.TankerOutbound\' || #form.flowVariantCode == \'M10.TankerInbound\'"}, {"kind": "FormField", "type": "text", "name": "invoiceNo", "label": "Invoice No", "visibleWhen": "#form.flowVariantCode == \'M10.TankerOutbound\' || #form.flowVariantCode == \'M10.TankerInbound\'"}, {"kind": "FormField", "type": "number", "name": "invoiceQty", "label": "Invoice Qty", "visibleWhen": "#form.flowVariantCode == \'M10.TankerOutbound\' || #form.flowVariantCode == \'M10.TankerInbound\'"}, {"kind": "FormField", "type": "text", "name": "vendorName", "label": "Vendor Details", "visibleWhen": "#form.flowVariantCode == \'M10.TankerOutbound\' || #form.flowVariantCode == \'M10.TankerInbound\'"}, {"kind": "FormField", "type": "text", "name": "oilRmItem", "label": "Oil RM Details", "visibleWhen": "#form.flowVariantCode == \'M10.TankerOutbound\' || #form.flowVariantCode == \'M10.TankerInbound\'"}, {"kind": "FormField", "type": "text", "name": "tankerNo", "label": "Tanker Number", "visibleWhen": "#form.flowVariantCode == \'M10.TankerOutbound\' || #form.flowVariantCode == \'M10.TankerInbound\'"}, {"kind": "FormField", "type": "select", "name": "poVerified", "label": "PO Verified", "options": ["YES", "NO - MANAGER APPROVAL"], "visibleWhen": "#form.flowVariantCode == \'M10.TankerOutbound\' || #form.flowVariantCode == \'M10.TankerInbound\'"}, {"kind": "FormField", "type": "text", "name": "poOverrideReason", "label": "Reason (if PO not verified)", "visibleWhen": "(#form.flowVariantCode == \'M10.TankerOutbound\' || #form.flowVariantCode == \'M10.TankerInbound\') && #form.poVerified != \'YES\'", "requiredWhen": "(#form.flowVariantCode == \'M10.TankerOutbound\' || #form.flowVariantCode == \'M10.TankerInbound\') && #form.poVerified != \'YES\'"}, {"kind": "FormField", "type": "text", "name": "dispatchOfficerName", "label": "Dispatch Front Officer Name", "visibleWhen": "#form.flowVariantCode == \'M10.TankerOutbound\' || #form.flowVariantCode == \'M10.TankerInbound\'"}, {"kind": "FormField", "type": "text", "name": "transportName", "label": "Transport Name", "visibleWhen": "#form.flowVariantCode == \'M10.PackLoading\' || #form.flowVariantCode == \'M10.FGLoading\' || #form.flowVariantCode == \'M10.TankerOutbound\'"}, {"kind": "FormField", "type": "textarea", "name": "packingFgStockDetails", "label": "Packing / FG Stock Details", "visibleWhen": "#form.flowVariantCode == \'M10.PackLoading\' || #form.flowVariantCode == \'M10.FGLoading\'"}, {"kind": "WorkflowActionButton", "label": "Save Vehicle Details", "action": "workflow.transition", "instanceId": "{{form.instanceId}}", "variant": "primary"}]}], "entity": "DispatchVehicleDetail"}'
+WHERE pd.code = 'aria:dispatch-vehicle-details' AND pv.body_json NOT LIKE '%"gpNumber"%';

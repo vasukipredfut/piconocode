@@ -63,7 +63,7 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
         }
         for (Map<String, Object> cfg : configs) {
             try {
-                project(cfg, instance, tenantId, submittedDataBag);
+                project(cfg, instance, tenantId, previousState, submittedDataBag);
             } catch (Exception ex) {
                 log.warn("projection failed for workflow={} instance={}: {}",
                         code, instance.getId(), ex.getMessage());
@@ -73,7 +73,7 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
 
     @SuppressWarnings("unchecked")
     private void project(Map<String, Object> cfg, WorkflowInstance instance,
-                         Long tenantId, Map<String, Object> bag) throws Exception {
+                         Long tenantId, String previousState, Map<String, Object> bag) throws Exception {
         String table = ident((String) cfg.get("target_table"));
         String keyCol = ident(orDefault((String) cfg.get("key_column"), "workflow_instance_id"));
         Long instanceId = instance.getId();
@@ -87,7 +87,46 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
         String fieldMapJson = (String) cfg.get("field_map_json");
         if (fieldMapJson != null && !fieldMapJson.isBlank()) {
             Map<String, Object> map = MAPPER.readValue(fieldMapJson, Map.class);
+            boolean isGatePass = "gate_pass".equals(table);
             for (Map.Entry<String, Object> e : map.entrySet()) {
+                // variance_reason is a name shared by six PMT/manager-approval pages;
+                // PmtSharedReasonListener already routes four of them into their own
+                // satellite table, so gate_pass no longer needs (or should keep) a
+                // copy for those four — it would just be last-write-wins noise.
+                // weight-diff-entry / reconciliation aren't covered yet, so this only
+                // skips the four transitions PmtSharedReasonListener actually owns.
+                if (isGatePass && "variance_reason".equals(e.getKey())
+                        && PmtSharedReasonListener.ownsVarianceReason(instance.getWorkflowCode(), previousState)) {
+                    continue;
+                }
+                // invoice_no is shared by aria:dispatch-vehicle-details (vendor
+                // invoice, already captured in dispatch_vehicle_detail) and
+                // aria:billing-entry (sales invoice, no dedicated table yet —
+                // gate_pass is still its only save location).
+                if (isGatePass && "invoice_no".equals(e.getKey())) {
+                    // dispatch-vehicle-details' own transition: don't write gate_pass
+                    // at all (its value already lives in dispatch_vehicle_detail).
+                    if ("PARKING_IN_1".equals(previousState)) continue;
+                    // billing-entry's own transition (the only pageCode firing from
+                    // PMT_CHECK_OK): look up its bag entry directly by pageCode
+                    // instead of pluck()'s generic cross-page fallback, which
+                    // searches EVERY page's submitted data for a matching key and
+                    // returns whichever nested map it hits first — a plain HashMap,
+                    // so NOT insertion-order, and confirmed (2026-07-23 smoke test)
+                    // to return dispatch-vehicle-details' older vendor invoice_no
+                    // instead of billing-entry's own fresh value. Same cross-page
+                    // ambiguity PmtSharedReasonListener's javadoc warns about for
+                    // variance_reason/status — fixed here the same way: look up the
+                    // one page we know just fired, not every page that ever fired.
+                    if ("PMT_CHECK_OK".equals(previousState)) {
+                        Object page = bag.get("aria:billing-entry");
+                        if (page instanceof Map<?, ?> m) {
+                            Object v = m.get("invoice_no");
+                            if (v != null && !v.toString().isBlank()) cols.put(ident("invoice_no"), v.toString());
+                        }
+                        continue;
+                    }
+                }
                 List<String> keys = (List<String>) e.getValue();
                 String v = pluck(bag, keys);
                 if (v != null) cols.put(ident(e.getKey()), v);

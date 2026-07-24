@@ -54,6 +54,7 @@ public class WorkflowEngineService {
     @Autowired private WorkflowEventRepository events;
     @Autowired private SpelGuardEvaluator guardEvaluator;
     @Autowired(required = false) private java.util.List<WorkflowTransitionListener> transitionListeners;
+    @Autowired(required = false) private java.util.List<WorkflowTransitionValidator> transitionValidators;
 
     private final ObjectMapper json = new ObjectMapper();
 
@@ -212,6 +213,16 @@ public class WorkflowEngineService {
         String previousState = inst.getCurrentState();
         String toState = stringOr(matched.get("to"), null);
         Objects.requireNonNull(toState, "transition missing 'to'");
+
+        // Last chance to veto before anything commits — WorkflowValidationException
+        // rolls back this whole @Transactional method (including the submitted-data
+        // save above), same as a guard rejection.
+        if (transitionValidators != null) {
+            for (WorkflowTransitionValidator v : transitionValidators) {
+                v.validate(inst, toState, formData);
+            }
+        }
+
         String newRole = roleForState(body, toState);
         boolean terminal = terminalState(body, toState);
 

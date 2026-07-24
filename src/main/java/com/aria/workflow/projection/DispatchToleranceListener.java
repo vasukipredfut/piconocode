@@ -38,12 +38,16 @@ import java.util.Map;
  * guard therefore stays a trivial {@code #submitted['withinTolerance']=='YES'}
  * string compare against the value this listener stamped.
  *
- * <p>Writes onto the projected {@code target_table} row:
- * {@code expected_weight_kg}, {@code loaded_weight_kg}, {@code pmt_variance_pct},
- * and {@code pmt_within_tolerance} ∈ {@code {YES, NO}} (YES also means
- * "not applicable / not yet computable" so legacy flows without SKU weights are
- * never spuriously blocked). Exceptions never propagate — the engine catches
- * listener failures, so a bad config or missing column can't fail a transition.
+ * <p>Writes {@code expected_weight_kg}, {@code loaded_weight_kg},
+ * {@code pmt_variance_pct}, and {@code pmt_within_tolerance} ∈ {@code {YES, NO}}
+ * (YES also means "not applicable / not yet computable" so legacy flows
+ * without SKU weights are never spuriously blocked) into {@code
+ * pmt_weight_diff_detail} (V88/V92) — keyed on (tenant_id, workflow_instance_id),
+ * not the {@code target_table} the config row names (still {@code gate_pass};
+ * that row only supplies {@code tolerance_pct}, the enable/threshold switch —
+ * V92 moved the satellite columns off gate_pass itself). Exceptions never
+ * propagate — the engine catches listener failures, so a bad config or
+ * missing column can't fail a transition.
  */
 @Component
 public class DispatchToleranceListener implements WorkflowTransitionListener {
@@ -98,9 +102,22 @@ public class DispatchToleranceListener implements WorkflowTransitionListener {
 
         Map<String, Object> gp;
         try {
+            // w1/w2_weight_kg and ordered_qty moved out of gate_pass into
+            // weighment_capture_detail / loading_allocation_detail respectively
+            // (V80/V83) — the LEFT JOINs keep this working for the workflows
+            // that populate those rows; TankerOutbound has no
+            // loading_allocation_detail row (no such step) and falls through
+            // to the route_id basis below, same as before those migrations.
             gp = jdbc.queryForMap(
-                    "SELECT w1_weight_kg, w2_weight_kg, route_id, ordered_qty FROM gate_pass " +
-                            "WHERE workflow_instance_id=? AND tenant_id=?", instanceId, tenantId);
+                    "SELECT gpw.w1_weight_kg, gpw.w2_weight_kg, lpd.route_id, lad.ordered_qty " +
+                            "FROM gate_pass gp " +
+                            "LEFT JOIN weighment_capture_detail gpw " +
+                            "  ON gpw.workflow_instance_id = gp.workflow_instance_id AND gpw.tenant_id = gp.tenant_id " +
+                            "LEFT JOIN loading_allocation_detail lad " +
+                            "  ON lad.workflow_instance_id = gp.workflow_instance_id AND lad.tenant_id = gp.tenant_id " +
+                            "LEFT JOIN loading_progress_detail lpd " +
+                            "  ON lpd.workflow_instance_id = gp.workflow_instance_id AND lpd.tenant_id = gp.tenant_id " +
+                            "WHERE gp.workflow_instance_id=? AND gp.tenant_id=?", instanceId, tenantId);
         } catch (Exception e) {
             return; // no gate_pass row yet
         }
@@ -124,11 +141,13 @@ public class DispatchToleranceListener implements WorkflowTransitionListener {
         BigDecimal variancePct = variancePct(loaded, expected);
 
         jdbc.update(
-                "UPDATE gate_pass SET expected_weight_kg=?, loaded_weight_kg=?, " +
-                        "pmt_variance_pct=?, pmt_within_tolerance=? " +
-                        "WHERE workflow_instance_id=? AND tenant_id=?",
-                expected, loaded, variancePct,
-                verdict(loaded, expected, tolerancePct), instanceId, tenantId);
+                "INSERT INTO pmt_weight_diff_detail " +
+                        "(tenant_id, workflow_instance_id, expected_weight_kg, loaded_weight_kg, pmt_variance_pct, pmt_within_tolerance) " +
+                        "VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE " +
+                        "expected_weight_kg=VALUES(expected_weight_kg), loaded_weight_kg=VALUES(loaded_weight_kg), " +
+                        "pmt_variance_pct=VALUES(pmt_variance_pct), pmt_within_tolerance=VALUES(pmt_within_tolerance)",
+                tenantId, instanceId, expected, loaded, variancePct,
+                verdict(loaded, expected, tolerancePct));
     }
 
     /** |loaded − expected| / expected × 100, rounded to 3 dp. Caller ensures expected &gt; 0. */

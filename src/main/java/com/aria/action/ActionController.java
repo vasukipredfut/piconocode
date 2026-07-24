@@ -61,4 +61,10 @@ public class ActionController {
         return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
                 .body(Map.of("error", "bad_request", "message", e.getMessage()));
     }
+
+    @ExceptionHandler(com.aria.workflow.engine.WorkflowValidationException.class)
+    public ResponseEntity<Map<String, Object>> validationRejected(com.aria.workflow.engine.WorkflowValidationException e) {
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+                .body(Map.of("error", "validation_failed", "message", e.getMessage()));
+    }
 }

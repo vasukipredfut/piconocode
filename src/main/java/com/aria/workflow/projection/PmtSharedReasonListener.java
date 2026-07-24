@@ -1,0 +1,183 @@
+package com.aria.workflow.projection;
+
+import com.aria.security.TenantContext;
+import com.aria.workflow.engine.WorkflowTransitionListener;
+import com.aria.workflow.model.WorkflowInstance;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Component;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * Routes submitted 'variance_reason' (and, for manager-qty-approval /
+ * manager-weight-approval, 'status') into whichever of four satellite
+ * tables actually owns this step (V88 pmt_weight_diff_detail, V89
+ * pmt_camera_verification_detail, V90 manager_qty_approval_detail, V91
+ * manager_weight_approval_detail) — kept OUT of WorkflowProjectionListener's
+ * generic field_map on purpose.
+ *
+ * <p>'variance_reason' is reused, by field name only, across at least six
+ * different pages (pmt-weight-diff-check, pmt-camera-verification,
+ * manager-qty-approval, weight-diff-entry, reconciliation,
+ * manager-weight-approval) — each capturing their own step's reason into
+ * the same shared gate_pass.variance_reason column (pre-existing behaviour,
+ * untouched here). 'status' is similarly reused by aria:qc-preload-approval,
+ * aria:qc-final-out, aria:manager-qty-approval and
+ * aria:manager-weight-approval. WorkflowProjectionListener applies a
+ * target_table's field_map to EVERY transition of a workflow_code, not just
+ * the page that "owns" that table, so a generic field_map keyed on either
+ * name would also capture the other pages' values whenever they submit at
+ * unrelated states. Gating on {@code previousState} (each page transitions
+ * from a distinct state) is the only way to route the value to the right
+ * table.
+ *
+ * <p>{@code bag} (WorkflowInstance.submittedDataJson) is keyed by
+ * pageCode -&gt; that page's own submitted form data, accumulated over the
+ * instance's ENTIRE lifetime (old pages' entries are never cleared) — and
+ * {@code WorkflowEngineService.readBag} returns a plain {@code HashMap}, so
+ * iteration order over multiple pages is undefined. A naive "search every
+ * nested map for this key" (matching WorkflowProjectionListener.pluck()'s
+ * fallback) would risk returning a DIFFERENT, older page's value for a
+ * shared key like 'variance_reason' instead of the one just submitted.
+ * Since each branch below is already gated on a {@code previousState} that
+ * uniquely identifies which single page just fired, the page's own bag
+ * entry is looked up directly by its known pageCode instead — precise, no
+ * cross-page ambiguity.
+ */
+@Component
+public class PmtSharedReasonListener implements WorkflowTransitionListener {
+
+    private static final Logger log = LoggerFactory.getLogger(PmtSharedReasonListener.class);
+    private static final Set<String> PMT_WEIGHT_DIFF_WORKFLOWS = Set.of("M10.FGLoading", "M10.PackLoading");
+    private static final Set<String> NO_WORKFLOW_GUARD_STATES = Set.of(
+            "PMT_CAMERA_VERIFICATION", "PMT_CHECK_PENDING_MANAGER", "WEIGHT_DIFF_PENDING_MANAGER", "WEIGHMENT_3");
+
+    private final JdbcTemplate jdbc;
+
+    /**
+     * True when this listener already captures {@code variance_reason} for this exact
+     * (workflowCode, previousState) pair into one of the four satellite tables above.
+     * Used by {@link WorkflowProjectionListener} to skip the same key so it stops
+     * duplicating into gate_pass.variance_reason for these four steps specifically —
+     * kept in sync with the switch in {@link #onTransition} on purpose (single source
+     * of truth for "who owns this transition").
+     */
+    public static boolean ownsVarianceReason(String workflowCode, String previousState) {
+        if (previousState == null) return false;
+        if ("PARKING_IN_2".equals(previousState)) return PMT_WEIGHT_DIFF_WORKFLOWS.contains(workflowCode);
+        return NO_WORKFLOW_GUARD_STATES.contains(previousState);
+    }
+
+    public PmtSharedReasonListener(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    @Override
+    public void onTransition(WorkflowInstance instance, String previousState, Map<String, Object> bag) {
+        if (previousState == null || bag == null) return;
+
+        try {
+            switch (previousState) {
+                case "PARKING_IN_2": {
+                    if (!PMT_WEIGHT_DIFF_WORKFLOWS.contains(instance.getWorkflowCode())) break;
+                    Map<String, Object> page = pageData(bag, "aria:pmt-weight-diff-check");
+                    String reason = firstNonBlank(str(page, "variance_reason"), str(page, "varianceReason"));
+                    if (reason != null) {
+                        upsert("pmt_weight_diff_detail", instance, Map.of("pmt_variance_reason", reason));
+                    }
+                    break;
+                }
+                case "PMT_CAMERA_VERIFICATION": {
+                    // No 'status' here — aria:pmt-camera-verification's single
+                    // button carries no submitValues; its decision field is
+                    // 'issue_identified', already captured generically (V89).
+                    Map<String, Object> page = pageData(bag, "aria:pmt-camera-verification");
+                    String reason = firstNonBlank(str(page, "variance_reason"), str(page, "varianceReason"));
+                    if (reason != null) {
+                        upsert("pmt_camera_verification_detail", instance, Map.of("camera_variance_reason", reason));
+                    }
+                    break;
+                }
+                case "PMT_CHECK_PENDING_MANAGER":
+                case "WEIGHT_DIFF_PENDING_MANAGER": {
+                    Map<String, Object> page = pageData(bag, "aria:manager-qty-approval");
+                    String reason = firstNonBlank(str(page, "variance_reason"), str(page, "varianceReason"));
+                    String decision = str(page, "status");
+                    if (reason != null || decision != null) {
+                        Map<String, Object> cols = new LinkedHashMap<>();
+                        if (reason != null) cols.put("manager_qty_reason", reason);
+                        if (decision != null) cols.put("manager_decision", decision);
+                        upsert("manager_qty_approval_detail", instance, cols);
+                    }
+                    break;
+                }
+                case "WEIGHMENT_3": {
+                    // aria:manager-weight-approval — confirmed the only
+                    // transition originating from WEIGHMENT_3 in all 3
+                    // workflows, so no extra workflow-code guard needed
+                    // (unlike PARKING_IN_2).
+                    Map<String, Object> page = pageData(bag, "aria:manager-weight-approval");
+                    String reason = firstNonBlank(str(page, "variance_reason"), str(page, "varianceReason"));
+                    String decision = str(page, "status");
+                    if (reason != null || decision != null) {
+                        Map<String, Object> cols = new LinkedHashMap<>();
+                        if (reason != null) cols.put("weight_variance_reason", reason);
+                        if (decision != null) cols.put("weight_decision", decision);
+                        upsert("manager_weight_approval_detail", instance, cols);
+                    }
+                    break;
+                }
+                default:
+                    // Not one of the four states this listener owns —
+                    // reconciliation / weight-diff-entry still only write
+                    // gate_pass.variance_reason, unchanged.
+            }
+        } catch (Exception e) {
+            log.warn("pmt shared-reason routing failed for instance={} previousState={}: {}",
+                    instance.getId(), previousState, e.getMessage());
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> pageData(Map<String, Object> bag, String pageCode) {
+        Object v = bag.get(pageCode);
+        return v instanceof Map ? (Map<String, Object>) v : Map.of();
+    }
+
+    private void upsert(String table, WorkflowInstance instance, Map<String, Object> cols) {
+        Long tenantId = TenantContext.get();
+        StringBuilder colNames = new StringBuilder("tenant_id, workflow_instance_id, flow_variant_code, current_step");
+        StringBuilder placeholders = new StringBuilder("?,?,?,?");
+        StringBuilder updates = new StringBuilder("flow_variant_code=VALUES(flow_variant_code), current_step=VALUES(current_step)");
+        Object[] args = new Object[4 + cols.size()];
+        args[0] = tenantId;
+        args[1] = instance.getId();
+        args[2] = instance.getWorkflowCode();
+        args[3] = instance.getCurrentState();
+        int i = 4;
+        for (Map.Entry<String, Object> e : cols.entrySet()) {
+            colNames.append(", ").append(e.getKey());
+            placeholders.append(",?");
+            updates.append(", ").append(e.getKey()).append("=VALUES(").append(e.getKey()).append(")");
+            args[i++] = e.getValue();
+        }
+        jdbc.update(
+                "INSERT INTO " + table + " (" + colNames + ") VALUES (" + placeholders + ") " +
+                        "ON DUPLICATE KEY UPDATE " + updates,
+                args);
+    }
+
+    private static String str(Map<String, Object> bag, String key) {
+        Object v = bag.get(key);
+        return (v == null || v.toString().isBlank()) ? null : String.valueOf(v);
+    }
+
+    private static String firstNonBlank(String... vals) {
+        for (String v : vals) if (v != null && !v.isBlank()) return v;
+        return null;
+    }
+}

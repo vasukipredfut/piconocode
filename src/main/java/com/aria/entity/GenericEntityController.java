@@ -46,6 +46,33 @@ public class GenericEntityController {
     private final JdbcTemplate jdbc;
     private final Map<Long, String> roleNameCache = new ConcurrentHashMap<>();
 
+    // GatePass single-row reads (getRow/getRowByField — the data source behind
+    // page-JSON onChangeFill) are the only consumer that ever saw the fields now
+    // split out into qc_preload_detail / loading_allocation_detail /
+    // weighment_capture_detail / sealing_process_detail (V79/V80/V83/V85; V84
+    // dropped the now-dead gate_pass columns of the same names, so there's no
+    // naming collision to guard against — a plain select of the satellite
+    // columns is enough).
+    private static final String GATE_PASS_SATELLITE_JOIN =
+            " LEFT JOIN qc_preload_detail qpd ON qpd.workflow_instance_id = gp.workflow_instance_id AND qpd.tenant_id = gp.tenant_id" +
+            " LEFT JOIN loading_allocation_detail lad ON lad.workflow_instance_id = gp.workflow_instance_id AND lad.tenant_id = gp.tenant_id" +
+            " LEFT JOIN weighment_capture_detail gpw ON gpw.workflow_instance_id = gp.workflow_instance_id AND gpw.tenant_id = gp.tenant_id" +
+            " LEFT JOIN sealing_process_detail spd ON spd.workflow_instance_id = gp.workflow_instance_id AND spd.tenant_id = gp.tenant_id" +
+            " LEFT JOIN pmt_weight_diff_detail pwd ON pwd.workflow_instance_id = gp.workflow_instance_id AND pwd.tenant_id = gp.tenant_id" +
+            " LEFT JOIN pmt_camera_verification_detail pcvd ON pcvd.workflow_instance_id = gp.workflow_instance_id AND pcvd.tenant_id = gp.tenant_id" +
+            " LEFT JOIN dispatch_vehicle_detail dvd ON dvd.workflow_instance_id = gp.workflow_instance_id AND dvd.tenant_id = gp.tenant_id" +
+            " LEFT JOIN loading_progress_detail lpd ON lpd.workflow_instance_id = gp.workflow_instance_id AND lpd.tenant_id = gp.tenant_id";
+    private static final String GATE_PASS_SATELLITE_SELECT =
+            "gp.*, " +
+            "qpd.loading_supervisor, qpd.loading_tank_location, qpd.qc_reject_reason, " +
+            "lad.supervisor_name, lad.loading_bay, lad.reference_no, lad.customer_name, lad.customer_route, lad.ordered_cases, lad.ordered_qty, " +
+            "gpw.w1_weight_kg, gpw.w2_weight_kg, gpw.w3_weight_kg, gpw.weight_officer, gpw.weight_entry_at, " +
+            "spd.sealing_no, spd.sealing_supervisor, spd.seal_lock_status, spd.sealing_status, spd.sealing_started_at, spd.sealing_finished_at, " +
+            "pwd.pmt_variance_reason, pwd.expected_weight_kg, pwd.loaded_weight_kg, pwd.pmt_variance_pct, pwd.pmt_within_tolerance, " +
+            "pcvd.camera_photo, pcvd.issue_identified, pcvd.camera_variance_reason, " +
+            "dvd.broker_name, dvd.invoice_qty, dvd.oil_rm_item, dvd.tanker_no, dvd.transport_name, " +
+            "lpd.route_id";
+
     // Optional — old test wiring constructs this controller without the codec.
     // When absent, secret fields pass through unmodified (pre-encryption
     // behaviour).
@@ -180,9 +207,17 @@ public class GenericEntityController {
         String table = (String) reg.get("table_name");
         assertSafe(table);
         try {
-            Map<String, Object> row = jdbc.queryForMap(
-                    "SELECT * FROM " + table + " WHERE id=?" + readScope(table),
-                    scopeArgs(table, id));
+            Map<String, Object> row;
+            if ("gate_pass".equals(table)) {
+                row = jdbc.queryForMap(
+                        "SELECT " + GATE_PASS_SATELLITE_SELECT + " FROM gate_pass gp" + GATE_PASS_SATELLITE_JOIN +
+                                " WHERE gp.id=? AND gp.tenant_id IN (?, -1)",
+                        id, TenantContext.get());
+            } else {
+                row = jdbc.queryForMap(
+                        "SELECT * FROM " + table + " WHERE id=?" + readScope(table),
+                        scopeArgs(table, id));
+            }
             maskSecretsInPlace(code, row);
             return ResponseEntity.ok(row);
         } catch (Exception e) {
@@ -203,8 +238,15 @@ public class GenericEntityController {
         assertSafe(table);
         assertSafe(fieldName);
         try {
-            Map<String, Object> row = jdbc.queryForMap(
-                "SELECT * FROM " + table + " WHERE " + fieldName + "=?", value);
+            Map<String, Object> row;
+            if ("gate_pass".equals(table)) {
+                row = jdbc.queryForMap(
+                    "SELECT " + GATE_PASS_SATELLITE_SELECT + " FROM gate_pass gp" + GATE_PASS_SATELLITE_JOIN +
+                            " WHERE gp." + fieldName + "=?", value);
+            } else {
+                row = jdbc.queryForMap(
+                    "SELECT * FROM " + table + " WHERE " + fieldName + "=?", value);
+            }
             maskSecretsInPlace(code, row);
             return ResponseEntity.ok(row);
         } catch (Exception e) {
