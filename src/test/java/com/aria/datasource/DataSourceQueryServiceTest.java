@@ -210,4 +210,74 @@ class DataSourceQueryServiceTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Unknown entity");
     }
+
+    // ---------------------------------------------------------- groupBy
+
+    @Test
+    @DisplayName("groupBy emits a max-id-per-group subquery joined back for the full latest row, still auto-tenant-scoped")
+    void groupBySingleField() {
+        DataSourceSpec spec = DataSourceSpec.builder()
+                .type("entity").entity("Vendor")
+                .groupBy(List.of("status"))
+                .build();
+        svc.query(spec, 0, 25, Map.of());
+        verify(jdbc).queryForList(argThat((String s) ->
+                s.contains("SELECT m0_vendor.*, g.count AS count FROM (SELECT m0_vendor.status, MAX(m0_vendor.id) AS max_id, COUNT(*) AS count FROM m0_vendor")
+                && s.contains("WHERE m0_vendor.tenant_id IN (?, -1)")
+                && s.contains("GROUP BY m0_vendor.status) g")
+                && s.contains("JOIN m0_vendor ON m0_vendor.id = g.max_id")
+                && s.contains("ORDER BY g.max_id DESC")
+                && s.contains("LIMIT 25")), any(Object[].class));
+    }
+
+    @Test
+    @DisplayName("groupBy with multiple fields groups by all of them")
+    void groupByMultiField() {
+        DataSourceSpec spec = DataSourceSpec.builder()
+                .type("entity").entity("Vendor")
+                .groupBy(List.of("status", "name"))
+                .build();
+        svc.query(spec, 0, 25, Map.of());
+        verify(jdbc).queryForList(argThat((String s) ->
+                s.contains("GROUP BY m0_vendor.status, m0_vendor.name) g")), any(Object[].class));
+    }
+
+    @Test
+    @DisplayName("groupBy honours an explicit sort, including sorting by count")
+    void groupBySortByCount() {
+        DataSourceSpec spec = DataSourceSpec.builder()
+                .type("entity").entity("Vendor")
+                .groupBy(List.of("status"))
+                .sort(List.of(DataSourceSpec.Sort.builder().field("count").dir("desc").build()))
+                .build();
+        svc.query(spec, 0, 25, Map.of());
+        verify(jdbc).queryForList(argThat((String s) -> s.contains("ORDER BY g.count DESC")), any(Object[].class));
+    }
+
+    @Test
+    @DisplayName("groupBy still applies the user filter")
+    void groupByAppliesFilter() {
+        DataSourceSpec spec = DataSourceSpec.builder()
+                .type("entity").entity("Vendor")
+                .groupBy(List.of("status"))
+                .filter(DataSourceSpec.Filter.builder().field("name").op("contains").value("acme").build())
+                .build();
+        svc.query(spec, 0, 25, Map.of());
+        verify(jdbc).queryForList(argThat((String s) -> s.contains("m0_vendor.name LIKE ?")), any(Object[].class));
+    }
+
+    @Test
+    @DisplayName("groupBy pagination counts distinct groups, not raw rows")
+    void groupByPaginationCountsGroups() {
+        when(jdbc.queryForObject(anyString(), eq(Long.class), any(Object[].class))).thenReturn(4L);
+        DataSourceSpec spec = DataSourceSpec.builder()
+                .type("entity").entity("Vendor")
+                .groupBy(List.of("status"))
+                .build();
+        DataSourceSpec.Response r = svc.query(spec, 0, 25, Map.of());
+        assertThat(r.getTotalElements()).isEqualTo(4L);
+        verify(jdbc).queryForObject(argThat((String s) ->
+                s.contains("SELECT COUNT(*) FROM (SELECT 1 FROM m0_vendor")
+                && s.contains("GROUP BY m0_vendor.status) grouped_")), eq(Long.class), any(Object[].class));
+    }
 }

@@ -107,6 +107,9 @@ public class DataSourceQueryService {
             throw new IllegalArgumentException(
                     "Only type=entity is implemented in Round 1G; got: " + spec.getType());
         }
+        if (spec.getGroupBy() != null && !spec.getGroupBy().isEmpty()) {
+            return queryGrouped(spec, page, size, bindings);
+        }
         EntityRegistryEntry root = registry.findByCode(spec.getEntity())
                 .orElseThrow(() -> new IllegalArgumentException(
                         "Unknown entity: " + spec.getEntity() + " (entity_registry has no row)"));
@@ -181,6 +184,131 @@ public class DataSourceQueryService {
         return DataSourceSpec.Response.builder()
                 .content(rows)
                 .totalElements(total)
+                .totalPages(totalPages)
+                .number(pg)
+                .size(sz)
+                .build();
+    }
+
+    /**
+     * {@code spec.groupBy} path: one row per distinct combination of the
+     * given fields, carrying the FULL column content of that group's most
+     * recent row (highest {@code id}) plus a {@code count} column — the
+     * classic "top-1-per-group" pattern (a subquery computes {@code MAX(id)}
+     * per group, joined back to the real table for the rest of its columns).
+     * Filter/joins-in-the-WHERE/tenant-scope/pagination all apply the same as
+     * the ungrouped path; sort orders the groups (by a group field, by
+     * {@code count}, or the default of most-recently-active group first).
+     *
+     * <p>Known limitation: {@code spec.select} entries that reference a
+     * {@code spec.joins} alias (e.g. {@code "city.name as cityName"}) are
+     * NOT resolvable here — joins are only applied inside the grouping
+     * subquery (for filtering), not re-applied to the joined-back full row.
+     * Plain root-entity columns (the default {@code rootTable.*}, or any
+     * subset of them) work fully.
+     *
+     * <p>Kept as a separate method so the default (no groupBy) path — every
+     * other ListView page in the app — is untouched.
+     */
+    private DataSourceSpec.Response queryGrouped(DataSourceSpec spec, int page, int size,
+                                                 Map<String, Object> bindings) {
+        EntityRegistryEntry root = registry.findByCode(spec.getEntity())
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Unknown entity: " + spec.getEntity() + " (entity_registry has no row)"));
+
+        Map<String, String> aliasToTable = new LinkedHashMap<>();
+        aliasToTable.put(root.getTableName(), root.getTableName());
+        if (spec.getJoins() != null) {
+            for (DataSourceSpec.Join j : spec.getJoins()) {
+                if (j.getEntity() == null || j.getAs() == null || j.getOn() == null) {
+                    throw new IllegalArgumentException("join requires entity/as/on");
+                }
+                EntityRegistryEntry je = registry.findByCode(j.getEntity())
+                        .orElseThrow(() -> new IllegalArgumentException("Unknown join entity: " + j.getEntity()));
+                aliasToTable.put(j.getAs(), je.getTableName());
+            }
+        }
+
+        List<String> groupCols = new ArrayList<>();
+        for (String f : spec.getGroupBy()) {
+            groupCols.add(resolveColumn(f, root.getTableName(), aliasToTable, true));
+        }
+        String groupByClause = String.join(", ", groupCols);
+
+        // WHERE — identical construction to the ungrouped path (auto tenant-scope + user filter),
+        // built fresh into its own args list for the main query below.
+        List<Object> args = new ArrayList<>();
+        List<String> whereClauses = new ArrayList<>();
+        String rootScope = tenantScope.readPredicate(root.getTableName(), root.getTableName());
+        if (!rootScope.isEmpty()) {
+            whereClauses.add(rootScope);
+            args.add(tenantScope.arg());
+        }
+        if (spec.getFilter() != null) {
+            String fc = compileFilter(spec.getFilter(), root.getTableName(), aliasToTable, args, bindings);
+            if (fc != null && !fc.isBlank()) whereClauses.add(fc);
+        }
+        String whereSql = whereClauses.isEmpty() ? "" : " WHERE " + String.join(" AND ", whereClauses);
+
+        String rootTable = root.getTableName();
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT ");
+        appendSelect(sql, spec, rootTable);
+        sql.append(", g.count AS count");
+        sql.append(" FROM (SELECT ").append(groupByClause)
+                .append(", MAX(").append(rootTable).append(".id) AS max_id, COUNT(*) AS count FROM ").append(rootTable);
+        appendJoins(sql, spec, rootTable);
+        sql.append(whereSql);
+        sql.append(" GROUP BY ").append(groupByClause).append(") g");
+        sql.append(" JOIN ").append(rootTable).append(" ON ").append(rootTable).append(".id = g.max_id");
+
+        if (spec.getSort() != null && !spec.getSort().isEmpty()) {
+            List<String> parts = new ArrayList<>();
+            for (DataSourceSpec.Sort s : spec.getSort()) {
+                if (s.getField() == null) continue;
+                String col = "count".equalsIgnoreCase(s.getField())
+                        ? "g.count" : resolveColumn(s.getField(), rootTable, aliasToTable, true);
+                String dir = "desc".equalsIgnoreCase(s.getDir()) ? "DESC" : "ASC";
+                parts.add(col + " " + dir);
+            }
+            if (!parts.isEmpty()) sql.append(" ORDER BY ").append(String.join(", ", parts));
+        } else {
+            // Default: most recently active group first (highest max id == latest row).
+            sql.append(" ORDER BY g.max_id DESC");
+        }
+
+        int sz = size > 0 ? size : 25;
+        int pg = Math.max(0, page);
+        sql.append(" LIMIT ").append(sz).append(" OFFSET ").append(pg * sz);
+
+        // Total distinct groups (for pagination) — same FROM/JOIN/WHERE/GROUP BY,
+        // wrapped and counted, with its own fresh args list (compileFilter is
+        // deterministic given the same filter/bindings, so this reproduces the
+        // identical WHERE text safely).
+        List<Object> countArgs = new ArrayList<>();
+        List<String> countWhereClauses = new ArrayList<>();
+        if (!rootScope.isEmpty()) {
+            countWhereClauses.add(rootScope);
+            countArgs.add(tenantScope.arg());
+        }
+        if (spec.getFilter() != null) {
+            String fc = compileFilter(spec.getFilter(), root.getTableName(), aliasToTable, countArgs, bindings);
+            if (fc != null && !fc.isBlank()) countWhereClauses.add(fc);
+        }
+        StringBuilder countSql = new StringBuilder();
+        countSql.append("SELECT COUNT(*) FROM (SELECT 1 FROM ").append(root.getTableName());
+        appendJoins(countSql, spec, root.getTableName());
+        if (!countWhereClauses.isEmpty()) countSql.append(" WHERE ").append(String.join(" AND ", countWhereClauses));
+        countSql.append(" GROUP BY ").append(groupByClause).append(") grouped_");
+
+        log.debug("datasource.query.grouped sql={} args={}", sql, args);
+        List<Map<String, Object>> rows = jdbc.queryForList(sql.toString(), args.toArray());
+        Long total = jdbc.queryForObject(countSql.toString(), Long.class, countArgs.toArray());
+
+        int totalPages = (int) Math.ceil((double) (total == null ? 0 : total) / (double) sz);
+        return DataSourceSpec.Response.builder()
+                .content(rows)
+                .totalElements(total == null ? 0 : total)
                 .totalPages(totalPages)
                 .number(pg)
                 .size(sz)
