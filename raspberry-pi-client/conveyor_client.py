@@ -12,32 +12,70 @@ WebSecurityConfig's "/api/scanner/workflows/**" / "/api/conveyor/**" entries.
 
 Flow:
   1. GET  /api/scanner/workflows/{workflowId}      -> integration bindings, rule sets, dispatch tasks
-  2. loop: read barcode -> POST /api/conveyor/scan -> ACCEPT/REJECT
+  2. loop: read barcode (network scanner over TCP, or stdin if unconfigured)
+           -> local qty pre-check -> POST /api/conveyor/scan -> ACCEPT/REJECT
   3. background thread: POST /api/conveyor/heartbeat every HEARTBEAT_INTERVAL_S
+
+Barcode transport: set config.json's "scannerIp"/"scannerPort" to read from a
+network (TCP/IP) barcode scanner (ScannerSocketReader below, newline-framed,
+auto-reconnecting). Leave "scannerIp" unset to read barcodes from stdin
+instead (dev/testing, or a USB scanner enumerating as a keyboard on the Pi).
+
+Step 2's local pre-check (see ConveyorClient.check_qty_limit) compares the
+scan's quantity against the tracked dispatch task's remaining allowed
+quantity (target_qty - processed_qty) BEFORE calling the backend at all. If
+the scan would exceed it, the scan is rejected locally and never sent over
+the network — this is purely a fast-fail on the device; the backend's own
+QTY_OK rule (if configured on the task's rule set) is the authoritative check.
 
 Requires: pip install requests
 """
 
 import json
 import logging
+import logging.handlers
+import socket
 import sys
 import threading
 import time
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import requests
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
+LOG_FILE_PATH = Path(__file__).parent / "conveyor_client.log"
+LOG_FILE_MAX_BYTES = 5 * 1024 * 1024
+LOG_FILE_BACKUP_COUNT = 5
 HEARTBEAT_INTERVAL_S = 5
 REQUEST_TIMEOUT_S = 10
 RETRY_BACKOFF_S = (1, 2, 5, 10)  # capped exponential backoff for transient failures
+SCANNER_RECONNECT_DELAY_S = 3
+SCANNER_CONNECT_TIMEOUT_S = 10
+CRASH_RESTART_DELAY_S = 5
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
+# Trace-friendly log line: timestamp, level, thread name (heartbeat runs on
+# its own thread, so this is what tells the two apart when reading the log),
+# then the message. Everything goes to BOTH the console and a rotating file
+# on disk — a device that's meant to run unattended for weeks needs a log you
+# can go back and read after the fact, not just whatever scrolled past on a
+# terminal nobody was watching.
+_LOG_FORMAT = "%(asctime)s %(levelname)-7s [%(threadName)s] %(message)s"
+_formatter = logging.Formatter(_LOG_FORMAT)
+
+_console_handler = logging.StreamHandler(sys.stdout)
+_console_handler.setFormatter(_formatter)
+
+_file_handler = logging.handlers.RotatingFileHandler(
+    LOG_FILE_PATH, maxBytes=LOG_FILE_MAX_BYTES, backupCount=LOG_FILE_BACKUP_COUNT, encoding="utf-8",
 )
+_file_handler.setFormatter(_formatter)
+
 log = logging.getLogger("conveyor_client")
+log.setLevel(logging.INFO)
+log.addHandler(_console_handler)
+log.addHandler(_file_handler)
 
 
 def load_config():
@@ -65,6 +103,54 @@ class ConveyorClient:
         self._current_dispatch_task_id = None
         self._integration_health = {}
         self._stop_event = threading.Event()
+        self._active_task = None  # {"id", "target_qty", "processed_qty"} Decimals; None = untracked/ambiguous
+
+    # ---- local qty pre-check -----------------------------------------------
+
+    def track_tasks_from_workflow(self, workflow):
+        """
+        Call once after fetch_workflow_config (and again after any re-sync) to
+        seed the local view of this bay's active dispatch task, so scans can be
+        qty-checked before ever hitting the network. Only tracks when exactly
+        one IN_PROGRESS task exists for this bay — with several concurrent
+        tasks on one bay, which task a scan belongs to isn't known until the
+        backend resolves it, so the local pre-check is skipped (deferred to
+        the backend) rather than guessed at.
+        """
+        candidates = [
+            t for t in workflow.get("dispatchTasks", [])
+            if t.get("bay_code") == self.bay_code and t.get("status") == "IN_PROGRESS"
+        ]
+        self._active_task = self._to_local_task(candidates[0]) if len(candidates) == 1 else None
+
+    def has_tracked_task(self):
+        return self._active_task is not None
+
+    @staticmethod
+    def _to_local_task(task):
+        return {
+            "id": task.get("id"),
+            "target_qty": Decimal(str(task["target_qty"])),
+            "processed_qty": Decimal(str(task["processed_qty"])),
+        }
+
+    def check_qty_limit(self, qty):
+        """
+        Returns (ok, error_message). ok=False means: do NOT call the backend
+        for this scan — the scanned quantity would push the tracked task's
+        processed_qty past its target_qty. Always ok=True when no single
+        active task is tracked for this bay (untracked/ambiguous — the
+        backend is the fallback authority in that case).
+        """
+        if self._active_task is None:
+            return True, None
+        remaining = self._active_task["target_qty"] - self._active_task["processed_qty"]
+        if qty > remaining:
+            return False, (
+                f"scan qty {qty} exceeds remaining allowed qty {remaining} "
+                f"(target={self._active_task['target_qty']}, processed={self._active_task['processed_qty']})"
+            )
+        return True, None
 
     # ---- HTTP helpers -----------------------------------------------------
 
@@ -74,16 +160,22 @@ class ConveyorClient:
         for attempt, delay in enumerate((0,) + RETRY_BACKOFF_S):
             if delay:
                 time.sleep(delay)
+            started = time.monotonic()
             try:
                 resp = self.session.request(
                     method, url, json=json_body, timeout=REQUEST_TIMEOUT_S
                 )
+                elapsed_ms = round((time.monotonic() - started) * 1000)
                 if resp.status_code >= 500:
                     raise requests.HTTPError(f"{resp.status_code} from {url}")
+                log.info("TRACE %s %s -> %s (%dms)%s", method, path, resp.status_code, elapsed_ms,
+                         f", attempt {attempt + 1}" if attempt else "")
                 return resp
             except (requests.ConnectionError, requests.Timeout, requests.HTTPError) as exc:
+                elapsed_ms = round((time.monotonic() - started) * 1000)
                 last_exc = exc
-                log.warning("request failed (attempt %d): %s", attempt + 1, exc)
+                log.warning("TRACE %s %s -> FAILED after %dms (attempt %d): %s",
+                            method, path, elapsed_ms, attempt + 1, exc)
         raise last_exc
 
     # ---- API calls ----------------------------------------------------------
@@ -98,6 +190,18 @@ class ConveyorClient:
         return resp.json()
 
     def submit_scan(self, barcode, task_id=None, sku=None, order_ref=None, qty=None):
+        effective_qty = Decimal("1") if qty is None else Decimal(str(qty))
+        ok, error_message = self.check_qty_limit(effective_qty)
+        if not ok:
+            log.error("LOCAL REJECT barcode=%s: %s (not sent to backend)", barcode, error_message)
+            return {
+                "outcome": "REJECT",
+                "reason": "LOCAL_QTY_LIMIT_EXCEEDED",
+                "dispatchTask": None,
+                "plcSignalOk": None,
+                "sentToBackend": False,
+            }
+
         body = {
             "workflowCode": self.workflow_code,
             "stepCode": self.step_code,
@@ -112,10 +216,13 @@ class ConveyorClient:
         resp = self._request("POST", "/api/conveyor/scan", body)
         resp.raise_for_status()
         result = resp.json()
+        result["sentToBackend"] = True
         self._last_scan_at = utcnow_iso()
         dispatch_task = result.get("dispatchTask")
         if dispatch_task:
             self._current_dispatch_task_id = dispatch_task.get("id")
+            if self._active_task is not None and dispatch_task.get("id") == self._active_task["id"]:
+                self._active_task = self._to_local_task(dispatch_task)
         return result
 
     def send_heartbeat(self, workflow_status="RUNNING", device_status="ONLINE"):
@@ -153,12 +260,11 @@ class ConveyorClient:
 
 # ---- barcode input --------------------------------------------------------
 
-def read_barcode():
+def read_barcode_stdin():
     """
-    Reads one barcode value. USB barcode scanners typically enumerate as a
-    keyboard HID device and type the code followed by Enter, so a plain
-    stdin readline is the common case. Swap this out for GPIO/serial reads
-    if the scanner integration on this line uses a different transport.
+    USB barcode scanners typically enumerate as a keyboard HID device and
+    type the code followed by Enter, so a plain stdin readline covers that
+    case. Used when config.json has no scannerIp — dev/testing transport.
     """
     line = sys.stdin.readline()
     if not line:
@@ -166,12 +272,80 @@ def read_barcode():
     return line.strip()
 
 
+class ScannerSocketReader:
+    """
+    Reads newline-terminated barcodes from a network (TCP/IP) barcode
+    scanner. Many industrial scanners expose a raw TCP port that streams
+    each decoded barcode as a line; this connects once and reconnects
+    automatically (with a fixed delay) on any socket error or a connection
+    the scanner itself closes, so a scanner power-cycle or network blip
+    doesn't kill the whole client process.
+    """
+
+    def __init__(self, host, port, reconnect_delay_s=SCANNER_RECONNECT_DELAY_S,
+                 connect_timeout_s=SCANNER_CONNECT_TIMEOUT_S):
+        self.host = host
+        self.port = port
+        self.reconnect_delay_s = reconnect_delay_s
+        self.connect_timeout_s = connect_timeout_s
+        self._sock = None
+        self._buffer = b""
+
+    def _connect(self):
+        while True:
+            try:
+                sock = socket.create_connection((self.host, self.port), timeout=self.connect_timeout_s)
+                log.info("connected to barcode scanner at %s:%d", self.host, self.port)
+                return sock
+            except OSError as exc:
+                log.warning(
+                    "scanner connection failed (%s:%d): %s — retrying in %ds",
+                    self.host, self.port, exc, self.reconnect_delay_s,
+                )
+                time.sleep(self.reconnect_delay_s)
+
+    def read_barcode(self):
+        """Blocks until one full barcode line is available. Never returns None — reconnects forever."""
+        if self._sock is None:
+            self._sock = self._connect()
+        while b"\n" not in self._buffer:
+            try:
+                chunk = self._sock.recv(4096)
+            except OSError as exc:
+                log.warning("scanner socket read failed: %s — reconnecting", exc)
+                self._sock = self._connect()
+                continue
+            if not chunk:
+                log.warning("scanner closed the connection — reconnecting")
+                self._sock = self._connect()
+                continue
+            self._buffer += chunk
+        line, _, self._buffer = self._buffer.partition(b"\n")
+        return line.decode("utf-8", errors="replace").strip()
+
+    def close(self):
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
+
+
 # ---- main ------------------------------------------------------------------
 
-def main():
-    config = load_config()
+def run(config):
+    """
+    One full run: fetch config, start heartbeating, read+submit scans until
+    either the barcode source cleanly ends (stdin EOF — dev/testing only;
+    ScannerSocketReader never does this) or KeyboardInterrupt. Any OTHER
+    exception propagates to main()'s supervisor loop, which restarts this
+    from scratch — see main() for why that's the right place to catch it.
+    """
     client = ConveyorClient(config)
 
+    log.info("==== run cycle start: device=%s workflow=%s bay=%s ====",
+              client.device_id, client.workflow_code, client.bay_code)
     log.info("fetching workflow config for %s", client.workflow_code)
     workflow = client.fetch_workflow_config()
     log.info(
@@ -180,13 +354,36 @@ def main():
         len(workflow.get("integrations", [])),
         len(workflow.get("dispatchTasks", [])),
     )
+    client.track_tasks_from_workflow(workflow)
+    if not client.has_tracked_task():
+        log.warning(
+            "no single IN_PROGRESS task tracked for bay '%s' — local qty pre-check is disabled "
+            "until exactly one active task exists for this bay", client.bay_code,
+        )
 
     client.start_heartbeat_loop()
+
+    scanner_ip = config.get("scannerIp")
+    scanner_port = config.get("scannerPort")
+    scanner_socket = None
+    if scanner_ip:
+        scanner_socket = ScannerSocketReader(scanner_ip, scanner_port)
+        read_barcode = scanner_socket.read_barcode
+        log.info("reading barcodes from network scanner %s:%s", scanner_ip, scanner_port)
+    else:
+        read_barcode = read_barcode_stdin
+        log.info("no scannerIp configured — reading barcodes from stdin (dev/testing mode)")
+
     log.info("heartbeat started (every %ds), waiting for barcode scans (Ctrl+C to stop)", HEARTBEAT_INTERVAL_S)
 
     try:
         while True:
-            barcode = read_barcode()
+            try:
+                barcode = read_barcode()
+            except Exception as exc:  # noqa: BLE001 - a scanner-transport bug must not go unlogged before the restart
+                log.error("reading barcode failed: %s", exc)
+                raise
+
             if barcode is None:
                 break
             if not barcode:
@@ -211,11 +408,37 @@ def main():
                     "REJECT barcode=%s reason=%s plcSignalOk=%s",
                     barcode, result.get("reason"), result.get("plcSignalOk"),
                 )
-    except KeyboardInterrupt:
-        log.info("stopping")
     finally:
+        if scanner_socket is not None:
+            scanner_socket.close()
         client.stop()
-        client.send_heartbeat(workflow_status="STOPPED", device_status="OFFLINE")
+        try:
+            client.send_heartbeat(workflow_status="STOPPED", device_status="OFFLINE")
+        except Exception as exc:  # noqa: BLE001 - shutdown must not raise past this point
+            log.warning("final STOPPED heartbeat failed: %s", exc)
+
+
+def main():
+    """
+    Supervisor: run() should run forever. If it exits normally (stdin EOF —
+    dev/testing convenience) or via Ctrl+C, that is a deliberate stop and this
+    process exits too. ANY other exception — backend unreachable at startup,
+    an unknown/unpublished workflow, a bug in a barcode transport, whatever —
+    is logged and retried from scratch after a short delay instead of letting
+    the process die, since nothing else in this deployment restarts it.
+    """
+    config = load_config()
+    while True:
+        try:
+            run(config)
+            log.info("stopping (barcode source ended)")
+            return
+        except KeyboardInterrupt:
+            log.info("stopping (Ctrl+C)")
+            return
+        except Exception as exc:  # noqa: BLE001 - never let this process die
+            log.exception("conveyor client crashed unexpectedly (%s) — restarting in %ds", exc, CRASH_RESTART_DELAY_S)
+            time.sleep(CRASH_RESTART_DELAY_S)
 
 
 if __name__ == "__main__":

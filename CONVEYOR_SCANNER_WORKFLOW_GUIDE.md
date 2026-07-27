@@ -4,6 +4,8 @@ Backend reference for the Raspberry Pi / Python integration service driving a co
 
 Built on the real workflow engine (`com.aria.workflow`) and the M11 Integration Hub (`com.aria.integration`) — package `com.aria.conveyor`. This is a **separate system** from the older `ConveyorAgentController` (`/api/m11/conveyor/...`, `m11_agent*` tables) — do not mix the two.
 
+A reference Python client implementing everything in this guide lives at [`raspberry-pi-client/conveyor_client.py`](raspberry-pi-client/conveyor_client.py) (config in `raspberry-pi-client/config.example.json`).
+
 ## 1. Actors
 
 | Actor | Role |
@@ -26,16 +28,21 @@ sequenceDiagram
 
     loop every scan
         Pi->>Pi: read barcode via bound Barcode Scanner Integration ID
-        Pi->>BE: POST /api/conveyor/scan {workflowCode, stepCode, bayCode, barcode, sku, ...}
-        BE->>BE: resolve active Dispatch Task for bay
-        BE->>BE: evaluate Rule Builder (Order/SKU/Quantity/Packing/Dispatch rules)
-        alt rules pass
-            BE->>BE: processed_qty += qty (auto-complete at target)
-            BE->>PLC: signalAccept (via bound PLC Integration ID)
-            BE-->>Pi: {outcome: "ACCEPT", dispatchTask: {...}}
-        else rule fails
-            BE->>PLC: signalReject
-            BE-->>Pi: {outcome: "REJECT", reason: "..."}
+        Pi->>Pi: local qty pre-check (scan qty vs. tracked task's remaining qty)
+        alt would exceed remaining qty
+            Pi->>Pi: reject locally — reason LOCAL_QTY_LIMIT_EXCEEDED (never sent to backend)
+        else within limit (or no single task tracked for this bay)
+            Pi->>BE: POST /api/conveyor/scan {workflowCode, stepCode, bayCode, barcode, sku, ...}
+            BE->>BE: resolve active Dispatch Task for bay
+            BE->>BE: evaluate Rule Builder (Order/SKU/Quantity/Packing/Dispatch rules)
+            alt rules pass
+                BE->>BE: processed_qty += qty (auto-complete at target)
+                BE->>PLC: signalAccept (via bound PLC Integration ID)
+                BE-->>Pi: {outcome: "ACCEPT", dispatchTask: {...}}
+            else rule fails
+                BE->>PLC: signalReject
+                BE-->>Pi: {outcome: "REJECT", reason: "..."}
+            end
         end
     end
 
@@ -46,10 +53,11 @@ sequenceDiagram
 
 1. **Fetch config** — Pi calls `GET /api/scanner/workflows/{workflowId}` once (and again whenever it needs to re-sync) to learn which Integration IDs handle which role at which step, its loading bay(s), the rule sets in force, and its current dispatch task(s).
 2. **Read barcode** — via the Integration ID bound to role `BARCODE_SCANNER` for the current step/bay.
-3. **Submit scan** — `POST /api/conveyor/scan`. The backend, not the device, evaluates every rule — the device never runs rule logic.
-4. **Accept** → dispatch task's `processed_qty` increments (auto-completing at `target_qty`), PLC gets `signalAccept`.
-5. **Reject** → PLC gets `signalReject`, reason recorded.
-6. **Heartbeat** — `POST /api/conveyor/heartbeat` roughly every 5 seconds regardless of scan activity.
+3. **Local qty pre-check** — before calling the backend at all, the Pi compares the scan's quantity against its locally-tracked dispatch task's remaining quantity (`target_qty - processed_qty`); see §3.4. If it would be exceeded, the scan is rejected on the device and never sent over the network.
+4. **Submit scan** — `POST /api/conveyor/scan`. The backend, not the device, evaluates every rule — the device never runs rule logic.
+5. **Accept** → dispatch task's `processed_qty` increments (auto-completing at `target_qty`), PLC gets `signalAccept`.
+6. **Reject** → PLC gets `signalReject`, reason recorded.
+7. **Heartbeat** — `POST /api/conveyor/heartbeat` roughly every 5 seconds regardless of scan activity.
 
 ## 3. API Reference
 
@@ -122,7 +130,7 @@ sequenceDiagram
 | `taskId` | optional | Force a specific Dispatch Task. If omitted, the bay's single active task is used automatically; if several tasks are concurrently active on the bay, the one whose `sku`/`orderRef` matches wins. |
 | `scannerIntegrationId` | optional | Recorded on the scan log for traceability. |
 | `sku`, `orderRef` | optional | Whatever the label/scan actually encodes — fed into Rule Builder evaluation and, on accept, stamped onto the scan log. |
-| `qty` | optional | Defaults to `1`. Supports multi-unit scans (e.g. a case barcode worth 12 units). |
+| `qty` | optional | Defaults to `1`. Supports multi-unit scans (e.g. a case barcode worth 12 units). Checked client-side against the tracked task's remaining qty before this request is even sent — see §3.4. |
 
 **Response — ACCEPT** (verified live):
 ```json
@@ -171,6 +179,21 @@ sequenceDiagram
 Send roughly every 5 seconds. `(workflowCode, deviceId)` is the upsert key. A device that stops heartbeating is automatically flipped to `device_status = "OFFLINE"` after ~15 seconds by a background sweep (`DeviceHeartbeatStalenessScheduler`).
 
 **Response:** `{"ok": true}`
+
+### 3.4 Client-side quantity pre-check (device, not backend)
+
+Before the Pi ever calls `POST /api/conveyor/scan`, `ConveyorClient` (in `raspberry-pi-client/conveyor_client.py`) runs a local check:
+
+1. After fetching workflow config (and any re-sync), `track_tasks_from_workflow()` looks for exactly one `IN_PROGRESS` `dispatch_task` on the device's `bayCode` and caches its `target_qty`/`processed_qty`. If a bay has zero or several concurrently-active tasks, nothing is tracked — the pre-check is skipped entirely and every scan for that bay goes straight to the backend (the backend is the only authority in that case, since the device can't know in advance which task an ambiguous scan will resolve to).
+2. On every scan, `check_qty_limit(qty)` compares the scan's quantity (default `1`) against the tracked task's remaining quantity (`target_qty - processed_qty`).
+3. If the scan would exceed it, `submit_scan()` returns immediately **without making any HTTP call**:
+   ```json
+   { "outcome": "REJECT", "reason": "LOCAL_QTY_LIMIT_EXCEEDED", "dispatchTask": null, "plcSignalOk": null, "sentToBackend": false }
+   ```
+   No `dispatch_task_scan_log` row is written for these — they never reach the backend at all.
+4. On every real ACCEPT response, the tracked task's `processed_qty` is refreshed from the backend's returned `dispatchTask`, so the local view stays in sync (including auto-completion).
+
+This is a device-side fast-fail for UX/network efficiency only — it does **not** replace the backend's own `QTY_OK` rule (§5) if one is configured on the task's rule set, and it is skipped outright whenever a bay's active-task set is ambiguous.
 
 ## 4. Quantity update & auto-complete
 
@@ -238,3 +261,55 @@ The scan orchestration never touches a coil address directly — it just calls `
 | `device_heartbeat` | Latest heartbeat per device. |
 
 All five are registered in `entity_registry`, so they're also manageable via the existing generic entity admin API (`/api/m0/entities/{code}`, `/api/m0/datasource/query`) with no additional frontend work.
+
+### 7.1 Admin pages (browser UI, no curl/Postman needed)
+
+Two pages are stamped (via `POST /api/m0/designer/pages`, category `M11` — grouped with the Integration Hub they configure) so an operator can do the setup from the browser instead of the API directly:
+
+| Page code | Title | Backing entity | Purpose |
+|---|---|---|---|
+| `m12:conveyor-scanner-plc-bindings` | Conveyor Scanner/PLC Bindings | `WorkflowIntegrationBinding` | Create/edit which Integration ID (scanner or PLC) is bound to which workflow step/bay. |
+| `m12:conveyor-dispatch-tasks` | Conveyor Dispatch Tasks | `DispatchTask` | Create/edit order→bay dispatch tasks (`target_qty`, `sku_code`, `order_ref`, `status`). |
+
+Both are plain generic `"kind":"list"` pages (default auto-derived columns, standard add/edit/delete via the underlying `GenericEntityController` — the same mechanism `/api/m0/entities/{code}` uses) — no bespoke frontend code. Fetch either with `GET /api/m0/pages/{code}` to confirm they resolve, or open `/configurable/{code}` in the app.
+
+**Known gap, unrelated to this feature:** the pre-existing `aria:integration-list` page (all `IntegrationInstance` rows, any connector — this is where you'd otherwise expect to edit a scanner/PLC's own `config_json`) has an "Edit Config" row action pointing at a page code (`aria:integration-edit`) that was never created — that action currently dead-ends in the UI. Until that's fixed, edit `IntegrationInstance.config_json` via `/api/m0/entities/IntegrationInstance/{id}` (PUT) or the Postman collection.
+
+## 8. Configuring a network barcode scanner + its PLC register range
+
+These are two independent configs — the scanner's network address lives on the Pi, the PLC's register range lives on the backend.
+
+### 8.1 Scanner IP/port (device-side, Pi config)
+
+If the physical scanner is a network (TCP/IP) device rather than a USB/keyboard one, set `scannerIp`/`scannerPort` in `raspberry-pi-client/config.json`:
+```json
+{ "scannerIp": "192.168.1.50", "scannerPort": 9200 }
+```
+`conveyor_client.py`'s `ScannerSocketReader` then opens a persistent TCP connection to that address and reads newline-terminated barcodes, auto-reconnecting (fixed delay) on any socket error or a connection the scanner itself closes. Leave `scannerIp` unset to fall back to reading barcodes from stdin (dev/testing, or a USB scanner that enumerates as a keyboard).
+
+This is purely a device-side transport setting — the backend never talks to the scanner directly (see §1: the scanner's `IntegrationInstance` is an identity/config row only, never invoked server-side). If you also want the scanner's IP/port recorded on the backend for inventory purposes, put it in that `IntegrationInstance`'s own `config_json`, e.g. `{"ip":"192.168.1.50","port":9200}` — purely descriptive, nothing server-side reads it.
+
+### 8.2 PLC register range (backend-side, per bay)
+
+The PLC's "register range" (`acceptCoilAddress`/`rejectCoilAddress`) lives on the **PLC's own** `IntegrationInstance.config_json`, resolved per `bay_code` via `workflow_integration_binding` — **not** on the scanner at all, since the Pi never talks to the PLC directly (only the backend does, via `PlcSignalService` → `ModbusTcpAdapter`).
+
+If different scanners/bays on the same physical PLC need different coil ranges, create a **separate PLC `IntegrationInstance` per bay**, each with its own register range, and bind each to its own `bay_code` — the binding's unique key is `(workflow_code, step_code, integration_role, bay_code)`, so this is already supported with zero code changes:
+```bash
+# PLC instance for BAY1 — registers 10/11
+curl -X POST $HOST/api/m0/entities/IntegrationInstance -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{
+  "code":"plcBay1","connector_code":"MODBUS_TCP","name":"PLC Bay 1","status":"ACTIVE",
+  "config_json":"{\"host\":\"plc-01.factory.local\",\"port\":502,\"acceptCoilAddress\":10,\"rejectCoilAddress\":11,\"pulseMs\":250,\"dryRun\":true}"
+}'
+# PLC instance for BAY2 — different register range, same physical PLC host
+curl -X POST $HOST/api/m0/entities/IntegrationInstance -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{
+  "code":"plcBay2","connector_code":"MODBUS_TCP","name":"PLC Bay 2","status":"ACTIVE",
+  "config_json":"{\"host\":\"plc-01.factory.local\",\"port\":502,\"acceptCoilAddress\":20,\"rejectCoilAddress\":21,\"pulseMs\":250,\"dryRun\":true}"
+}'
+
+curl -X POST $HOST/api/m0/entities/WorkflowIntegrationBinding -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d \
+ '{"workflow_code":"M12.ConveyorLine1","step_code":"SCAN_STEP","bay_code":"BAY1","integration_role":"PLC","integration_id":<plcBay1 id>}'
+curl -X POST $HOST/api/m0/entities/WorkflowIntegrationBinding -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d \
+ '{"workflow_code":"M12.ConveyorLine1","step_code":"SCAN_STEP","bay_code":"BAY2","integration_role":"PLC","integration_id":<plcBay2 id>}'
+```
+
+**Known gap:** the binding row's own `config_overrides_json` is round-tripped to the Pi in the aggregate response but is **not** consulted by `PlcSignalService`/`ModbusTcpAdapter` — a register-range override there is display-only today. If you need a *single* PLC `IntegrationInstance` to serve multiple scanners/bays with genuinely different register ranges per scanner (not just per bay), that requires a code change (threading the resolved binding's config through to `ModbusTcpAdapter.invoke()`) — ask if you want that implemented; the per-bay-instance approach above covers the common case without it.

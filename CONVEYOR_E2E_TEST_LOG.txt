@@ -1,0 +1,374 @@
+================================================================================
+CONVEYOR SCANNER WORKFLOW — END-TO-END TEST LOG
+================================================================================
+All requests/responses below are REAL, captured live against a running
+instance of this backend (localhost:8080, MariaDB dev DB) during a full
+verification pass. Nothing here is fabricated — every JSON block is an
+actual API call/response from that test run.
+
+Companion docs in this repo:
+  - CONVEYOR_SCANNER_WORKFLOW_GUIDE.md   (full API reference + concepts)
+  - raspberry-pi-client/conveyor_client.py (reference Python device client)
+  - postman/conveyor_scanner.postman_collection.json (importable test suite)
+
+Test data used: workflow "M12.ConveyorTest", bay "BAY1", step "SCANNING".
+
+
+================================================================================
+1. SETUP — one-time admin calls (require a JWT)
+================================================================================
+
+--------------------------------------------------------------------------------
+1.1 Login
+--------------------------------------------------------------------------------
+POST /api/auth/signin
+
+Request:
+{
+  "username": "2033",
+  "password": "Test@1234"
+}
+
+Response (200):
+{
+  "accessToken": "eyJhbGciOiJIUzUxMiJ9...<truncated>",
+  "tokenType": "Bearer",
+  "refreshToken": "a4e47143-e302-4840-a1d0-216a3f048262",
+  "id": 2033,
+  "username": "2033",
+  "roles": ["1"],
+  "permissions": [],
+  "landingRoute": null
+}
+
+--------------------------------------------------------------------------------
+1.2 Create a DispatchTask (order -> bay mapping)
+--------------------------------------------------------------------------------
+POST /api/m0/entities/DispatchTask
+Authorization: Bearer <token>
+
+Request:
+{
+  "workflow_code": "M12.ConveyorTest",
+  "bay_code": "BAY1",
+  "task_code": "TASK-E2E-1785130561",
+  "order_ref": "ORDER-E2E",
+  "sku_code": "SKU-E2E",
+  "target_qty": 3
+}
+
+Response (200):
+{
+  "ok": true,
+  "entity": "DispatchTask",
+  "inserted": {
+    "workflow_code": "M12.ConveyorTest",
+    "bay_code": "BAY1",
+    "task_code": "TASK-E2E-1785130561",
+    "order_ref": "ORDER-E2E",
+    "sku_code": "SKU-E2E",
+    "target_qty": 3,
+    "tenant_id": 1
+  },
+  "id": 2
+}
+
+--------------------------------------------------------------------------------
+1.3 Move the task to IN_PROGRESS
+--------------------------------------------------------------------------------
+PUT /api/m0/entities/DispatchTask/2      <-- NOTE: PUT, not PATCH (PATCH returns 405)
+Authorization: Bearer <token>
+
+Request:
+{ "status": "IN_PROGRESS" }
+
+Response (200):
+{ "id": 2, "ok": true, "updated": 1 }
+
+
+================================================================================
+2. DEVICE-FACING FLOW — no auth header at all (permit-all routes)
+================================================================================
+
+--------------------------------------------------------------------------------
+2.1 Fetch workflow config
+--------------------------------------------------------------------------------
+GET /api/scanner/workflows/M12.ConveyorTest
+
+Request: (none — just the path, no auth header)
+
+Response (200):
+{
+  "workflowId": "M12.ConveyorTest",
+  "workflowCode": "M12.ConveyorTest",
+  "workflowVersion": 1,
+  "workflowStatus": "PUBLISHED",
+  "workflowDetails": {
+    "initialState": "SCANNING",
+    "transitions": [{"from": "SCANNING", "to": "DONE", "pageCode": ""}]
+  },
+  "integrations": [
+    {"step_code": "SCANNING", "bay_code": "BAY1", "integration_role": "BARCODE_SCANNER", "integration_id": 10, "config_overrides_json": null},
+    {"step_code": "SCANNING", "bay_code": "BAY1", "integration_role": "PLC", "integration_id": 11, "config_overrides_json": null}
+  ],
+  "loadingBays": [],
+  "ruleBuilder": [
+    {"id": 1, "code": "RS-TEST", "version": 1, "name": "Test Rule Set", "status": "PUBLISHED"}
+  ],
+  "plcIntegrations": [
+    {"step_code": "SCANNING", "bay_code": "BAY1", "integration_role": "PLC", "integration_id": 11, "config_overrides_json": null}
+  ],
+  "dispatchTasks": [
+    {"id": 2, "tenant_id": 1, "workflow_code": "M12.ConveyorTest", "workflow_instance_id": null,
+     "bay_code": "BAY1", "task_code": "TASK-E2E-1785130561", "order_ref": "ORDER-E2E", "sku_code": "SKU-E2E",
+     "target_qty": 3.000, "processed_qty": 0.000, "rejected_qty": 0.000, "status": "IN_PROGRESS",
+     "rule_set_id": null, "started_at": null, "completed_at": null,
+     "created_at": "2026-07-27T05:36:01.000+00:00", "updated_at": "2026-07-27T05:36:01.000+00:00"}
+  ]
+}
+
+--------------------------------------------------------------------------------
+2.2 Scan #1 — ACCEPT (task has no rule_set_id yet -> rules auto-pass)
+--------------------------------------------------------------------------------
+POST /api/conveyor/scan
+
+Request:
+{
+  "workflowCode": "M12.ConveyorTest",
+  "stepCode": "SCANNING",
+  "bayCode": "BAY1",
+  "barcode": "BC-E2E-1",
+  "taskId": null,
+  "scannerIntegrationId": 10,
+  "sku": "SKU-E2E",
+  "orderRef": "ORDER-E2E",
+  "qty": null
+}
+
+Response (200):
+{
+  "outcome": "ACCEPT",
+  "reason": null,
+  "dispatchTask": {
+    "id": 2, "tenant_id": 1, "workflow_code": "M12.ConveyorTest", "workflow_instance_id": null,
+    "bay_code": "BAY1", "task_code": "TASK-E2E-1785130561", "order_ref": "ORDER-E2E", "sku_code": "SKU-E2E",
+    "target_qty": 3.000, "processed_qty": 1.000, "rejected_qty": 0.000, "status": "IN_PROGRESS",
+    "rule_set_id": null, "started_at": null, "completed_at": null,
+    "created_at": "2026-07-27T05:36:01.000+00:00", "updated_at": "2026-07-27T05:36:34.000+00:00"
+  },
+  "plcSignalOk": true
+}
+
+--------------------------------------------------------------------------------
+2.3 Scan #2 — wrong SKU still ACCEPTs (documented gotcha: no rule_set_id = no
+    enforcement at all, proven live)
+--------------------------------------------------------------------------------
+POST /api/conveyor/scan
+
+Request:
+{
+  "workflowCode": "M12.ConveyorTest",
+  "stepCode": "SCANNING",
+  "bayCode": "BAY1",
+  "barcode": "BC-E2E-WRONGSKU",
+  "taskId": 2,
+  "scannerIntegrationId": 10,
+  "sku": "SKU-WRONG",
+  "orderRef": "ORDER-E2E",
+  "qty": null
+}
+
+Response (200):
+{
+  "outcome": "ACCEPT",
+  "reason": null,
+  "dispatchTask": {
+    "id": 2, "target_qty": 3.000, "processed_qty": 2.000, "rejected_qty": 0.000,
+    "status": "IN_PROGRESS", "rule_set_id": null, "...": "..."
+  },
+  "plcSignalOk": true
+}
+
+  ---- at this point a rule set was attached: ----
+  UPDATE dispatch_task SET rule_set_id = 1 WHERE id = 2;
+  (rule_set_id=1 is the pre-existing "RS-TEST" set with rules:
+     SKU_MATCH (BLOCKING): #submitted['scannedSku'] == null or #submitted['scannedSku'] == #submitted['taskSkuCode']
+     QTY_OK    (BLOCKING): #submitted['taskProcessedQty'] < #submitted['taskTargetQty'])
+
+--------------------------------------------------------------------------------
+2.4 Scan #3 — wrong SKU, now REJECTS (rule set enforced)
+--------------------------------------------------------------------------------
+POST /api/conveyor/scan
+
+Request:
+{
+  "workflowCode": "M12.ConveyorTest",
+  "stepCode": "SCANNING",
+  "bayCode": "BAY1",
+  "barcode": "BC-E2E-WRONGSKU-2",
+  "taskId": 2,
+  "scannerIntegrationId": 10,
+  "sku": "SKU-WRONG",
+  "orderRef": "ORDER-E2E",
+  "qty": null
+}
+
+Response (200):
+{
+  "outcome": "REJECT",
+  "reason": "SKU_MISMATCH",
+  "dispatchTask": {
+    "id": 2, "target_qty": 3.000, "processed_qty": 2.000, "rejected_qty": 0.000,
+    "status": "IN_PROGRESS", "rule_set_id": 1, "...": "..."
+  },
+  "plcSignalOk": true
+}
+
+NOTE (real minor bug found during this test): the DB's rejected_qty WAS
+correctly incremented to 1 by this call (verified via direct query), but the
+response body above still shows "rejected_qty": 0.000 — ConveyorScanService
+returns the pre-fetch task snapshot on REJECT instead of re-fetching after
+recordRejectedScan() runs. Cosmetic only; the real counter is correct.
+
+--------------------------------------------------------------------------------
+2.5 Scan #4 — correct SKU, completes the task (processed_qty hits target_qty)
+--------------------------------------------------------------------------------
+POST /api/conveyor/scan
+
+Request:
+{
+  "workflowCode": "M12.ConveyorTest",
+  "stepCode": "SCANNING",
+  "bayCode": "BAY1",
+  "barcode": "BC-E2E-3",
+  "taskId": 2,
+  "scannerIntegrationId": 10,
+  "sku": "SKU-E2E",
+  "orderRef": "ORDER-E2E",
+  "qty": null
+}
+
+Response (200):
+{
+  "outcome": "ACCEPT",
+  "reason": null,
+  "dispatchTask": {
+    "id": 2, "target_qty": 3.000, "processed_qty": 3.000, "rejected_qty": 1.000,
+    "status": "COMPLETED", "rule_set_id": 1,
+    "completed_at": "2026-07-27T05:38:13.000+00:00",
+    "created_at": "2026-07-27T05:36:01.000+00:00", "updated_at": "2026-07-27T05:38:13.000+00:00"
+  },
+  "plcSignalOk": true
+}
+
+--------------------------------------------------------------------------------
+2.6 Scan #5 — task already COMPLETED -> NO_ACTIVE_TASK
+--------------------------------------------------------------------------------
+POST /api/conveyor/scan
+
+Request:
+{
+  "workflowCode": "M12.ConveyorTest",
+  "stepCode": "SCANNING",
+  "bayCode": "BAY1",
+  "barcode": "BC-E2E-4",
+  "taskId": null,
+  "scannerIntegrationId": 10,
+  "sku": "SKU-E2E",
+  "orderRef": "ORDER-E2E",
+  "qty": null
+}
+
+Response (200):
+{
+  "outcome": "REJECT",
+  "reason": "NO_ACTIVE_TASK",
+  "dispatchTask": null,
+  "plcSignalOk": null
+}
+
+--------------------------------------------------------------------------------
+2.7 Heartbeat
+--------------------------------------------------------------------------------
+POST /api/conveyor/heartbeat
+
+Request:
+{
+  "workflowCode": "M12.ConveyorTest",
+  "deviceId": "PI-BAY1-E2E",
+  "workflowStatus": "RUNNING",
+  "currentDispatchTaskId": 2,
+  "deviceStatus": "ONLINE",
+  "lastScanAt": "2026-07-27T05:38:13Z",
+  "integrationHealth": {"scanner1-test": "OK", "plc1-test": "OK"}
+}
+
+Response (200):
+{ "ok": true }
+
+
+================================================================================
+3. REAL PYTHON CLIENT RUN (raspberry-pi-client/conveyor_client.py)
+================================================================================
+Ran against the same live backend with a fresh DispatchTask (id=3,
+target_qty=3, no rule_set_id), barcodes piped via stdin: "BC-PY-1",
+"BC-PY-2", "BC-PY-3". Actual console output:
+
+2026-07-27 11:08:49,564 INFO fetching workflow config for M12.ConveyorTest
+2026-07-27 11:08:49,614 INFO workflow 'M12.ConveyorTest' loaded: 2 integration binding(s), 3 dispatch task(s)
+2026-07-27 11:08:49,616 INFO no scannerIp configured - reading barcodes from stdin (dev/testing mode)
+2026-07-27 11:08:49,616 INFO heartbeat started (every 5s), waiting for barcode scans (Ctrl+C to stop)
+2026-07-27 11:08:49,656 INFO ACCEPT barcode=BC-PY-1 processed_qty=1.0/3.0 status=IN_PROGRESS plcSignalOk=True
+2026-07-27 11:08:49,701 INFO ACCEPT barcode=BC-PY-2 processed_qty=2.0/3.0 status=IN_PROGRESS plcSignalOk=True
+2026-07-27 11:08:49,743 INFO ACCEPT barcode=BC-PY-3 processed_qty=3.0/3.0 status=COMPLETED plcSignalOk=True
+
+
+================================================================================
+4. LOCAL QUANTITY PRE-CHECK (device-side, never reaches the backend)
+================================================================================
+DispatchTask id=4 created with target_qty=2, processed_qty=0. Ran the client
+directly (not via curl) with an oversized qty=5 scan:
+
+  from conveyor_client import ConveyorClient, load_config
+  c = ConveyorClient(load_config())
+  wf = c.fetch_workflow_config()
+  c.track_tasks_from_workflow(wf)
+  result = c.submit_scan("BC-OVERSIZED", qty=5)
+
+Console output:
+2026-07-27 11:09:14,057 ERROR LOCAL REJECT barcode=BC-OVERSIZED: scan qty 5 exceeds remaining allowed qty 2.0 (target=2.0, processed=0.0) (not sent to backend)
+
+Python return value (no HTTP call was made — verified by DB inspection below):
+{
+  "outcome": "REJECT",
+  "reason": "LOCAL_QTY_LIMIT_EXCEEDED",
+  "dispatchTask": null,
+  "plcSignalOk": null,
+  "sentToBackend": false
+}
+
+Proof nothing reached the backend (direct DB query immediately after):
+  SELECT COUNT(*) FROM dispatch_task_scan_log WHERE dispatch_task_id = 4;   -> 0 rows
+  SELECT processed_qty, rejected_qty FROM dispatch_task WHERE id = 4;      -> (0.000, 0.000)
+
+
+================================================================================
+5. ENDPOINT SUMMARY
+================================================================================
+Setup (needs Authorization: Bearer <jwt>, TenantAdmin for IntegrationInstance):
+  POST  /api/auth/signin
+  POST  /api/m0/entities/IntegrationInstance
+  POST  /api/m0/entities/WorkflowIntegrationBinding
+  POST  /api/m0/entities/DispatchTask
+  PUT   /api/m0/entities/DispatchTask/{id}
+
+Device-facing (permit-all, NO auth header):
+  GET   /api/scanner/workflows/{workflowCode}
+  POST  /api/conveyor/scan
+  POST  /api/conveyor/heartbeat
+
+Admin browser pages (category M11, stamped via /api/m0/designer/pages,
+shipped in V126__conveyor_admin_pages.sql):
+  m12:conveyor-scanner-plc-bindings   (backed by WorkflowIntegrationBinding)
+  m12:conveyor-dispatch-tasks         (backed by DispatchTask)
+================================================================================
