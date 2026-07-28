@@ -6,7 +6,7 @@
 -- derivable by polling the queue.
 CREATE TABLE IF NOT EXISTS m0_notification (
   id BIGINT NOT NULL AUTO_INCREMENT,
-  tenant_id BIGINT NOT NULL DEFAULT 1,
+  tenant_id BIGINT NOT NULL DEFAULT -1,
   workflow_instance_id BIGINT NOT NULL,
   gate_pass_id BIGINT DEFAULT NULL,
   vehicle_no VARCHAR(32) DEFAULT NULL,
