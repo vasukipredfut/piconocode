@@ -14,7 +14,11 @@ import java.util.Map;
 /**
  * Captures aria:reconciliation's variance_reason and withinTolerance decision
  * into its own dedicated table, unload_reconciliation_detail, for
- * M10.TankerInbound.
+ * M10.TankerInbound (previousState WEIGHMENT_2) and M10.ReturnStockIn
+ * (previousState UNLOADING_DONE — its equivalent invoice-vs-received stock
+ * diff step, reusing this same page/listener rather than duplicating the
+ * pattern; ReturnStockIn has no dedicated parking states to land in between,
+ * per V131).
  *
  * <p>Kept OUT of WorkflowProjectionListener's generic field_map_json on
  * purpose, same reasoning as {@link PmtSharedReasonListener} and
@@ -23,10 +27,10 @@ import java.util.Map;
  * aria:manager-weight-approval, and WorkflowProjectionListener.pluck()
  * searches every page's submitted data (a plain HashMap, undefined iteration
  * order) for a bare key match — it would risk grabbing one of those later
- * pages' variance_reason instead of aria:reconciliation's own. Gating on
- * {@code previousState == WEIGHMENT_2} (only aria:reconciliation fires from
- * that state in this workflow) and reading the page's own bag entry directly
- * avoids that ambiguity entirely.
+ * pages' variance_reason instead of aria:reconciliation's own. Gating on the
+ * exact (workflowCode, previousState) pair per workflow (only
+ * aria:reconciliation fires from that state in either workflow) and reading
+ * the page's own bag entry directly avoids that ambiguity entirely.
  *
  * <p>Unlike gate_pass (which always pre-exists by this point), this table has
  * no row yet the first time — INSERT ... ON DUPLICATE KEY UPDATE, keyed on
@@ -45,8 +49,9 @@ public class ReconciliationDecisionListener implements WorkflowTransitionListene
 
     @Override
     public void onTransition(WorkflowInstance instance, String previousState, Map<String, Object> bag) {
-        if (bag == null || !"WEIGHMENT_2".equals(previousState)
-                || !"M10.TankerInbound".equals(instance.getWorkflowCode())) {
+        boolean fires = ("M10.TankerInbound".equals(instance.getWorkflowCode()) && "WEIGHMENT_2".equals(previousState))
+                || ("M10.ReturnStockIn".equals(instance.getWorkflowCode()) && "UNLOADING_DONE".equals(previousState));
+        if (bag == null || !fires) {
             return;
         }
         try {

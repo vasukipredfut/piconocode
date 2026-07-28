@@ -9,10 +9,16 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
+import java.util.Set;
 
 /**
- * Captures aria:qc-approval's literal decision ("APPROVED" / "APPROVED_NOTES"
- * / "REJECTED") into qc_preload_detail.qc_decision for M10.TankerInbound.
+ * Captures aria:qc-approval's literal decision ("APPROVED" / "REJECTED") into
+ * qc_preload_detail.qc_decision, plus qc_reject_reason (only present when
+ * REJECTED) and unloading_location (only present when item_category ==
+ * RETURN), for M10.TankerInbound and M10.ReturnStockIn — both reach
+ * aria:qc-approval from the same DISPATCH_QUEUED state name, so one
+ * previousState check covers both; only the workflowCode check needs to list
+ * both.
  *
  * <p>Kept OUT of WorkflowProjectionListener's generic field_map_json on
  * purpose, same reasoning as {@link PmtSharedReasonListener}: aria:qc-approval's
@@ -22,13 +28,14 @@ import java.util.Map;
  * (a plain HashMap, undefined iteration order) for a bare key match — it
  * would risk grabbing a later manager-approval's "status" instead of
  * aria:qc-approval's own. Gating on {@code previousState == DISPATCH_QUEUED}
- * (only aria:qc-approval fires from that state in this workflow) and reading
- * the page's own bag entry directly avoids that ambiguity entirely.
+ * (only aria:qc-approval fires from that state in either workflow) and
+ * reading the page's own bag entry directly avoids that ambiguity entirely.
  */
 @Component
 public class QcApprovalDecisionListener implements WorkflowTransitionListener {
 
     private static final Logger log = LoggerFactory.getLogger(QcApprovalDecisionListener.class);
+    private static final Set<String> WORKFLOW_CODES = Set.of("M10.TankerInbound", "M10.ReturnStockIn");
 
     private final JdbcTemplate jdbc;
 
@@ -39,21 +46,25 @@ public class QcApprovalDecisionListener implements WorkflowTransitionListener {
     @Override
     public void onTransition(WorkflowInstance instance, String previousState, Map<String, Object> bag) {
         if (bag == null || !"DISPATCH_QUEUED".equals(previousState)
-                || !"M10.TankerInbound".equals(instance.getWorkflowCode())) {
+                || !WORKFLOW_CODES.contains(instance.getWorkflowCode())) {
             return;
         }
         try {
             Map<String, Object> page = pageData(bag, "aria:qc-approval");
             String decision = str(page, "status");
             if (decision == null) return;
+            String rejectReason = str(page, "qc_reject_reason");
+            String unloadingLocation = str(page, "unloading_location");
 
             Long tenantId = TenantContext.get();
             jdbc.update(
-                "INSERT INTO qc_preload_detail (tenant_id, workflow_instance_id, flow_variant_code, current_step, qc_decision) " +
-                "VALUES (?,?,?,?,?) " +
+                "INSERT INTO qc_preload_detail (tenant_id, workflow_instance_id, flow_variant_code, current_step, qc_decision, qc_reject_reason, unloading_location) " +
+                "VALUES (?,?,?,?,?,?,?) " +
                 "ON DUPLICATE KEY UPDATE flow_variant_code=VALUES(flow_variant_code), " +
-                "current_step=VALUES(current_step), qc_decision=VALUES(qc_decision)",
-                tenantId, instance.getId(), instance.getWorkflowCode(), instance.getCurrentState(), decision);
+                "current_step=VALUES(current_step), qc_decision=VALUES(qc_decision), " +
+                "qc_reject_reason=VALUES(qc_reject_reason), unloading_location=VALUES(unloading_location)",
+                tenantId, instance.getId(), instance.getWorkflowCode(), instance.getCurrentState(),
+                decision, rejectReason, unloadingLocation);
         } catch (Exception e) {
             log.warn("qc decision capture failed for instance={}: {}", instance.getId(), e.getMessage());
         }

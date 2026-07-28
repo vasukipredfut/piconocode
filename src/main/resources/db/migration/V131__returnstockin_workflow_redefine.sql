@@ -1,0 +1,31 @@
+-- M10.ReturnStockIn: parking bay removed from the flow, per direct
+-- instruction — replaces the earlier 17-state design (with 4 dedicated
+-- parking-scan checkpoints, plus V130's role-assignment fix on top of it)
+-- with a 13-state machine that drops PARKING_IN_1/PARKING_OUT_1/PARKING_IN_2/
+-- PARKING_OUT_2 entirely, mirroring the same collapse V125 already did for
+-- M10.TankerInbound: each removed parking state's transition merges into its
+-- predecessor, and that predecessor's assignedRole becomes whichever role the
+-- removed state had (i.e. whatever role the *next real page's* picker is
+-- hardcoded to filter by — see V130's own note on this hardcoded-picker-role
+-- mechanism, still the governing rule even without parking states):
+--   GATE_PASS_CREATED    --(was ->PARKING_IN_1->)--   DISPATCH_QUEUED
+--   SUPERVISOR_ALLOCATED --(was ->PARKING_OUT_1->)--  WEIGHMENT_1
+--   UNLOADING_DONE       --(was ->PARKING_IN_2->)--   STOCK_DIFF_RECORDED
+--   STOCK_DIFF_RECORDED  --(was ->PARKING_OUT_2->)--  WEIGHT_DIFF_PENDING_MANAGER
+-- aria:parking-scan and ParkingBayEntryTransitionListener need no code
+-- change — they're shared/not workflow_code-scoped and simply stop firing
+-- for M10.ReturnStockIn since no transition points at that pageCode anymore.
+--
+-- Everything else — the rest of the 14-step flow that isn't parking
+-- (dispatch officer capture, QC, supervisor allocation, W1, unloading,
+-- stock-diff reconciliation, W2, weight-diff manager approval, closure) is
+-- unchanged from the prior design; the dispatch_vehicle_detail columns +
+-- m0_workflow_projection rows and the aria:dispatch-vehicle-details page
+-- fields added alongside it still apply as-is. The earlier role-assignment
+-- fix migration is superseded by this migration's own complete rewrite (both
+-- do an unconditional UPDATE on the same row; this one running after it just
+-- wins) — left in place rather than deleted since it's part of the version
+-- numbering being reconciled separately.
+UPDATE workflow_definition
+   SET body_json = '{"code":"M10.ReturnStockIn","version":1,"initialState":"DRAFT","states":[{"code":"DRAFT"},{"code":"GATE_PASS_CREATED","assignedRole":"Dispatch"},{"code":"DISPATCH_QUEUED","assignedRole":"QC"},{"code":"QC_APPROVED","assignedRole":"Dispatch"},{"code":"QC_REJECTED","terminal":true},{"code":"SUPERVISOR_ALLOCATED","assignedRole":"WeighmentOfficer"},{"code":"WEIGHMENT_1","assignedRole":"UnloadingSupervisor"},{"code":"UNLOADING_DONE","assignedRole":"Dispatch"},{"code":"STOCK_DIFF_RECORDED","assignedRole":"WeighmentOfficer"},{"code":"WEIGHT_DIFF_PENDING_MANAGER","assignedRole":"Manager"},{"code":"READY_FOR_CLOSURE","assignedRole":"FrontGate"},{"code":"CLOSED","terminal":true},{"code":"REJECTED_BY_MANAGER","terminal":true}],"transitions":[{"from":"DRAFT","to":"GATE_PASS_CREATED","trigger":"page.submitted","pageCode":"aria:front-gate-create"},{"from":"GATE_PASS_CREATED","to":"DISPATCH_QUEUED","trigger":"page.submitted","pageCode":"aria:dispatch-vehicle-details"},{"from":"DISPATCH_QUEUED","to":"QC_APPROVED","trigger":"page.submitted","pageCode":"aria:qc-approval","guard":"#submitted[\'status\'] == \'APPROVED\'"},{"from":"DISPATCH_QUEUED","to":"QC_REJECTED","trigger":"page.submitted","pageCode":"aria:qc-approval","guard":"#submitted[\'status\'] == \'REJECTED\'"},{"from":"QC_APPROVED","to":"SUPERVISOR_ALLOCATED","trigger":"page.submitted","pageCode":"aria:loading-allocation"},{"from":"SUPERVISOR_ALLOCATED","to":"WEIGHMENT_1","trigger":"page.submitted","pageCode":"aria:weighment-capture"},{"from":"WEIGHMENT_1","to":"UNLOADING_DONE","trigger":"page.submitted","pageCode":"aria:supervisor-unloading"},{"from":"UNLOADING_DONE","to":"STOCK_DIFF_RECORDED","trigger":"page.submitted","pageCode":"aria:reconciliation"},{"from":"STOCK_DIFF_RECORDED","to":"WEIGHT_DIFF_PENDING_MANAGER","trigger":"page.submitted","pageCode":"aria:weighment-capture"},{"from":"WEIGHT_DIFF_PENDING_MANAGER","to":"READY_FOR_CLOSURE","trigger":"page.submitted","pageCode":"aria:manager-weight-approval","guard":"#submitted[\'status\'] == \'APPROVED\'"},{"from":"WEIGHT_DIFF_PENDING_MANAGER","to":"REJECTED_BY_MANAGER","trigger":"page.submitted","pageCode":"aria:manager-weight-approval","guard":"#submitted[\'status\'] == \'REJECTED\'"},{"from":"READY_FOR_CLOSURE","to":"CLOSED","trigger":"page.submitted","pageCode":"aria:gate-pass-closure"}]}'
+ WHERE code = 'M10.ReturnStockIn' AND status = 'PUBLISHED';
