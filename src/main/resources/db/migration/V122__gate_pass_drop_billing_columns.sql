@@ -1,4 +1,4 @@
--- V105 — finish the Billing Entry split (V103/V104): drop the 2
+-- V122 — finish the Billing Entry split (V121/V124): drop the 2
 -- billing-capture columns from gate_pass now that billing_entry is the sole
 -- write target for them. GenericEntityController's GATE_PASS_SATELLITE_JOIN/
 -- SELECT is updated in the same change to join billing_entry, so GET

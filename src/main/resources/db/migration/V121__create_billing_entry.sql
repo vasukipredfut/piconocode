@@ -1,5 +1,5 @@
--- V103 — Billing Entry gets its own table, following the gate_pass_closure
--- precedent (V100/V101/V102).
+-- V121 — Billing Entry gets its own table, following the gate_pass_closure
+-- precedent (V119/V120/V123).
 --
 -- Today the "Billing Entry" screen (aria:billing-entry, transition
 -- PMT_CHECK_OK/WEIGHT_DIFF_OK -> BILLING_DONE on M10.FGLoading/PackLoading/
@@ -11,9 +11,9 @@
 --
 -- billing_entry holds exactly that capture, one row per gate pass, linked by
 -- workflow_instance_id — the same key WorkflowProjectionListener already uses
--- for dispatch_vehicle_detail (V36) and gate_pass_closure (V100). gate_pass
--- itself keeps only status/current_step/closed_at (see V104 for the
--- projection-config side of this split, V105 for the column drop).
+-- for dispatch_vehicle_detail (V36) and gate_pass_closure (V119). gate_pass
+-- itself keeps only status/current_step/closed_at (see V124 for the
+-- projection-config side of this split, V122 for the column drop).
 --
 -- invoice_numbers is JSON (a plain string array, e.g. ["INV-001","INV-002"])
 -- rather than a second child table, because the field itself is small and
@@ -24,7 +24,7 @@
 --
 -- invoice_number_count is a persisted, derived column (COUNT of
 -- invoice_numbers) rather than a computed/virtual one: WorkflowProjectionListener
--- writes it directly whenever it writes invoice_numbers (see V104 / the
+-- writes it directly whenever it writes invoice_numbers (see V124 / the
 -- accompanying WorkflowProjectionListener.java change), so it's always in
 -- sync with no extra read-time computation, and list/filter/sort views over
 -- entity_field_registry can treat it like any other plain INT column.
@@ -56,7 +56,7 @@ VALUES
    'M10',NOW(),NULL,NULL,NULL,NULL,NULL,NULL,NULL);
 
 -- Field registry rows (schema/list/Designer visibility). Idempotent — same
--- MAX(id)+ROW_NUMBER() pattern used in V100 for GatePassClosure.
+-- MAX(id)+ROW_NUMBER() pattern used in V119 for GatePassClosure.
 --
 -- invoice_numbers' widget_kind is 'repeater' — NOT in the Renderer's current
 -- vocabulary (today: text|number|date|datetime|textarea|select|multiselect|

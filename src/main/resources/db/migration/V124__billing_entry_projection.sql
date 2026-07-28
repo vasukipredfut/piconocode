@@ -1,10 +1,10 @@
--- V104 — Route Billing Entry fields to billing_entry instead of gate_pass.
+-- V124 — Route Billing Entry fields to billing_entry instead of gate_pass.
 --
 -- Part 1: give the 3 M10 workflows whose transitions submit aria:billing-entry
 -- (M10.FGLoading, M10.PackLoading, M10.TankerOutbound — confirmed via
 -- workflow_definition.body_json: the only "pageCode":"aria:billing-entry"
 -- transitions in the schema) a SECOND m0_workflow_projection target
--- (billing_entry), exactly like V36/V101 already do for gate_pass +
+-- (billing_entry), exactly like V36/V120 already do for gate_pass +
 -- dispatch_vehicle_detail / gate_pass_closure on the same workflow_codes.
 -- WorkflowProjectionListener needs a small code change (not zero, unlike
 -- gate_pass_closure) because invoice_numbers is an ARRAY value, not a scalar
@@ -47,7 +47,7 @@ VALUES
 
 -- ---- Part 2: strip billing fields from the gate_pass field_map_json ----
 -- JSON_MERGE_PATCH with a JSON null value REMOVES that key from the target
--- object (see V101 for the same technique / the MariaDB JSON-pseudo-type note).
+-- object (see V120 for the same technique / the MariaDB JSON-pseudo-type note).
 UPDATE m0_workflow_projection
 SET field_map_json = JSON_MERGE_PATCH(
   field_map_json,
@@ -59,7 +59,7 @@ WHERE target_table = 'gate_pass'
 
 -- ---- Metadata cleanup: tombstone (hidden=1, not delete) the orphaned
 --      GatePass.invoice_no / GatePass.checking_officer field-registry rows
---      until V105 drops the columns and deletes these rows for good.
+--      until V122 drops the columns and deletes these rows for good.
 UPDATE entity_field_registry
 SET hidden = 1
 WHERE entity_code = 'GatePass' AND field_code IN ('invoice_no','checking_officer');

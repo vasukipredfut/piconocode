@@ -53,8 +53,20 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
 
     private static final Logger log = LoggerFactory.getLogger(PmtSharedReasonListener.class);
     private static final Set<String> PMT_WEIGHT_DIFF_WORKFLOWS = Set.of("M10.FGLoading", "M10.PackLoading");
+    // M10.PackUnload adds 1 more precisely-gated state here (own state name,
+    // not shared with PackLoading/FGLoading/TankerInbound):
+    // QUANTITY_APPROVAL_PENDING -> manager_qty_approval_detail (same table,
+    // different previousState literal). See the switch case in
+    // onTransition() below.
+    //
+    // Neither PO verification nor GRN status get a case here: matching
+    // M10.TankerOutbound's own existing pattern (po_verified/
+    // po_override_reason on aria:dispatch-vehicle-details), both are
+    // captured as plain manual fields (GRN on aria:reconciliation) with no
+    // workflow gate and no separate approval state/page/table.
     private static final Set<String> NO_WORKFLOW_GUARD_STATES = Set.of(
-            "PMT_CAMERA_VERIFICATION", "PMT_CHECK_PENDING_MANAGER", "WEIGHT_DIFF_PENDING_MANAGER", "WEIGHMENT_3");
+            "PMT_CAMERA_VERIFICATION", "PMT_CHECK_PENDING_MANAGER", "WEIGHT_DIFF_PENDING_MANAGER", "WEIGHMENT_3",
+            "QUANTITY_APPROVAL_PENDING", "WEIGHT_APPROVAL_PENDING");
 
     private final JdbcTemplate jdbc;
 
@@ -128,6 +140,23 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
                         if (reason != null) cols.put("weight_variance_reason", reason);
                         if (decision != null) cols.put("weight_decision", decision);
                         upsert("manager_weight_approval_detail", instance, cols);
+                    }
+                    break;
+                }
+                case "QUANTITY_APPROVAL_PENDING": {
+                    // aria:manager-qty-approval under M10.PackUnload's own
+                    // state name — same target table PackLoading/FGLoading/
+                    // TankerOutbound already write via the
+                    // PMT_CHECK_PENDING_MANAGER/WEIGHT_DIFF_PENDING_MANAGER
+                    // case above.
+                    Map<String, Object> page = pageData(bag, "aria:manager-qty-approval");
+                    String reason = firstNonBlank(str(page, "variance_reason"), str(page, "varianceReason"));
+                    String decision = str(page, "status");
+                    if (reason != null || decision != null) {
+                        Map<String, Object> cols = new LinkedHashMap<>();
+                        if (reason != null) cols.put("manager_qty_reason", reason);
+                        if (decision != null) cols.put("manager_decision", decision);
+                        upsert("manager_qty_approval_detail", instance, cols);
                     }
                     break;
                 }

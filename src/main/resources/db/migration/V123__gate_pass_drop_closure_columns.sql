@@ -1,6 +1,6 @@
--- V102 — finish the Gate Pass Closure split (V100/V101): drop the 6 closure-checklist
+-- V123 — finish the Gate Pass Closure split (V119/V120): drop the 6 closure-checklist
 -- columns from gate_pass now that gate_pass_closure is the sole write target for them
--- (V101 already repointed every M10 gate-pass workflow's field_map_json away from
+-- (V120 already repointed every M10 gate-pass workflow's field_map_json away from
 -- target_table='gate_pass' for these keys, so nothing writes to them anymore).
 --
 -- gate_pass keeps status/current_step/workflow_instance_id/closed_at (vehicle & lifecycle

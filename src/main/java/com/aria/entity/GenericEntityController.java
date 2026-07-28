@@ -49,10 +49,12 @@ public class GenericEntityController {
     // GatePass single-row reads (getRow/getRowByField — the data source behind
     // page-JSON onChangeFill) are the only consumer that ever saw the fields now
     // split out into qc_preload_detail / loading_allocation_detail /
-    // weighment_capture_detail / sealing_process_detail (V79/V80/V83/V85; V84
-    // dropped the now-dead gate_pass columns of the same names, so there's no
-    // naming collision to guard against — a plain select of the satellite
-    // columns is enough).
+    // weighment_capture_detail / sealing_process_detail / gate_pass_closure
+    // (V79/V80/V83/V85/V100-V102; each drop of the now-dead gate_pass columns
+    // removed the naming collision, so a plain select of the satellite columns
+    // is enough — except gate_pass_closure.closed_at, which coexists with
+    // gate_pass.closed_at (different meaning: lifecycle close vs. checklist
+    // close) and must stay aliased below.).
     private static final String GATE_PASS_SATELLITE_JOIN =
             " LEFT JOIN qc_preload_detail qpd ON qpd.workflow_instance_id = gp.workflow_instance_id AND qpd.tenant_id = gp.tenant_id" +
             " LEFT JOIN loading_allocation_detail lad ON lad.workflow_instance_id = gp.workflow_instance_id AND lad.tenant_id = gp.tenant_id" +
@@ -61,7 +63,9 @@ public class GenericEntityController {
             " LEFT JOIN pmt_weight_diff_detail pwd ON pwd.workflow_instance_id = gp.workflow_instance_id AND pwd.tenant_id = gp.tenant_id" +
             " LEFT JOIN pmt_camera_verification_detail pcvd ON pcvd.workflow_instance_id = gp.workflow_instance_id AND pcvd.tenant_id = gp.tenant_id" +
             " LEFT JOIN dispatch_vehicle_detail dvd ON dvd.workflow_instance_id = gp.workflow_instance_id AND dvd.tenant_id = gp.tenant_id" +
-            " LEFT JOIN loading_progress_detail lpd ON lpd.workflow_instance_id = gp.workflow_instance_id AND lpd.tenant_id = gp.tenant_id";
+            " LEFT JOIN loading_progress_detail lpd ON lpd.workflow_instance_id = gp.workflow_instance_id AND lpd.tenant_id = gp.tenant_id" +
+            " LEFT JOIN gate_pass_closure gpc ON gpc.workflow_instance_id = gp.workflow_instance_id AND gpc.tenant_id = gp.tenant_id" +
+            " LEFT JOIN billing_entry be ON be.workflow_instance_id = gp.workflow_instance_id AND be.tenant_id = gp.tenant_id";
     private static final String GATE_PASS_SATELLITE_SELECT =
             "gp.*, " +
             "qpd.loading_supervisor, qpd.loading_tank_location, qpd.qc_reject_reason, " +
@@ -71,7 +75,12 @@ public class GenericEntityController {
             "pwd.pmt_variance_reason, pwd.expected_weight_kg, pwd.loaded_weight_kg, pwd.pmt_variance_pct, pwd.pmt_within_tolerance, " +
             "pcvd.camera_photo, pcvd.issue_identified, pcvd.camera_variance_reason, " +
             "dvd.broker_name, dvd.invoice_qty, dvd.oil_rm_item, dvd.tanker_no, dvd.transport_name, " +
-            "lpd.route_id";
+            "lpd.route_id, " +
+            "gpc.seal_verified, gpc.invoice_count_verified, gpc.qc_clearance, gpc.weighment_verified, " +
+            "gpc.order_recon_done, gpc.within_tolerance, gpc.closure_note, gpc.closed_at AS closure_closed_at, " +
+            "be.invoice_numbers, be.invoice_number_count, be.checking_officer, " +
+            "CASE WHEN be.invoice_numbers IS NULL OR be.invoice_numbers = '[]' THEN NULL " +
+            "ELSE REPLACE(REPLACE(REPLACE(be.invoice_numbers, '\",\"', ', '), '[\"', ''), '\"]', '') END AS invoice_no";
 
     // Optional — old test wiring constructs this controller without the codec.
     // When absent, secret fields pass through unmodified (pre-encryption

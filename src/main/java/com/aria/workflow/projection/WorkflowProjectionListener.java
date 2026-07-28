@@ -88,6 +88,7 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
         if (fieldMapJson != null && !fieldMapJson.isBlank()) {
             Map<String, Object> map = MAPPER.readValue(fieldMapJson, Map.class);
             boolean isGatePass = "gate_pass".equals(table);
+            boolean isBillingEntry = "billing_entry".equals(table);
             for (Map.Entry<String, Object> e : map.entrySet()) {
                 // variance_reason is a name shared by six PMT/manager-approval pages;
                 // PmtSharedReasonListener already routes four of them into their own
@@ -99,33 +100,28 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
                         && PmtSharedReasonListener.ownsVarianceReason(instance.getWorkflowCode(), previousState)) {
                     continue;
                 }
-                // invoice_no is shared by aria:dispatch-vehicle-details (vendor
-                // invoice, already captured in dispatch_vehicle_detail) and
-                // aria:billing-entry (sales invoice, no dedicated table yet —
-                // gate_pass is still its only save location).
-                if (isGatePass && "invoice_no".equals(e.getKey())) {
-                    // dispatch-vehicle-details' own transition: don't write gate_pass
-                    // at all (its value already lives in dispatch_vehicle_detail).
-                    if ("PARKING_IN_1".equals(previousState)) continue;
-                    // billing-entry's own transition (the only pageCode firing from
-                    // PMT_CHECK_OK): look up its bag entry directly by pageCode
-                    // instead of pluck()'s generic cross-page fallback, which
-                    // searches EVERY page's submitted data for a matching key and
-                    // returns whichever nested map it hits first — a plain HashMap,
-                    // so NOT insertion-order, and confirmed (2026-07-23 smoke test)
-                    // to return dispatch-vehicle-details' older vendor invoice_no
-                    // instead of billing-entry's own fresh value. Same cross-page
-                    // ambiguity PmtSharedReasonListener's javadoc warns about for
-                    // variance_reason/status — fixed here the same way: look up the
-                    // one page we know just fired, not every page that ever fired.
-                    if ("PMT_CHECK_OK".equals(previousState)) {
-                        Object page = bag.get("aria:billing-entry");
-                        if (page instanceof Map<?, ?> m) {
-                            Object v = m.get("invoice_no");
-                            if (v != null && !v.toString().isBlank()) cols.put(ident("invoice_no"), v.toString());
-                        }
-                        continue;
+                // invoice_numbers/invoice_no on billing_entry: Billing Entry now
+                // has its own dedicated satellite table (V103/V104), so the
+                // cross-page ambiguity that used to require special-casing
+                // gate_pass.invoice_no (dispatch-vehicle-details' vendor invoice
+                // vs. billing-entry's sales invoice sharing one gate_pass column)
+                // is gone — gate_pass's field_map_json no longer maps invoice_no
+                // at all (V104), and dispatch_vehicle_detail's own invoice_no
+                // mapping was never part of this branch. What's left to special-
+                // case is just serialisation: aria:billing-entry submits a LIST of
+                // invoice numbers (a repeater field), not a scalar, so it can't go
+                // through pluck()'s generic toString() path (that would produce
+                // Java's `[a, b]` list syntax, not valid JSON) — and
+                // invoice_number_count is a derived column, not itself present in
+                // the submitted bag, so it's computed here rather than mapped.
+                if (isBillingEntry && "invoice_numbers".equals(e.getKey())) {
+                    List<String> keys = (List<String>) e.getValue();
+                    List<String> numbers = extractInvoiceNumbers(bag, keys);
+                    if (!numbers.isEmpty()) {
+                        cols.put(ident("invoice_numbers"), MAPPER.writeValueAsString(numbers));
+                        cols.put(ident("invoice_number_count"), numbers.size());
                     }
+                    continue;
                 }
                 List<String> keys = (List<String>) e.getValue();
                 String v = pluck(bag, keys);
@@ -174,6 +170,44 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
             jdbc.update("UPDATE " + table + " SET " + sets + " WHERE " + keyCol + "=? AND tenant_id=?",
                     args.toArray());
         }
+    }
+
+    /**
+     * All non-blank invoice numbers billing-entry submitted, tried in order
+     * of {@code keys}. Looked up directly off the aria:billing-entry page's
+     * own bag entry (not pluck()'s generic cross-page fallback) — same
+     * reasoning as PmtSharedReasonListener's variance_reason javadoc: a plain
+     * HashMap of every page's submitted data isn't insertion-ordered, so a
+     * cross-page search can return a different page's stale value for a
+     * same-named key. Accepts the new repeater shape (a List of strings); a
+     * scalar submission (the Renderer doesn't have a repeater widget yet, so
+     * today's page falls back to one plain text box) is split on comma/
+     * semicolon so a user typing "INV001,INV002,INV003" into that single box
+     * still produces 3 invoice numbers, not one string containing commas.
+     */
+    @SuppressWarnings("unchecked")
+    private List<String> extractInvoiceNumbers(Map<String, Object> bag, List<String> keys) {
+        if (bag == null) return List.of();
+        Object page = bag.get("aria:billing-entry");
+        if (!(page instanceof Map<?, ?> m)) return List.of();
+        for (String k : keys) {
+            Object v = ((Map<String, Object>) m).get(k);
+            if (v instanceof List<?> list) {
+                List<String> out = new ArrayList<>();
+                for (Object item : list) {
+                    if (item != null && !item.toString().isBlank()) out.add(item.toString().trim());
+                }
+                if (!out.isEmpty()) return out;
+            } else if (v != null && !v.toString().isBlank()) {
+                List<String> out = new ArrayList<>();
+                for (String part : v.toString().split("[,;]")) {
+                    String t = part.trim();
+                    if (!t.isEmpty()) out.add(t);
+                }
+                if (!out.isEmpty()) return out;
+            }
+        }
+        return List.of();
     }
 
     /** First non-blank value for any of {@code keys}, top-level or one level into nested maps. */

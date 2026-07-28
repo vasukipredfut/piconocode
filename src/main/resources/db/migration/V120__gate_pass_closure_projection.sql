@@ -1,4 +1,4 @@
--- V73 — Route Gate Pass Closure fields to gate_pass_closure instead of gate_pass.
+-- V120 — Route Gate Pass Closure fields to gate_pass_closure instead of gate_pass.
 --
 -- Part 1: give every M10 gate-pass workflow a SECOND m0_workflow_projection target
 -- (gate_pass_closure), exactly like V36 already does for gate_pass + dispatch_vehicle_detail

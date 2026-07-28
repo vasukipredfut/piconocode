@@ -1,4 +1,4 @@
--- V72 — Gate Pass Closure gets its own table.
+-- V119 — Gate Pass Closure gets its own table.
 --
 -- Today the "Gate Pass Closure — Final Checks" screen (aria:gate-pass-closure-form)
 -- and the quick picker (aria:gate-pass-closure) submit into WorkflowProjectionListener,
