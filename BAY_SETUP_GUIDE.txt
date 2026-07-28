@@ -1,0 +1,280 @@
+================================================================================
+CONVEYOR BAY SETUP GUIDE — START TO END (ONE BAY)
+================================================================================
+Complete walkthrough for standing up ONE conveyor bay: PLC register config,
+barcode scanner config, the bay itself, the bindings tying them to a
+workflow step, an order/SKU/quantity dispatch task, and the Raspberry Pi
+device config. Every payload shape below matches the real, live-verified
+API contract documented in CONVEYOR_SCANNER_WORKFLOW_GUIDE.md and
+CONVEYOR_E2E_TEST_LOG.txt in this same repo.
+
+Companion files:
+  - CONVEYOR_SCANNER_WORKFLOW_GUIDE.md      (full API reference + concepts)
+  - CONVEYOR_E2E_TEST_LOG.txt               (real captured request/response log)
+  - raspberry-pi-client/conveyor_client.py  (reference Python device client)
+  - postman/conveyor_scanner.postman_collection.json (importable test suite)
+
+Example values used throughout: workflow "M12.ConveyorTest", bay "BAY1",
+step "SCANNING". Substitute your own.
+
+
+================================================================================
+PREREQUISITES
+================================================================================
+- The workflow must already exist and be PUBLISHED (resolved via
+  WorkflowDefinitionRepository.findLatestPublishedSingle).
+- A TenantAdmin JWT for all the setup calls below (POST /api/auth/signin).
+  The device-facing calls in step 7 need NO token at all — they are
+  permit-all routes (see WebSecurityConfig: "/api/scanner/workflows/**",
+  "/api/conveyor/**").
+
+
+================================================================================
+STEP 1 — PLC register config (IntegrationInstance, connector MODBUS_TCP)
+================================================================================
+This is where the PLC REGISTER MAPPING lives. acceptCoilAddress /
+rejectCoilAddress are the physical coil numbers your PLC programmer tells
+you correspond to the accept/reject actions on this bay's hardware — the
+backend never invents these, it just writes to whatever address you put
+here.
+
+POST /api/m0/entities/IntegrationInstance
+Authorization: Bearer <TenantAdmin JWT>
+
+Request:
+{
+  "code": "plcBay1",
+  "connector_code": "MODBUS_TCP",
+  "name": "PLC Bay 1",
+  "status": "ACTIVE",
+  "config_json": "{\"host\":\"plc-01.factory.local\",\"port\":502,\"acceptCoilAddress\":10,\"rejectCoilAddress\":11,\"pulseMs\":250,\"dryRun\":true}"
+}
+
+Response (200):
+{ "ok": true, "entity": "IntegrationInstance", "inserted": {...}, "id": <PLC_INTEGRATION_ID> }
+
+NOTES:
+  - dryRun:true is the safe default (no physical PLC exists / not wired
+    yet) — the backend logs the coil pulse and returns synthetic success.
+    Flip to false only once real hardware is present; real Modbus-TCP wire
+    transport is NOT implemented yet in this codebase (ModbusTcpAdapter
+    returns "not_implemented_live" when dryRun=false) — ask if you need
+    that built (requires the j2mod library + real PLC/simulator to verify
+    against).
+  - pulseMs = how long the coil stays ON before being pulsed back OFF for
+    a single accept/reject signal (not a latching state).
+  - Save the returned "id" — this is <PLC_INTEGRATION_ID> used in step 4.
+
+
+================================================================================
+STEP 2 — Barcode scanner config (IntegrationInstance, identity row)
+================================================================================
+POST /api/m0/entities/IntegrationInstance
+Authorization: Bearer <TenantAdmin JWT>
+
+Request:
+{
+  "code": "scannerBay1",
+  "connector_code": "INBOUND_WEBHOOK",
+  "name": "Barcode Scanner Bay 1",
+  "status": "ACTIVE",
+  "config_json": "{\"ip\":\"192.168.1.50\",\"port\":9200}"
+}
+
+Response (200):
+{ "ok": true, "entity": "IntegrationInstance", "inserted": {...}, "id": <SCANNER_INTEGRATION_ID> }
+
+NOTES:
+  - This row is descriptive/identity-only. The BACKEND never talks to the
+    scanner directly — only the Raspberry Pi does (step 6). Nothing
+    server-side ever calls invoke()/ingest() for the BARCODE_SCANNER role;
+    it is just carried through to the scan log for traceability.
+  - connector_code "INBOUND_WEBHOOK" is the best semantic fit in this
+    codebase for "generic passive identity connector" — it is functionally
+    inert here since no scanner-role invoke ever fires.
+  - Save the returned "id" — this is <SCANNER_INTEGRATION_ID> used in
+    steps 4 and 6.
+
+
+================================================================================
+STEP 3 — Register the bay itself (ConveyorLoadingBay)
+================================================================================
+POST /api/m0/entities/ConveyorLoadingBay
+Authorization: Bearer <TenantAdmin JWT>
+
+Request:
+{
+  "workflow_code": "M12.ConveyorTest",
+  "bay_code": "BAY1",
+  "display_name": "Bay 1",
+  "line_id": "LINE-1",
+  "active": true
+}
+
+Response (200):
+{ "ok": true, "entity": "ConveyorLoadingBay", "inserted": {...}, "id": <BAY_ROW_ID> }
+
+NOTES:
+  - Optional but recommended. bay_code is just a plain string matched
+    across dispatch_task / workflow_integration_binding / the scan request
+    — scanning WILL work even without this row. What this row buys you:
+    the bay shows up in GET /api/scanner/workflows/{code}'s "loadingBays"
+    array, and it is manageable via the aria:conveyor-dispatch-tasks /
+    aria:conveyor-scanner-plc-bindings admin pages.
+  - default_rule_set_id on this table is populated in some setups but is
+    currently DEAD DATA — nothing server-side reads it back as a fallback
+    for a task with no rule_set_id of its own. Do not rely on it.
+
+
+================================================================================
+STEP 4 — Bind both integrations to the bay (WorkflowIntegrationBinding)
+================================================================================
+POST /api/m0/entities/WorkflowIntegrationBinding   (one call per role)
+Authorization: Bearer <TenantAdmin JWT>
+
+Request (PLC):
+{
+  "workflow_code": "M12.ConveyorTest",
+  "step_code": "SCANNING",
+  "bay_code": "BAY1",
+  "integration_role": "PLC",
+  "integration_id": <PLC_INTEGRATION_ID from step 1>
+}
+
+Request (Barcode Scanner):
+{
+  "workflow_code": "M12.ConveyorTest",
+  "step_code": "SCANNING",
+  "bay_code": "BAY1",
+  "integration_role": "BARCODE_SCANNER",
+  "integration_id": <SCANNER_INTEGRATION_ID from step 2>
+}
+
+Response (200, both calls):
+{ "ok": true, "entity": "WorkflowIntegrationBinding", "inserted": {...}, "id": <binding id> }
+
+NOTES:
+  - This is the resolution key ConveyorScanService uses at scan time to
+    find "which PLC signals THIS bay/step". Unique key on this table is
+    (workflow_code, step_code, integration_role, bay_code) — so a
+    different bay can bind a different PLC IntegrationInstance (its own
+    register range) with zero extra code; see the "multiple bays, one
+    physical PLC, different coil ranges" pattern in
+    CONVEYOR_SCANNER_WORKFLOW_GUIDE.md section 8.2.
+  - config_overrides_json on this table is NOT a registered generic-CRUD
+    field (silently dropped if posted here) and is NOT parsed anywhere
+    server-side even if set via direct SQL — known gap, display-only today.
+
+
+================================================================================
+STEP 5 — The order/SKU/quantity to fulfill (DispatchTask)
+================================================================================
+POST /api/m0/entities/DispatchTask
+Authorization: Bearer <TenantAdmin JWT>
+
+Request:
+{
+  "workflow_code": "M12.ConveyorTest",
+  "bay_code": "BAY1",
+  "task_code": "TASK-BAY1-1",
+  "order_ref": "ORDER-501",
+  "sku_code": "SKU-9",
+  "target_qty": 50
+}
+
+Response (200):
+{ "ok": true, "entity": "DispatchTask", "inserted": {...}, "id": <TASK_ID> }
+
+Move it to IN_PROGRESS (status defaults to PENDING on insert — a PENDING
+task is NOT eligible for scan matching):
+
+PUT /api/m0/entities/DispatchTask/<TASK_ID>      <-- must be PUT, not PATCH
+Authorization: Bearer <TenantAdmin JWT>
+
+Request:
+{ "status": "IN_PROGRESS" }
+
+Response (200):
+{ "id": <TASK_ID>, "ok": true, "updated": 1 }
+
+NOTES:
+  - Optional but important: rule_set_id is NOT a registered generic-CRUD
+    field either — attach one via direct SQL if you want real SKU/qty
+    enforcement:
+        UPDATE dispatch_task SET rule_set_id = <rule_set id> WHERE id = <TASK_ID>;
+    Without a rule_set_id, EVERY scanned SKU/qty auto-passes (no
+    enforcement runs at all) — proven live in CONVEYOR_E2E_TEST_LOG.txt
+    section 2.3.
+  - Auto-increment IDs do not reset — always read "id" from the response,
+    never assume/guess it.
+
+
+================================================================================
+STEP 6 — The Raspberry Pi device (raspberry-pi-client/config.json)
+================================================================================
+{
+  "baseUrl": "http://<backend-host>:8080",
+  "workflowCode": "M12.ConveyorTest",
+  "stepCode": "SCANNING",
+  "bayCode": "BAY1",
+  "deviceId": "PI-BAY1",
+  "scannerIntegrationId": <SCANNER_INTEGRATION_ID from step 2>,
+  "scannerIp": "192.168.1.50",
+  "scannerPort": 9200
+}
+
+NOTES:
+  - Drop "scannerIp"/"scannerPort" entirely if the scanner is a USB device
+    that enumerates as a keyboard on the Pi — the client falls back to
+    reading barcodes from stdin in that case.
+  - With scannerIp set, conveyor_client.py's ScannerSocketReader opens a
+    persistent TCP connection to that address, reads newline-terminated
+    barcodes, and auto-reconnects forever on any socket error.
+  - The client itself never stops on its own: any unhandled crash (backend
+    unreachable at boot, unknown workflow, a transport bug) is caught by
+    an outer supervisor loop and retried every 5 seconds, forever. Only a
+    clean stdin EOF or Ctrl+C actually exits it.
+  - Logs go to BOTH the console and a rotating file
+    (raspberry-pi-client/conveyor_client.log, 5MB x 5 backups) with a
+    TRACE line for every single HTTP call (method, path, status, ms).
+
+
+================================================================================
+STEP 7 — Verify end to end
+================================================================================
+Fetch the aggregate config (tokenless — confirm the bay, both bindings, and
+the dispatch task all show up):
+
+  curl http://<backend-host>:8080/api/scanner/workflows/M12.ConveyorTest
+
+Run the real client:
+
+  cd raspberry-pi-client
+  python conveyor_client.py
+
+Or exercise the flow manually with the Postman collection
+(postman/conveyor_scanner.postman_collection.json) — see its folder
+"2. Device calls (tokenless)" for GET workflow / scan / heartbeat requests.
+
+Or skip curl entirely for steps 3-5 and use the browser admin pages:
+  aria:conveyor-scanner-plc-bindings   (WorkflowIntegrationBinding)
+  aria:conveyor-dispatch-tasks         (DispatchTask)
+(both stamped via V126__conveyor_admin_pages.sql, category M11)
+
+
+================================================================================
+QUICK REFERENCE — ENDPOINTS USED IN THIS GUIDE
+================================================================================
+Setup (needs Authorization: Bearer <jwt>, TenantAdmin for IntegrationInstance):
+  POST  /api/auth/signin
+  POST  /api/m0/entities/IntegrationInstance
+  POST  /api/m0/entities/ConveyorLoadingBay
+  POST  /api/m0/entities/WorkflowIntegrationBinding
+  POST  /api/m0/entities/DispatchTask
+  PUT   /api/m0/entities/DispatchTask/{id}
+
+Device-facing (permit-all, NO auth header):
+  GET   /api/scanner/workflows/{workflowCode}
+  POST  /api/conveyor/scan
+  POST  /api/conveyor/heartbeat
+================================================================================

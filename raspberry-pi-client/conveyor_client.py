@@ -181,7 +181,9 @@ class ConveyorClient:
     # ---- API calls ----------------------------------------------------------
 
     def fetch_workflow_config(self):
-        resp = self._request("GET", f"/api/scanner/workflows/{self.workflow_code}")
+        resp = self._request(
+            "GET", f"/api/scanner/workflows/{self.workflow_code}?bayCode={self.bay_code}"
+        )
         if resp.status_code == 404:
             raise RuntimeError(
                 f"Workflow '{self.workflow_code}' not found or not PUBLISHED"

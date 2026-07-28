@@ -4,14 +4,25 @@
 -- POST /api/m0/designer/pages produces for a plain "kind":"list" page
 -- (verified live against a dev boot before being migrated here).
 -- category='M11' — grouped with the Integration Hub these entities belong to.
+-- code prefix 'aria:' — matches this repo's dominant page-code convention
+-- (aria:integration-list, aria:conveyor-commands, etc.), not the one-off
+-- 'm12:' prefix these pages were first stamped with during development.
 --
--- Idempotent (NOT EXISTS guards) so this is a no-op on a DB that already has
--- these rows from the live Designer-API call used during development.
+-- Idempotent: a DB that already ran an earlier draft of this migration (or
+-- had these pages stamped live via the Designer API under the old 'm12:'
+-- codes) gets those rows RENAMED in place rather than duplicated; a fresh DB
+-- gets them created directly under the 'aria:' codes.
+
+UPDATE page_definition SET code = 'aria:conveyor-scanner-plc-bindings'
+WHERE tenant_id = 1 AND code = 'm12:conveyor-scanner-plc-bindings';
+
+UPDATE page_definition SET code = 'aria:conveyor-dispatch-tasks'
+WHERE tenant_id = 1 AND code = 'm12:conveyor-dispatch-tasks';
 
 INSERT INTO page_definition (tenant_id, code, title, category, status)
 SELECT * FROM (
   SELECT 1 tid, 'aria:conveyor-scanner-plc-bindings' code, 'Conveyor Scanner/PLC Bindings' title, 'M11' cat, 'PUBLISHED' st
-  UNION ALL SELECT 1, 'm12:conveyor-dispatch-tasks', 'Conveyor Dispatch Tasks', 'M11', 'PUBLISHED'
+  UNION ALL SELECT 1, 'aria:conveyor-dispatch-tasks', 'Conveyor Dispatch Tasks', 'M11', 'PUBLISHED'
 ) x
 WHERE NOT EXISTS (SELECT 1 FROM page_definition WHERE tenant_id = x.tid AND code = x.code);
 

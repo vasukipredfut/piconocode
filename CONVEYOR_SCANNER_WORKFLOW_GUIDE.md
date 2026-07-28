@@ -23,8 +23,8 @@ sequenceDiagram
     participant BE as Backend
     participant PLC
 
-    Pi->>BE: GET /api/scanner/workflows/{workflowId}
-    BE-->>Pi: workflow details, integration bindings, rule sets, dispatch tasks
+    Pi->>BE: GET /api/scanner/workflows/{workflowId}?bayCode={bayCode}
+    BE-->>Pi: workflow details, this bay's integration bindings, rule sets, dispatch tasks
 
     loop every scan
         Pi->>Pi: read barcode via bound Barcode Scanner Integration ID
@@ -51,7 +51,7 @@ sequenceDiagram
     end
 ```
 
-1. **Fetch config** — Pi calls `GET /api/scanner/workflows/{workflowId}` once (and again whenever it needs to re-sync) to learn which Integration IDs handle which role at which step, its loading bay(s), the rule sets in force, and its current dispatch task(s).
+1. **Fetch config** — Pi calls `GET /api/scanner/workflows/{workflowId}?bayCode={bayCode}` once (and again whenever it needs to re-sync) to learn which Integration IDs handle which role at which step, its loading bay, the rule sets in force, and its current dispatch task(s) — scoped to its own bay.
 2. **Read barcode** — via the Integration ID bound to role `BARCODE_SCANNER` for the current step/bay.
 3. **Local qty pre-check** — before calling the backend at all, the Pi compares the scan's quantity against its locally-tracked dispatch task's remaining quantity (`target_qty - processed_qty`); see §3.4. If it would be exceeded, the scan is rejected on the device and never sent over the network.
 4. **Submit scan** — `POST /api/conveyor/scan`. The backend, not the device, evaluates every rule — the device never runs rule logic.
@@ -65,7 +65,9 @@ sequenceDiagram
 
 `{workflowId}` is the workflow **code** (string, e.g. `M12.ConveyorTest`) — the same code used everywhere else in the workflow engine, resolved tenant-fork-first then global-latest-published.
 
-**Request:** none (just the path). No auth header — `/api/scanner/workflows/**` and `/api/conveyor/**` are permit-all, since a conveyor device has no interactive login.
+**Request:** just the path. No auth header — `/api/scanner/workflows/**` and `/api/conveyor/**` are permit-all, since a conveyor device has no interactive login.
+
+Optional query param **`?bayCode=BAY1`** scopes `integrations`, `plcIntegrations`, `loadingBays`, and `dispatchTasks` down to that one bay — everything else in the response (`workflowDetails`, `ruleBuilder`) stays workflow-level/unscoped, since those aren't bay-specific. Omit it to get every bay's data (the pre-existing behavior). A Pi client only cares about its own bay, so `conveyor_client.py` always passes its configured `bayCode`.
 
 **Response** (verified live example):
 ```json
@@ -268,8 +270,8 @@ Two pages are stamped (via `POST /api/m0/designer/pages`, category `M11` — gro
 
 | Page code | Title | Backing entity | Purpose |
 |---|---|---|---|
-| `m12:conveyor-scanner-plc-bindings` | Conveyor Scanner/PLC Bindings | `WorkflowIntegrationBinding` | Create/edit which Integration ID (scanner or PLC) is bound to which workflow step/bay. |
-| `m12:conveyor-dispatch-tasks` | Conveyor Dispatch Tasks | `DispatchTask` | Create/edit order→bay dispatch tasks (`target_qty`, `sku_code`, `order_ref`, `status`). |
+| `aria:conveyor-scanner-plc-bindings` | Conveyor Scanner/PLC Bindings | `WorkflowIntegrationBinding` | Create/edit which Integration ID (scanner or PLC) is bound to which workflow step/bay. |
+| `aria:conveyor-dispatch-tasks` | Conveyor Dispatch Tasks | `DispatchTask` | Create/edit order→bay dispatch tasks (`target_qty`, `sku_code`, `order_ref`, `status`). |
 
 Both are plain generic `"kind":"list"` pages (default auto-derived columns, standard add/edit/delete via the underlying `GenericEntityController` — the same mechanism `/api/m0/entities/{code}` uses) — no bespoke frontend code. Fetch either with `GET /api/m0/pages/{code}` to confirm they resolve, or open `/configurable/{code}` in the app.
 

@@ -1,0 +1,101 @@
+================================================================================
+HOW TO CREATE A DISPATCH TASK ("TASK")
+================================================================================
+In the conveyor system, "Task" = a DispatchTask row: the order/SKU/quantity
+to fulfill at a given bay. This is the short, focused version — for the
+full bay setup (PLC, scanner, bindings, task, Pi config) see
+BAY_SETUP_GUIDE.txt in this same repo.
+
+
+================================================================================
+1. CREATE IT
+================================================================================
+POST /api/m0/entities/DispatchTask
+Authorization: Bearer <TenantAdmin JWT>
+Content-Type: application/json
+
+Request:
+{
+  "workflow_code": "M12.ConveyorTest",
+  "bay_code": "BAY1",
+  "task_code": "TASK-BAY1-1",
+  "order_ref": "ORDER-501",
+  "sku_code": "SKU-9",
+  "target_qty": 50
+}
+
+Response (200):
+{ "ok": true, "entity": "DispatchTask", "inserted": {...}, "id": <TASK_ID> }
+
+Read the "id" from the response — auto-increment IDs do not reset, never
+guess it.
+
+
+================================================================================
+2. ACTIVATE IT
+================================================================================
+A new task starts as status="PENDING", which is NOT eligible for scan
+matching yet. Move it to IN_PROGRESS:
+
+PUT /api/m0/entities/DispatchTask/<TASK_ID>
+Authorization: Bearer <TenantAdmin JWT>
+Content-Type: application/json
+
+Request:
+{ "status": "IN_PROGRESS" }
+
+Response (200):
+{ "id": <TASK_ID>, "ok": true, "updated": 1 }
+
+IMPORTANT: must be PUT, not PATCH. GenericEntityController only maps PUT
+for updates — PATCH returns 405 Method Not Allowed.
+
+
+================================================================================
+3. (OPTIONAL) ATTACH A RULE SET FOR REAL ENFORCEMENT
+================================================================================
+rule_set_id is NOT a registered field on the generic-CRUD endpoint, so it
+must be set via direct SQL:
+
+  UPDATE dispatch_task SET rule_set_id = <rule_set id> WHERE id = <TASK_ID>;
+
+Without this, ANY scanned SKU/qty auto-passes — no Rule Builder enforcement
+runs at all (verified live: a wrong-SKU scan against a rule_set_id=NULL
+task still returns outcome=ACCEPT).
+
+
+================================================================================
+FIELDS AVAILABLE ON DispatchTask (via generic-CRUD)
+================================================================================
+Field           Required   Notes
+--------------- ---------- --------------------------------------------------
+workflow_code   yes
+bay_code        no         Which bay this task belongs to — used for scan
+                            resolution (POST /api/conveyor/scan matches the
+                            bay's single active task, or by sku/orderRef
+                            among several).
+task_code       yes        Unique per (tenant_id, task_code).
+order_ref       no         Fed into Rule Builder context + scan-log matching.
+sku_code        no         Fed into Rule Builder context + scan-log matching.
+target_qty      yes        Goal quantity; task auto-completes (status flips
+                            to COMPLETED) once processed_qty reaches this.
+processed_qty   no         Running total of ACCEPTED scans (read-only in
+                            practice — the backend increments it, don't set
+                            it directly on create).
+rejected_qty    no         Running total of REJECTED scans (same — backend-
+                            managed).
+status          no         PENDING (default) -> IN_PROGRESS -> COMPLETED /
+                            CANCELLED.
+
+NOT settable via this endpoint (silently dropped if posted — set via direct
+SQL instead):
+  rule_set_id, workflow_instance_id
+
+
+================================================================================
+ALTERNATIVE: BROWSER
+================================================================================
+Skip curl entirely and use the "aria:conveyor-dispatch-tasks" admin page
+(stamped in V126__conveyor_admin_pages.sql, category M11) to create/edit
+tasks directly.
+================================================================================

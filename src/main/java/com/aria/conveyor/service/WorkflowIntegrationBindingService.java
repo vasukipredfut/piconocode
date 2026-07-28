@@ -38,11 +38,27 @@ public class WorkflowIntegrationBindingService {
 
     /** Every binding configured for a workflow (used to build the aggregate GET response). */
     public List<Map<String, Object>> listForWorkflow(String workflowCode) {
+        return listForWorkflow(workflowCode, null);
+    }
+
+    /**
+     * Same, optionally scoped to one bay at the SQL level (not fetch-then-filter)
+     * — a workflow with many bays/bindings shouldn't pull every row just to
+     * discard most of them in Java when the caller only ever wanted one bay.
+     */
+    public List<Map<String, Object>> listForWorkflow(String workflowCode, String bayCode) {
         long tenantId = TenantContext.get();
+        if (bayCode == null) {
+            return jdbc.queryForList(
+                    "SELECT step_code, bay_code, integration_role, integration_id, config_overrides_json "
+                            + "FROM workflow_integration_binding WHERE tenant_id = ? AND workflow_code = ? "
+                            + "ORDER BY step_code, bay_code, integration_role",
+                    tenantId, workflowCode);
+        }
         return jdbc.queryForList(
                 "SELECT step_code, bay_code, integration_role, integration_id, config_overrides_json "
-                        + "FROM workflow_integration_binding WHERE tenant_id = ? AND workflow_code = ? "
+                        + "FROM workflow_integration_binding WHERE tenant_id = ? AND workflow_code = ? AND bay_code = ? "
                         + "ORDER BY step_code, bay_code, integration_role",
-                tenantId, workflowCode);
+                tenantId, workflowCode, bayCode);
     }
 }

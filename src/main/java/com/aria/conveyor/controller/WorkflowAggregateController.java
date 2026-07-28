@@ -13,6 +13,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.LinkedHashMap;
@@ -59,8 +60,10 @@ public class WorkflowAggregateController {
 
     @GetMapping("/{workflowId}")
     @Operation(summary = "Aggregate workflow config for a conveyor device: definition, integration bindings, "
-            + "loading bays, rule set metadata, PLC integrations, and current dispatch tasks.")
-    public ResponseEntity<Map<String, Object>> get(@PathVariable String workflowId) {
+            + "loading bays, rule set metadata, PLC integrations, and current dispatch tasks. Optional "
+            + "?bayCode= scopes integrations/loadingBays/plcIntegrations/dispatchTasks to that bay only.")
+    public ResponseEntity<Map<String, Object>> get(@PathVariable String workflowId,
+                                                    @RequestParam(required = false) String bayCode) {
         long tenantId = TenantContext.get();
         WorkflowDefinition def = definitions.findLatestPublishedSingle(tenantId, workflowId).orElse(null);
         if (def == null) {
@@ -74,10 +77,16 @@ public class WorkflowAggregateController {
             body = Map.of();
         }
 
-        List<Map<String, Object>> allBindings = bindings.listForWorkflow(workflowId);
+        // bayCode is pushed down to the SQL WHERE clause in each service (not
+        // fetched-then-filtered in Java) — a workflow with many bays/bindings/
+        // tasks shouldn't pull every row just to discard most of them here.
+        List<Map<String, Object>> allBindings = bindings.listForWorkflow(workflowId, bayCode);
         List<Map<String, Object>> plcBindings = allBindings.stream()
                 .filter(b -> "PLC".equals(b.get("integration_role")))
                 .toList();
+
+        List<Map<String, Object>> bays = loadingBays.listForWorkflow(workflowId, bayCode);
+        List<Map<String, Object>> tasks = dispatchTasks.listForWorkflow(workflowId, bayCode);
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("workflowId", workflowId);
@@ -86,10 +95,10 @@ public class WorkflowAggregateController {
         out.put("workflowStatus", def.getStatus());
         out.put("workflowDetails", body);
         out.put("integrations", allBindings);
-        out.put("loadingBays", loadingBays.listForWorkflow(workflowId));
+        out.put("loadingBays", bays);
         out.put("ruleBuilder", listRuleSets(workflowId));
         out.put("plcIntegrations", plcBindings);
-        out.put("dispatchTasks", dispatchTasks.listForWorkflow(workflowId));
+        out.put("dispatchTasks", tasks);
         return ResponseEntity.ok(out);
     }
 

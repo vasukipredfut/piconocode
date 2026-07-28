@@ -97,6 +97,13 @@ GET /api/scanner/workflows/M12.ConveyorTest
 
 Request: (none — just the path, no auth header)
 
+UPDATE (post-dates this capture): this endpoint now also accepts an optional
+?bayCode= query param that scopes integrations/loadingBays/plcIntegrations/
+dispatchTasks to one bay — e.g. GET .../M12.ConveyorTest?bayCode=BAY1. The
+response below predates that change and shows the unscoped (all-bays) shape,
+which is still what you get if bayCode is omitted. See
+CONVEYOR_SCANNER_WORKFLOW_GUIDE.md section 3.1 for the current contract.
+
 Response (200):
 {
   "workflowId": "M12.ConveyorTest",
@@ -363,12 +370,12 @@ Setup (needs Authorization: Bearer <jwt>, TenantAdmin for IntegrationInstance):
   PUT   /api/m0/entities/DispatchTask/{id}
 
 Device-facing (permit-all, NO auth header):
-  GET   /api/scanner/workflows/{workflowCode}
+  GET   /api/scanner/workflows/{workflowCode}[?bayCode={bayCode}]
   POST  /api/conveyor/scan
   POST  /api/conveyor/heartbeat
 
 Admin browser pages (category M11, stamped via /api/m0/designer/pages,
 shipped in V126__conveyor_admin_pages.sql):
-  m12:conveyor-scanner-plc-bindings   (backed by WorkflowIntegrationBinding)
-  m12:conveyor-dispatch-tasks         (backed by DispatchTask)
+  aria:conveyor-scanner-plc-bindings  (backed by WorkflowIntegrationBinding)
+  aria:conveyor-dispatch-tasks        (backed by DispatchTask)
 ================================================================================

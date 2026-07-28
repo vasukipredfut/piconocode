@@ -52,10 +52,21 @@ public class DispatchTaskService {
 
     /** Every task for a workflow (used to build the aggregate GET response' "current dispatch tasks"). */
     public List<Map<String, Object>> listForWorkflow(String workflowCode) {
+        return listForWorkflow(workflowCode, null);
+    }
+
+    /** Same, optionally scoped to one bay at the SQL level (see WorkflowIntegrationBindingService for why). */
+    public List<Map<String, Object>> listForWorkflow(String workflowCode, String bayCode) {
         long tenantId = TenantContext.get();
+        if (bayCode == null) {
+            return jdbc.queryForList(
+                    "SELECT * FROM dispatch_task WHERE tenant_id = ? AND workflow_code = ? ORDER BY created_at DESC",
+                    tenantId, workflowCode);
+        }
         return jdbc.queryForList(
-                "SELECT * FROM dispatch_task WHERE tenant_id = ? AND workflow_code = ? ORDER BY created_at DESC",
-                tenantId, workflowCode);
+                "SELECT * FROM dispatch_task WHERE tenant_id = ? AND workflow_code = ? AND bay_code = ? "
+                        + "ORDER BY created_at DESC",
+                tenantId, workflowCode, bayCode);
     }
 
     /**
