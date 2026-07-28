@@ -22,6 +22,7 @@ public class WorkflowQueueItem {
     private Long id;
     private String workflowCode;
     private String currentState;
+    private String previousState;
     private String status;
     private String businessRef;
     private String assignedRole;

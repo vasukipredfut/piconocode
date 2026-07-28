@@ -13,4 +13,8 @@ public interface WorkflowEventRepository extends JpaRepository<WorkflowEvent, Lo
     List<WorkflowEvent> findByInstanceIdOrderByTsDesc(Long instanceId, Pageable pageable);
 
     List<WorkflowEvent> findByInstanceIdOrderByTsAsc(Long instanceId);
+
+    /** The transition that landed the instance on its current state — its
+     *  fromState is "the state that was just completed". */
+    java.util.Optional<WorkflowEvent> findFirstByInstanceIdAndKindOrderByTsDesc(Long instanceId, String kind);
 }

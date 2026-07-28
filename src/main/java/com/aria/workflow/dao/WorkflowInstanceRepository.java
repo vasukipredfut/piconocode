@@ -29,7 +29,7 @@ public interface WorkflowInstanceRepository extends JpaRepository<WorkflowInstan
 
     @Query("SELECT w FROM WorkflowInstance w " +
             "WHERE w.tenantId = :tenantId AND w.assignedRole = :persona AND w.status = 'OPEN' " +
-            "ORDER BY w.updatedAt DESC")
+            "ORDER BY w.updatedAt ASC")
     Page<WorkflowInstance> queueForPersona(
             @Param("tenantId") Long tenantId,
             @Param("persona") String persona,

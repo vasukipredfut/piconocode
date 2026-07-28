@@ -403,10 +403,15 @@ public class WorkflowEngineService {
     }
 
     private WorkflowQueueItem toQueueItem(WorkflowInstance i) {
+        String previousState = events
+                .findFirstByInstanceIdAndKindOrderByTsDesc(i.getId(), WorkflowEvent.KIND_STATE_TRANSITION)
+                .map(WorkflowEvent::getFromState)
+                .orElse(null);
         return WorkflowQueueItem.builder()
                 .id(i.getId())
                 .workflowCode(i.getWorkflowCode())
                 .currentState(i.getCurrentState())
+                .previousState(previousState)
                 .status(i.getStatus())
                 .businessRef(i.getBusinessRef())
                 .assignedRole(i.getAssignedRole())
