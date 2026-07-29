@@ -25,6 +25,14 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 @Configuration
 public class CorsConfiguration implements WebMvcConfigurer {
 
+    private final String documentStorageDir;
+
+    public CorsConfiguration(
+            @org.springframework.beans.factory.annotation.Value("${earms.document-storage:/tmp/earms-docs}")
+            String documentStorageDir) {
+        this.documentStorageDir = documentStorageDir;
+    }
+
     @Override
     public void addCorsMappings(CorsRegistry registry) {
         registry.addMapping("/api/**").allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS");
@@ -67,8 +75,12 @@ public class CorsConfiguration implements WebMvcConfigurer {
 
     @Override
     public void addResourceHandlers(ResourceHandlerRegistry registry) {
-        // TODO Auto-generated method stub
-
+        // Serves files written by DocumentUploadController / AccountController's
+        // avatar upload (both write under earms.document-storage and hand back a
+        // "/uploads/..." URL) — without this mapping that URL 404s, there is no
+        // controller or handler for it otherwise.
+        registry.addResourceHandler("/uploads/**")
+                .addResourceLocations("file:" + documentStorageDir + "/");
     }
 
     @Override
