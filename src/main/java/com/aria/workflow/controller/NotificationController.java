@@ -31,6 +31,7 @@ public class NotificationController {
             @PathVariable String role,
             @RequestParam(defaultValue = "false") boolean includeRead) {
         String sql = "SELECT id, workflow_instance_id, gate_pass_id, vehicle_no, assigned_role, " +
+                "current_state, " +
                 "payload_json, is_read, created_at FROM m0_notification " +
                 "WHERE tenant_id = ? AND assigned_role = ? " +
                 (includeRead ? "" : "AND is_read = 0 ") +

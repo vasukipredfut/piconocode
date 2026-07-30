@@ -25,6 +25,9 @@ import java.util.Map;
  * WorkflowQueueItem.submittedData already exposes) — the request context
  * the new owner needs, snapshotted at the moment the work became theirs.
  *
+ * <p>current_state is the instance's new state (the step the new owner
+ * needs to act on).
+ *
  * <p>vehicle_no is read out of that same bag (scanning every page's
  * submitted fields for "vehicle_no"/"vehicleNo") rather than joined from
  * gate_pass: this listener runs inside the same transaction and same
@@ -69,12 +72,15 @@ public class NotificationListener implements WorkflowTransitionListener {
             }
 
             String payload = MAPPER.writeValueAsString(bag == null ? Map.of() : bag);
+            String currentState = instance.getCurrentState();
             Long tenantId = TenantContext.get();
             jdbc.update(
                     "INSERT INTO m0_notification " +
-                    "(tenant_id, workflow_instance_id, gate_pass_id, vehicle_no, assigned_role, payload_json) " +
-                    "VALUES (?,?,?,?,?,?)",
-                    tenantId, instance.getId(), gatePassId, vehicleNo, role, payload);
+                    "(tenant_id, workflow_instance_id, gate_pass_id, vehicle_no, assigned_role, " +
+                    "current_state, payload_json) " +
+                    "VALUES (?,?,?,?,?,?,?)",
+                    tenantId, instance.getId(), gatePassId, vehicleNo, role,
+                    currentState, payload);
         } catch (Exception e) {
             log.warn("notification capture failed for instance={}: {}", instance.getId(), e.getMessage());
         }

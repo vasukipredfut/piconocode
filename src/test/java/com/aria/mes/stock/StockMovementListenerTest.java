@@ -93,6 +93,49 @@ class StockMovementListenerTest {
         assertThat(capturedSql()).anyMatch(s -> s.contains("INSERT INTO m5_stock_movement"));
     }
 
+    @Test
+    void packUnload_unloadingCompleted_writesReceipt() {
+        WorkflowInstance wi = wi("M10.PackUnload", "UNLOADING_COMPLETED");
+        Map<String, Object> page = Map.of(
+                "item_code", "GIN-1L-IDH", "item_description", "Gingelly Oil 1L",
+                "batch_no", "B26-0421-A", "bin_code", "A-01",
+                "received_qty", "240", "uom", "CASE", "gp_number", "GP-42");
+        listener.onTransition(wi, "WEIGHMENT_2", Map.of("aria:supervisor-unloading", page));
+        assertThat(capturedSql()).anyMatch(s -> s.contains("INSERT INTO m5_stock_movement"));
+    }
+
+    @Test
+    void returnStockIn_unloadingDone_writesReceipt() {
+        WorkflowInstance wi = wi("M10.ReturnStockIn", "UNLOADING_DONE");
+        Map<String, Object> page = Map.of(
+                "item_code", "GIN-1L-IDH", "batch_no", "B26-0421-A",
+                "godown_code", "G3", "received_qty", "60", "uom", "CASE");
+        listener.onTransition(wi, "WEIGHMENT_1", Map.of("aria:supervisor-unloading", page));
+        assertThat(capturedSql()).anyMatch(s -> s.contains("INSERT INTO m5_stock_movement"));
+    }
+
+    @Test
+    void tankerInbound_qtyReconciled_usesNetWeightAndOilRmItem() {
+        when(jdbc.queryForList(anyString(), eq(String.class), any(), any()))
+                .thenReturn(List.of("Crude Sunflower Oil"));
+        WorkflowInstance wi = wi("M10.TankerInbound", "QTY_RECONCILED");
+        Map<String, Object> page = Map.of(
+                "first_weight_kg", "18500", "second_weight_kg", "6200",
+                "variance_reason", "");
+        listener.onTransition(wi, "WEIGHMENT_2", Map.of("aria:reconciliation", page));
+        assertThat(capturedSql()).anyMatch(s -> s.contains("INSERT INTO m5_stock_movement"));
+    }
+
+    @Test
+    void tankerInbound_qtyReconciled_skipsWhenNoOilItemFound() {
+        when(jdbc.queryForList(anyString(), eq(String.class), any(), any()))
+                .thenReturn(List.of());
+        WorkflowInstance wi = wi("M10.TankerInbound", "QTY_RECONCILED");
+        Map<String, Object> page = Map.of("first_weight_kg", "18500", "second_weight_kg", "6200");
+        listener.onTransition(wi, "WEIGHMENT_2", Map.of("aria:reconciliation", page));
+        assertThat(capturedSql()).noneMatch(s -> s.contains("INSERT INTO m5_stock_movement"));
+    }
+
     // ---- helpers ---------------------------------------------------------
     private static WorkflowInstance wi(String code, String state) {
         WorkflowInstance i = new WorkflowInstance();

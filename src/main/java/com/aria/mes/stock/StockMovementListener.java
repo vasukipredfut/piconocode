@@ -10,6 +10,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -30,6 +31,11 @@ import java.util.Optional;
  *   <tr><td>M5.PackingRun</td><td>SPOIL</td><td>SPOIL</td><td>-qty from from_bin</td></tr>
  *   <tr><td>M5.StockAdjust</td><td>POSTED</td><td>ADJUST</td><td>delta-set to_bin</td></tr>
  *   <tr><td>M5.FGDispatch</td><td>DISPATCHED</td><td>ISSUE</td><td>-qty from from_bin (FG)</td></tr>
+ *   <tr><td>M10.PackUnload</td><td>UNLOADING_COMPLETED</td><td>RECEIPT</td><td>+qty into bin_code/godown_code (aria:supervisor-unloading)</td></tr>
+ *   <tr><td>M10.ReturnStockIn</td><td>UNLOADING_DONE</td><td>RECEIPT</td><td>+qty into bin_code/godown_code (aria:supervisor-unloading)</td></tr>
+ *   <tr><td>M10.TankerInbound</td><td>QTY_RECONCILED</td><td>RECEIPT</td><td>+net weight (W1-W2) into a synthetic "BULK-TANK" bin; item comes from
+ *       gate_pass.oil_rm_item (free text — no ItemMaster link exists for tanker inbound today), not the aria:reconciliation submission itself.
+ *       Manager-override branch (QTY_PENDING_MANAGER -&gt; PMT_CHECK_OK) is NOT handled yet — flagged, not fixed here.</td></tr>
  * </table>
  *
  * <p>Listener failures are caught upstream by the engine — they cannot fail
@@ -72,16 +78,34 @@ public class StockMovementListener implements WorkflowTransitionListener {
         }
 
         try {
-            String itemCode = str(data, "itemCode");
-            String itemName = str(data, "itemName");
-            String lotNo = str(data, "lotNo", "finalLotNo", "linkedLotNo");
-            String bin = str(data, "storeTankCode", "binCode", "binLocation", "fgLocation", "toBin");
-            String fromBin = str(data, "fromBin", "binLocation");
-            BigDecimal qty = decimal(data, "qtyIssued", "qtyConsumed", "qtyReceived", "qtyDispatched", "countedQty", "qty");
-            String uom = Optional.ofNullable(str(data, "uom")).orElse("EA");
+            String itemCode = str(data, "itemCode", "item_code");
+            String itemName = str(data, "itemName", "item_description");
+            String lotNo = str(data, "lotNo", "finalLotNo", "linkedLotNo", "batch_no");
+            String bin = str(data, "storeTankCode", "binCode", "binLocation", "fgLocation", "toBin", "bin_code", "godown_code");
+            String fromBin = str(data, "fromBin", "binLocation", "bin_code");
+            BigDecimal qty = decimal(data, "qtyIssued", "qtyConsumed", "qtyReceived", "qtyDispatched", "countedQty", "qty", "received_qty");
+            String uom = str(data, "uom");
             String refType = op.refType;
-            String refNumber = str(data, "grnNumber", "mrNumber", "jcNumber", "gpNumber", "soNumber", "dispatchNumber");
+            String refNumber = str(data, "grnNumber", "mrNumber", "jcNumber", "gpNumber", "soNumber", "dispatchNumber", "gp_number");
             Long tenantId = instance.getTenantId() != null ? instance.getTenantId() : 1L;
+
+            if ("M10.TankerInbound".equals(workflow)) {
+                // No item/qty/bin fields exist on this flow's pages at all
+                // (aria:reconciliation only carries weights + variance reason;
+                // Goods-Receipt/Bin-Allocation sections on aria:supervisor-unloading
+                // are explicitly hidden for this flow variant — see
+                // V125__tankerinbound_remove_parking_states.sql). Best-effort
+                // fallback: item = the free-text oil_rm_item captured earlier at
+                // GATE_PASS_CREATED->DISPATCH_QUEUED, qty = net weight (W1-W2)
+                // already computed on this same aria:reconciliation submission
+                // (or re-derived from weighment_capture_detail if absent), bin =
+                // a synthetic bucket since no physical tank is tracked per-flow.
+                if (itemCode == null) itemCode = tankerInboundOilItem(tenantId, instance.getId());
+                if (qty == null) qty = tankerInboundNetWeight(data, tenantId, instance.getId());
+                if (bin == null) bin = "BULK-TANK";
+                if (uom == null) uom = "KG";
+            }
+            uom = Optional.ofNullable(uom).orElse("EA");
 
             if (itemCode == null || qty == null || qty.compareTo(BigDecimal.ZERO) <= 0) {
                 log.debug("StockMovementListener: insufficient data ({} qty={}), skipping", itemCode, qty);
@@ -139,8 +163,35 @@ public class StockMovementListener implements WorkflowTransitionListener {
             case "M5.PackingRun/SPOIL" -> new StockOp("SPOIL", "PACK");
             case "M5.StockAdjust/POSTED" -> new StockOp("ADJUST", "STK-ADJ");
             case "M5.FGDispatch/DISPATCHED" -> new StockOp("ISSUE", "DSP");
+            case "M10.PackUnload/UNLOADING_COMPLETED" -> new StockOp("RECEIPT", "GRN");
+            case "M10.ReturnStockIn/UNLOADING_DONE" -> new StockOp("RECEIPT", "GRN");
+            case "M10.TankerInbound/QTY_RECONCILED" -> new StockOp("RECEIPT", "GRN");
             default -> null;
         };
+    }
+
+    /** gate_pass.oil_rm_item for this instance — see class javadoc on M10.TankerInbound. */
+    private String tankerInboundOilItem(Long tenantId, Long instanceId) {
+        List<String> rows = jdbc.queryForList(
+                "SELECT oil_rm_item FROM gate_pass WHERE tenant_id=? AND workflow_instance_id=? AND oil_rm_item IS NOT NULL",
+                String.class, tenantId, instanceId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** Net weight (W1-W2), preferring the current submission's own fields over a DB lookup. */
+    private BigDecimal tankerInboundNetWeight(Map<String, Object> data, Long tenantId, Long instanceId) {
+        BigDecimal w1 = decimal(data, "first_weight_kg", "w1_weight_kg");
+        BigDecimal w2 = decimal(data, "second_weight_kg", "w2_weight_kg");
+        if (w1 == null || w2 == null) {
+            List<Map<String, Object>> rows = jdbc.queryForList(
+                    "SELECT w1_weight_kg, w2_weight_kg FROM weighment_capture_detail WHERE tenant_id=? AND workflow_instance_id=?",
+                    tenantId, instanceId);
+            if (!rows.isEmpty()) {
+                if (w1 == null) w1 = (BigDecimal) rows.get(0).get("w1_weight_kg");
+                if (w2 == null) w2 = (BigDecimal) rows.get(0).get("w2_weight_kg");
+            }
+        }
+        return (w1 == null || w2 == null) ? null : w1.subtract(w2);
     }
 
     @SuppressWarnings("unchecked")

@@ -17,9 +17,11 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -53,6 +55,7 @@ public class WorkflowEngineService {
     @Autowired private WorkflowInstanceRepository instances;
     @Autowired private WorkflowEventRepository events;
     @Autowired private SpelGuardEvaluator guardEvaluator;
+    @Autowired private JdbcTemplate jdbc;
     @Autowired(required = false) private java.util.List<WorkflowTransitionListener> transitionListeners;
     @Autowired(required = false) private java.util.List<WorkflowTransitionValidator> transitionValidators;
 
@@ -403,21 +406,111 @@ public class WorkflowEngineService {
     }
 
     private WorkflowQueueItem toQueueItem(WorkflowInstance i) {
-        String previousState = events
-                .findFirstByInstanceIdAndKindOrderByTsDesc(i.getId(), WorkflowEvent.KIND_STATE_TRANSITION)
-                .map(WorkflowEvent::getFromState)
-                .orElse(null);
+        Map<String, Object> lastAudit = latestAuditTransition(i.getTenantId(), i.getId());
+        // Fall back to the authoritative workflow_instance/workflow_event pair
+        // when m0_audit_log has no row yet (e.g. a freshly-started instance —
+        // AuditTrailListener only fires on real transitions, never on start()).
+        String currentState = lastAudit != null ? (String) lastAudit.get("to_state") : i.getCurrentState();
+        String previousState = lastAudit != null
+                ? (String) lastAudit.get("from_state")
+                : events.findFirstByInstanceIdAndKindOrderByTsDesc(i.getId(), WorkflowEvent.KIND_STATE_TRANSITION)
+                        .map(WorkflowEvent::getFromState)
+                        .orElse(null);
+        Map<String, Object> parking = latestParkingAuditRow(i.getTenantId(), i.getBusinessRef());
+        String parkingState = parking == null ? null : (String) parking.get("to_state");
+        Map<String, Object> gatePass = gatePassFor(i.getTenantId(), i.getId());
         return WorkflowQueueItem.builder()
                 .id(i.getId())
                 .workflowCode(i.getWorkflowCode())
-                .currentState(i.getCurrentState())
+                .currentState(currentState)
                 .previousState(previousState)
                 .status(i.getStatus())
                 .businessRef(i.getBusinessRef())
                 .assignedRole(i.getAssignedRole())
                 .updatedAt(i.getUpdatedAt())
                 .submittedData(readBag(i.getSubmittedDataJson()))
+                .inParkingBay(parkingState != null && parkingState.toUpperCase().contains("IN"))
+                .parkingState(parkingState)
+                .parkingSince(parking == null ? null : toInstant(parking.get("ts")))
+                .parkingLoggedBy(parking == null ? null : (Long) parking.get("actor_id"))
+                .gpNumber(gatePass == null ? null : (String) gatePass.get("gp_number"))
                 .build();
+    }
+
+    /**
+     * gate_pass row for this instance, keyed by workflow_instance_id —
+     * WorkflowProjectionListener writes/updates this same row on every
+     * transition (see m0_workflow_projection config), so it's always
+     * current. Null for workflows that don't project into gate_pass at all
+     * (not every workflow_code has a gate_pass row).
+     */
+    private Map<String, Object> gatePassFor(Long tenantId, Long instanceId) {
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT gp_number FROM gate_pass " +
+                "WHERE tenant_id=? AND workflow_instance_id=?",
+                tenantId, instanceId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /**
+     * currentState/previousState for the queue, sourced from m0_audit_log
+     * (keyed directly by workflow_instance_id — that table already carries
+     * it) instead of workflow_instance.current_state / workflow_event. Null
+     * when this instance has no audit-logged transition yet.
+     */
+    private Map<String, Object> latestAuditTransition(Long tenantId, Long instanceId) {
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT from_state, to_state FROM m0_audit_log " +
+                "WHERE tenant_id=? AND workflow_instance_id=? AND action_kind='workflow.transition' " +
+                "ORDER BY ts DESC LIMIT 1",
+                tenantId, instanceId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /**
+     * Parking bay isn't a workflow state on every flow (see
+     * {@link WorkflowQueueItem}), so "is this instance currently parked" is
+     * read from m0_audit_log rather than current_state: the latest row whose
+     * to_state looks like a parking state (PARKING_IN_1, PARKING_OUT_2, ...
+     * — the TankerOutbound/FGLoading naming convention), keyed by gp_number
+     * because that's what a physical QR scan actually carries (the
+     * instance's internal id is never on the printed pass). gp_number itself
+     * is resolved from business_ref, mirroring AuditTrailListener's two
+     * conventions: "GatePass#id" (GenericEntityController flows) or the
+     * vehicle_no itself (M10 dispatch flows).
+     */
+    private Map<String, Object> latestParkingAuditRow(Long tenantId, String businessRef) {
+        String gpNumber = resolveGpNumber(businessRef);
+        if (gpNumber == null) return null;
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT to_state, ts, actor_id FROM m0_audit_log " +
+                "WHERE tenant_id=? AND gp_number=? AND to_state LIKE 'PARKING%' " +
+                "ORDER BY ts DESC LIMIT 1",
+                tenantId, gpNumber);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    private String resolveGpNumber(String businessRef) {
+        if (businessRef == null || businessRef.isBlank()) return null;
+        try {
+            int hash = businessRef.indexOf('#');
+            if (hash >= 0) {
+                if (!"GatePass".equals(businessRef.substring(0, hash))) return null;
+                Long id = Long.valueOf(businessRef.substring(hash + 1));
+                return jdbc.queryForObject("SELECT gp_number FROM gate_pass WHERE id = ?", String.class, id);
+            }
+            return jdbc.queryForObject(
+                    "SELECT gp_number FROM gate_pass WHERE vehicle_no = ? ORDER BY created_at DESC LIMIT 1",
+                    String.class, businessRef);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private Instant toInstant(Object v) {
+        if (v instanceof Timestamp ts) return ts.toInstant();
+        if (v instanceof Instant instant) return instant;
+        return null;
     }
 
     /**
