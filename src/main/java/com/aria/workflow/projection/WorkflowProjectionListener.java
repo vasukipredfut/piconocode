@@ -135,6 +135,18 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
             cols.put(ident(terminalTsCol), Timestamp.from(Instant.now()));
         }
 
+        // Per-state timestamps: unlike terminal_ts_column (one column, one
+        // condition), this maps several distinct states to their own distinct
+        // columns -- e.g. {"LOADING_IN_PROGRESS":"loading_start_time",
+        // "LOADING_COMPLETED":"loading_finish_time"} stamps a different
+        // column depending on which state was just entered.
+        String stateTsColumnsJson = (String) cfg.get("state_ts_columns_json");
+        if (stateTsColumnsJson != null && !stateTsColumnsJson.isBlank()) {
+            Map<String, String> stateTsColumns = MAPPER.readValue(stateTsColumnsJson, Map.class);
+            String col = stateTsColumns.get(state);
+            if (col != null) cols.put(ident(col), Timestamp.from(Instant.now()));
+        }
+
         boolean exists;
         try {
             Integer n = jdbc.queryForObject(
