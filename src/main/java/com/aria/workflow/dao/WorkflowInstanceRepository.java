@@ -36,16 +36,27 @@ public interface WorkflowInstanceRepository extends JpaRepository<WorkflowInstan
             Pageable pageable);
 
     /**
-     * Open instances whose current state is one this page acts on — the
-     * "relevant gate passes for this step". Used by the page-scoped work
-     * queue so a step page shows only the vehicles actually at its step,
+     * Open instances whose (workflowCode, currentState) is one this page acts
+     * on — the "relevant gate passes for this step". Used by the page-scoped
+     * work queue so a step page shows only the vehicles actually at its step,
      * not every open instance that happens to share the persona.
+     *
+     * <p>Keyed on workflowCode+state, not state alone: the same state name
+     * (e.g. "DISPATCH_VEHICLE_ENTRY") is reused across different M10 workflow
+     * definitions with unrelated meanings — QC step in M10.PackLoading /
+     * M10.TankerOutbound / M10.PackUnload, but a plain Dispatch step (no QC at
+     * all) in M10.FGLoading. Matching on state name alone leaked FGLoading
+     * instances into aria:qc-preload-approval's queue. {@code keys} is built
+     * as {@code workflowCode + "::" + state} (see
+     * WorkflowEngineService#statesForPage) — CONCAT is standard JPQL, so this
+     * avoids relying on dialect-specific tuple-IN support.
      */
     @Query("SELECT w FROM WorkflowInstance w " +
-            "WHERE w.tenantId = :tenantId AND w.currentState IN :states AND w.status = 'OPEN' " +
+            "WHERE w.tenantId = :tenantId AND CONCAT(w.workflowCode, '::', w.currentState) IN :keys " +
+            "AND w.status = 'OPEN' " +
             "ORDER BY w.updatedAt ASC")
-    Page<WorkflowInstance> queueForStates(
+    Page<WorkflowInstance> queueForWorkflowStates(
             @Param("tenantId") Long tenantId,
-            @Param("states") Collection<String> states,
+            @Param("keys") Collection<String> keys,
             Pageable pageable);
 }
