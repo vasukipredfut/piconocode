@@ -294,19 +294,29 @@ public class WorkflowEngineService {
     @Transactional(value = "m0PageTransactionManager", readOnly = true)
     public List<WorkflowQueueItem> queueForPage(String pageCode, int page, int size) {
         Long tenantId = TenantContext.get();
-        Set<String> states = statesForPage(tenantId, pageCode);
-        if (states.isEmpty()) return null; // not a step page — caller falls back
+        Set<String> keys = statesForPage(tenantId, pageCode);
+        if (keys.isEmpty()) return null; // not a step page — caller falls back
         Pageable p = PageRequest.of(Math.max(page, 0), Math.max(1, Math.min(size, 100)));
-        return instances.queueForStates(tenantId, states, p).getContent().stream()
+        return instances.queueForWorkflowStates(tenantId, keys, p).getContent().stream()
                 .map(this::toQueueItem)
                 .toList();
     }
 
-    /** The {@code from} states of every transition (any workflow) that submits this page. */
+    /**
+     * The {@code workflowCode + "::" + fromState} keys of every transition
+     * (any workflow) that submits this page.
+     *
+     * <p>Keyed on workflowCode+state, not state alone: the same state name is
+     * reused across different M10 workflow definitions with unrelated
+     * meanings (e.g. "DISPATCH_VEHICLE_ENTRY" is the QC step in
+     * M10.PackLoading/TankerOutbound/PackUnload, but a plain Dispatch step —
+     * no QC — in M10.FGLoading). See
+     * WorkflowInstanceRepository#queueForWorkflowStates.
+     */
     @SuppressWarnings("unchecked")
     private Set<String> statesForPage(Long tenantId, String pageCode) {
-        Set<String> states = new HashSet<>();
-        if (pageCode == null || pageCode.isBlank()) return states;
+        Set<String> keys = new HashSet<>();
+        if (pageCode == null || pageCode.isBlank()) return keys;
         for (WorkflowDefinition def : definitions.findAllPublished(tenantId)) {
             Map<String, Object> body;
             try {
@@ -320,11 +330,11 @@ public class WorkflowEngineService {
                 if (o instanceof Map<?, ?> t
                         && pageCode.equals(t.get("pageCode"))
                         && t.get("from") != null) {
-                    states.add(t.get("from").toString());
+                    keys.add(def.getCode() + "::" + t.get("from").toString());
                 }
             }
         }
-        return states;
+        return keys;
     }
 
     @Transactional(value = "m0PageTransactionManager", readOnly = true)
