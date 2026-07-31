@@ -61,3 +61,28 @@ UPDATE workflow_definition
  WHERE code IN ('M10.PackLoading', 'M10.FGLoading')
    AND status = 'PUBLISHED'
    AND JSON_LENGTH(JSON_SEARCH(body_json, 'all', 'BAY_ASSIGNED', NULL, '$.transitions[*].from')) IS NULL;
+
+-- 4. Re-found live, a second way this regresses: a later Designer republish
+--    (M10.FGLoading v29) put the BAY_ASSIGNED state and both transitions
+--    back -- but appended the guarded LOADING_IN_PROGRESS -> BAY_ASSIGNED
+--    edge at the END of the array instead of the front. The unguarded
+--    LOADING_IN_PROGRESS -> WEIGHMENT_2 edge (same pageCode) still sits
+--    earlier in the array and wins every time, so Start Bay keeps
+--    skipping straight to WEIGHMENT_2 even though BAY_ASSIGNED "exists".
+--    Steps 1-3 above only guard against the transition being MISSING, not
+--    misplaced, so this repositions it to index 0 whenever it isn't
+--    already there. JSON_REMOVE and JSON_EXTRACT below both read the
+--    pre-update body_json (MySQL/MariaDB evaluates the whole SET
+--    expression against the row's original value), so removing the old
+--    position and re-inserting the same object at [0] is safe in one
+--    statement.
+UPDATE workflow_definition
+   SET body_json = JSON_ARRAY_INSERT(
+         JSON_REMOVE(body_json, REPLACE(JSON_UNQUOTE(JSON_SEARCH(body_json, 'one', 'BAY_ASSIGNED', NULL, '$.transitions[*].to')), '.to', '')),
+         '$.transitions[0]',
+         JSON_EXTRACT(body_json, REPLACE(JSON_UNQUOTE(JSON_SEARCH(body_json, 'one', 'BAY_ASSIGNED', NULL, '$.transitions[*].to')), '.to', ''))
+       )
+ WHERE code IN ('M10.PackLoading', 'M10.TankerOutbound', 'M10.FGLoading')
+   AND status = 'PUBLISHED'
+   AND JSON_SEARCH(body_json, 'one', 'BAY_ASSIGNED', NULL, '$.transitions[*].to') IS NOT NULL
+   AND JSON_UNQUOTE(JSON_SEARCH(body_json, 'one', 'BAY_ASSIGNED', NULL, '$.transitions[*].to')) <> '$.transitions[0].to';
