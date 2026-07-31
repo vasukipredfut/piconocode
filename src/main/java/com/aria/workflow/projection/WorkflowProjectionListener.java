@@ -215,18 +215,38 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
     private String pluck(Map<String, Object> bag, List<String> keys) {
         if (bag == null) return null;
         for (String k : keys) {
-            Object v = bag.get(k);
-            if (v != null && !v.toString().isBlank()) return v.toString();
+            String v = scalarOf(bag.get(k));
+            if (v != null) return v;
         }
         for (Object v : bag.values()) {
             if (v instanceof Map<?, ?> m) {
                 for (String k : keys) {
-                    Object x = ((Map<String, Object>) m).get(k);
-                    if (x != null && !x.toString().isBlank()) return x.toString();
+                    String x = scalarOf(((Map<String, Object>) m).get(k));
+                    if (x != null) return x;
                 }
             }
         }
         return null;
+    }
+
+    /**
+     * Coerces a submitted field value to the single scalar this projection
+     * writes into a plain VARCHAR column. Multiselect widgets (e.g. the
+     * route_id picker on aria:loading-in-progress-entry, V74) submit a JSON
+     * array even though the target column only ever holds one value --
+     * without this, {@code List.toString()} was landing literally as
+     * "[ROU027834]", brackets included, in the projected column.
+     */
+    private String scalarOf(Object v) {
+        if (v == null) return null;
+        if (v instanceof List<?> list) {
+            for (Object item : list) {
+                if (item != null && !item.toString().isBlank()) return item.toString();
+            }
+            return null;
+        }
+        String s = v.toString();
+        return s.isBlank() ? null : s;
     }
 
     private static String ident(String s) {
