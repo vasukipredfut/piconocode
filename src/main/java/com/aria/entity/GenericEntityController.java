@@ -544,11 +544,16 @@ public class GenericEntityController {
 
     /** Returns a 403 ResponseEntity when the current user can't perform the
      *  given access ("read"/"write") on the entity, else null. */
+    private static final String SUPER_ROLE = "SuperAdmin";
+
     private ResponseEntity<?> checkRole(Map<String, Object> reg, String access) {
         String allowed = (String) reg.get("write".equals(access) ? "write_role" : "read_role");
         // If the column is null or "*" → no restriction beyond authentication.
         if (allowed == null || allowed.trim().isEmpty() || "*".equals(allowed.trim())) return null;
         String currentName = currentRoleName();
+        // SuperAdmin bypasses every entity_registry read_role/write_role check,
+        // including entities added after this role was created.
+        if (SUPER_ROLE.equalsIgnoreCase(currentName)) return null;
         if (currentName == null) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of(
                 "ok", false, "code", "RBAC_NO_USER",
