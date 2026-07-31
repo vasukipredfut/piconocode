@@ -43,7 +43,7 @@ public interface WorkflowInstanceRepository extends JpaRepository<WorkflowInstan
      */
     @Query("SELECT w FROM WorkflowInstance w " +
             "WHERE w.tenantId = :tenantId AND w.currentState IN :states AND w.status = 'OPEN' " +
-            "ORDER BY w.updatedAt DESC")
+            "ORDER BY w.updatedAt ASC")
     Page<WorkflowInstance> queueForStates(
             @Param("tenantId") Long tenantId,
             @Param("states") Collection<String> states,
