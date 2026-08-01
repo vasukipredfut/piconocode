@@ -65,7 +65,8 @@ public class GenericEntityController {
             " LEFT JOIN dispatch_vehicle_detail dvd ON dvd.workflow_instance_id = gp.workflow_instance_id AND dvd.tenant_id = gp.tenant_id" +
             " LEFT JOIN loading_progress_detail lpd ON lpd.workflow_instance_id = gp.workflow_instance_id AND lpd.tenant_id = gp.tenant_id" +
             " LEFT JOIN gate_pass_closure gpc ON gpc.workflow_instance_id = gp.workflow_instance_id AND gpc.tenant_id = gp.tenant_id" +
-            " LEFT JOIN billing_entry be ON be.workflow_instance_id = gp.workflow_instance_id AND be.tenant_id = gp.tenant_id";
+            " LEFT JOIN billing_entry be ON be.workflow_instance_id = gp.workflow_instance_id AND be.tenant_id = gp.tenant_id" +
+            " LEFT JOIN qc_unloading_approval qua ON qua.workflow_instance_id = gp.workflow_instance_id AND qua.tenant_id = gp.tenant_id";
     private static final String GATE_PASS_SATELLITE_SELECT =
             "gp.*, " +
             "qpd.loading_supervisor, qpd.loading_tank_location, qpd.qc_reject_reason, " +
@@ -80,7 +81,14 @@ public class GenericEntityController {
             "gpc.order_recon_done, gpc.within_tolerance, gpc.closure_note, gpc.closed_at AS closure_closed_at, " +
             "be.invoice_numbers, be.invoice_number_count, be.checking_officer, " +
             "CASE WHEN be.invoice_numbers IS NULL OR be.invoice_numbers = '[]' THEN NULL " +
-            "ELSE REPLACE(REPLACE(REPLACE(be.invoice_numbers, '\",\"', ', '), '[\"', ''), '\"]', '') END AS invoice_no";
+            "ELSE REPLACE(REPLACE(REPLACE(be.invoice_numbers, '\",\"', ', '), '[\"', ''), '\"]', '') END AS invoice_no, " +
+            "qua.item_category, qua.sample_jar_id, qua.qc_officer_id, " +
+            "qua.density_kgl, qua.ffa_pct, qua.colour_rating, qua.temperature_c, " +
+            "qua.print_quality, qua.dimensional_check, qua.bottle_integrity, qua.carton_strength, " +
+            "qua.seal_intact, qua.label_match, qua.batch_expiry_check, " +
+            "qua.sample_photo, qua.seal_unlock_no, qua.qc_notes, " +
+            "qua.unloading_supervisor_id, qua.oil_sample_recovered, qua.unloading_location, " +
+            "qua.status AS qc_decision_status, qua.qc_reject_reason AS qc_approval_reject_reason";
 
     // Optional — old test wiring constructs this controller without the codec.
     // When absent, secret fields pass through unmodified (pre-encryption
