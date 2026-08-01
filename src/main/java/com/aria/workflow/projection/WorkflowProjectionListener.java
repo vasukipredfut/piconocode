@@ -175,6 +175,7 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
             jdbc.update("INSERT INTO " + table + " (" + columns + ") VALUES (" + qs + ")",
                     cols.values().toArray());
         } else {
+            if (cols.isEmpty()) return; // nothing this transition's bag maps to this table yet
             String sets = String.join(", ", cols.keySet().stream().map(c -> c + "=?").toList());
             List<Object> args = new ArrayList<>(cols.values());
             args.add(instanceId);

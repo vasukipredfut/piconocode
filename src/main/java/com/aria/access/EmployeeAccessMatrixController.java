@@ -14,23 +14,30 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Employee Access Matrix — for a chosen employee, shows their assigned role
- * and effective Read/Write/Approve on every registered screen/entity.
+ * Employee Access Matrix — page-wise Read/Write/Approve, assignable at the
+ * Role level (cascades to every employee holding that role) and overridable
+ * at the individual Employee level.
  *
- * <p>Source of truth: {@code employee_details.roles_id} (the login table's
- * single-role FK — see {@code AuthUserDetailsService}) resolved to
- * {@code role.name}, matched against {@code entity_registry}'s
- * read_role/write_role/approver_role CSV-or-"*" columns — the same access
- * data {@code GenericEntityController#checkRole} enforces for generic-entity
- * CRUD, just read here for display instead of enforced.
+ * <p>Screen universe: {@code page_definition} (the actual navigable pages —
+ * "page-wise", not the 653-row entity_registry "entity-wise" set this
+ * controller started out with).
  *
- * <p>Backs the {@code aria:employee-access-matrix} page (see
- * {@code V184__employee_access_matrix_page.sql}).
+ * <p>Resolution per (employee, page): an {@code employee_page_permission}
+ * row (explicit override for that one employee) wins outright over a
+ * {@code role_page_permission} row (the employee's role default), which
+ * wins over the hardcoded default: read=true, write=false, approve=false —
+ * same "missing row = open read, closed write" convention entity_registry
+ * used, just moved to real editable tables (see
+ * {@code V195__role_and_employee_page_permission.sql}).
+ *
+ * <p>Backs the {@code aria:employee-access-matrix} page (registered in
+ * {@code V191__employee_access_matrix_page.sql}; unchanged by this rewrite).
  */
 @RestController
 @RequestMapping("/api/m0/access-matrix")
 public class EmployeeAccessMatrixController {
 
+    private static final String SUPER_ROLE = "SuperAdmin";
     private static final Set<String> ALLOWED_ROLES = Set.of("TenantAdmin");
 
     private final JdbcTemplate jdbc;
@@ -39,6 +46,8 @@ public class EmployeeAccessMatrixController {
     public EmployeeAccessMatrixController(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
     }
+
+    // ---- Dropdown data -------------------------------------------------
 
     @GetMapping("/employees")
     public ResponseEntity<?> employees(@RequestParam(required = false) String q) {
@@ -64,105 +73,290 @@ public class EmployeeAccessMatrixController {
         return ResponseEntity.ok(Map.of("ok", true, "employees", out));
     }
 
+    @GetMapping("/roles")
+    public ResponseEntity<?> roles(@RequestParam(required = false) String q) {
+        ResponseEntity<?> denied = assertRole();
+        if (denied != null) return denied;
+
+        StringBuilder sql = new StringBuilder("SELECT id, name FROM role");
+        List<Object> args = new ArrayList<>();
+        if (q != null && !q.isBlank()) {
+            sql.append(" WHERE name LIKE ?");
+            args.add("%" + q.trim() + "%");
+        }
+        sql.append(" ORDER BY name, id");
+
+        List<Map<String, Object>> rows = jdbc.queryForList(sql.toString(), args.toArray());
+        return ResponseEntity.ok(Map.of("ok", true, "roles", rows));
+    }
+
+    // ---- Matrix ---------------------------------------------------------
+
     @GetMapping
     public ResponseEntity<?> matrix(
             @RequestParam(required = false) Long employeeId,
+            @RequestParam(required = false) Long roleId,
             @RequestParam(required = false) String category,
             @RequestParam(required = false, name = "_q") String q,
             @RequestParam(required = false, defaultValue = "false") boolean onlyGranted) {
         ResponseEntity<?> denied = assertRole();
         if (denied != null) return denied;
-        if (employeeId == null) {
-            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "employeeId is required"));
+
+        if ((employeeId == null) == (roleId == null)) {
+            return ResponseEntity.badRequest().body(
+                    Map.of("ok", false, "error", "Exactly one of employeeId or roleId is required"));
         }
 
-        Map<String, Object> employeeRow;
-        try {
-            employeeRow = jdbc.queryForMap(
-                    "SELECT ed.id, ed.username, ed.employeename, ed.status, ed.roles_id, r.name AS role_name " +
-                    "FROM employee_details ed LEFT JOIN role r ON r.id = ed.roles_id " +
-                    "WHERE ed.tenant_id = ? AND ed.id = ?",
-                    TenantContext.get(), employeeId);
-        } catch (EmptyResultDataAccessException e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
-                    Map.of("ok", false, "error", "Employee not found: id=" + employeeId));
-        }
-        String roleName = (String) employeeRow.get("role_name");
+        Map<String, Object> employeeJson = null;
+        Map<String, Object> roleJson = null;
+        Long targetRoleId = null;
+        Map<String, PermRow> employeeOverrides = Map.of();
 
-        // Per code, the tenant-specific entity_registry row wins over the
-        // global (-1) one — same override rule as GenericEntityController's
-        // per-code lookup, generalised to the whole table.
-        List<Map<String, Object>> registryRows = jdbc.queryForList(
-                "SELECT er.code, er.display_name, er.category, er.read_role, er.write_role, er.approver_role " +
-                "FROM entity_registry er " +
-                "JOIN (SELECT code, MAX(tenant_id) AS pick_tid FROM entity_registry " +
-                "      WHERE tenant_id IN (?, -1) GROUP BY code) picked " +
-                "  ON picked.code = er.code AND picked.pick_tid = er.tenant_id " +
-                "WHERE er.tenant_id IN (?, -1)",
-                TenantContext.get(), TenantContext.get());
+        if (employeeId != null) {
+            Map<String, Object> employeeRow;
+            try {
+                employeeRow = jdbc.queryForMap(
+                        "SELECT ed.id, ed.username, ed.employeename, ed.status, ed.roles_id, r.name AS role_name " +
+                        "FROM employee_details ed LEFT JOIN role r ON r.id = ed.roles_id " +
+                        "WHERE ed.tenant_id = ? AND ed.id = ?",
+                        TenantContext.get(), employeeId);
+            } catch (EmptyResultDataAccessException e) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+                        Map.of("ok", false, "error", "Employee not found: id=" + employeeId));
+            }
+            employeeJson = toEmployeeJson(employeeRow);
+            Object rid = employeeRow.get("roles_id");
+            targetRoleId = rid == null ? null : ((Number) rid).longValue();
+            if (targetRoleId != null) {
+                roleJson = new LinkedHashMap<>();
+                roleJson.put("id", targetRoleId);
+                roleJson.put("name", employeeRow.get("role_name"));
+            }
+            employeeOverrides = fetchPermissionMap("employee_page_permission", "employee_id", employeeId);
+        } else {
+            Map<String, Object> roleRow;
+            try {
+                roleRow = jdbc.queryForMap("SELECT id, name FROM role WHERE id = ?", roleId);
+            } catch (EmptyResultDataAccessException e) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+                        Map.of("ok", false, "error", "Role not found: id=" + roleId));
+            }
+            targetRoleId = roleId;
+            roleJson = new LinkedHashMap<>(roleRow);
+        }
+
+        List<Map<String, Object>> pages = jdbc.queryForList(
+                "SELECT code, title, category FROM page_definition WHERE tenant_id IN (?, -1) AND status = 'PUBLISHED'",
+                TenantContext.get());
+
+        Map<String, PermRow> roleDefaults = targetRoleId != null
+                ? fetchPermissionMap("role_page_permission", "role_id", targetRoleId)
+                : Map.of();
 
         String qLower = (q == null) ? null : q.trim().toLowerCase(Locale.ROOT);
         List<Map<String, Object>> screens = new ArrayList<>();
         int granted = 0;
-        for (Map<String, Object> reg : registryRows) {
-            String rowCategory = (String) reg.get("category");
-            if (category != null && !category.isBlank() && !category.equalsIgnoreCase(rowCategory)) continue;
+        for (Map<String, Object> page : pages) {
+            String pageCode = (String) page.get("code");
+            String title = (String) page.get("title");
+            String pageCategory = (String) page.get("category");
 
-            String code = (String) reg.get("code");
-            String displayName = (String) reg.get("display_name");
+            if (category != null && !category.isBlank() && !category.equalsIgnoreCase(pageCategory)) continue;
             if (qLower != null && !qLower.isEmpty()) {
-                boolean codeMatches = code != null && code.toLowerCase(Locale.ROOT).contains(qLower);
-                boolean nameMatches = displayName != null && displayName.toLowerCase(Locale.ROOT).contains(qLower);
-                if (!codeMatches && !nameMatches) continue;
+                boolean codeMatches = pageCode != null && pageCode.toLowerCase(Locale.ROOT).contains(qLower);
+                boolean titleMatches = title != null && title.toLowerCase(Locale.ROOT).contains(qLower);
+                if (!codeMatches && !titleMatches) continue;
             }
 
-            boolean read = openOrMatches((String) reg.get("read_role"), roleName, true);
-            boolean write = openOrMatches((String) reg.get("write_role"), roleName, true);
-            boolean approve = openOrMatches((String) reg.get("approver_role"), roleName, false);
+            PermRow override = employeeOverrides.get(pageCode);
+            PermRow roleDefault = roleDefaults.get(pageCode);
+            boolean read, write, approve;
+            String source;
+            if (override != null) {
+                read = override.read(); write = override.write(); approve = override.approve();
+                source = "employee-override";
+            } else if (roleDefault != null) {
+                read = roleDefault.read(); write = roleDefault.write(); approve = roleDefault.approve();
+                source = "role";
+            } else {
+                read = true; write = false; approve = false;
+                source = "default";
+            }
             if (onlyGranted && !read && !write && !approve) continue;
 
             Map<String, Object> screen = new LinkedHashMap<>();
-            screen.put("code", code);
-            screen.put("displayName", displayName);
-            screen.put("category", rowCategory);
+            screen.put("pageCode", pageCode);
+            screen.put("title", title);
+            screen.put("category", pageCategory);
             screen.put("read", read);
             screen.put("write", write);
             screen.put("approve", approve);
+            screen.put("source", source);
             screens.add(screen);
             if (read || write || approve) granted++;
         }
 
         screens.sort(Comparator
                 .comparing((Map<String, Object> s) -> (String) s.get("category"), Comparator.nullsLast(String::compareTo))
-                .thenComparing(s -> (String) s.get("displayName"), Comparator.nullsLast(String::compareTo)));
+                .thenComparing(s -> (String) s.get("title"), Comparator.nullsLast(String::compareTo)));
 
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("ok", true);
-        resp.put("employee", toEmployeeJson(employeeRow));
+        if (employeeJson != null) resp.put("employee", employeeJson);
+        resp.put("role", roleJson);
         resp.put("screens", screens);
         resp.put("totalScreens", screens.size());
         resp.put("grantedScreens", granted);
         return ResponseEntity.ok(resp);
     }
 
-    /**
-     * {@code csv} is null/blank/"*" (open to any authenticated user) or a
-     * comma-separated list of role names, matched case-insensitively —
-     * identical semantics to {@code GenericEntityController#checkRole}.
-     * {@code openIfBlank} controls what a blank column means: true for
-     * read/write (blank == unrestricted), false for approve (blank == not
-     * approvable by anyone — matches the observed data, where "*" never
-     * appears in approver_role).
-     */
-    private static boolean openOrMatches(String csv, String roleName, boolean openIfBlank) {
-        if (csv == null || csv.trim().isEmpty()) return openIfBlank;
-        String trimmed = csv.trim();
-        if ("*".equals(trimmed)) return true;
-        if (roleName == null) return false;
-        for (String candidate : trimmed.split(",")) {
-            if (candidate.trim().equalsIgnoreCase(roleName)) return true;
+    // ---- Admin: assign / update / reset ---------------------------------
+
+    @PutMapping("/role-permission")
+    public ResponseEntity<?> upsertRolePermission(@RequestBody Map<String, Object> body) {
+        ResponseEntity<?> denied = assertRole();
+        if (denied != null) return denied;
+
+        Long roleId = longVal(body.get("roleId"));
+        String pageCode = str(body.get("pageCode"));
+        if (roleId == null || pageCode.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "roleId and pageCode are required"));
         }
-        return false;
+        if (!roleExists(roleId)) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+                    Map.of("ok", false, "error", "Role not found: id=" + roleId));
+        }
+        if (!pageExists(pageCode)) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+                    Map.of("ok", false, "error", "Page not found: code=" + pageCode));
+        }
+
+        boolean read = boolVal(body.get("read"));
+        boolean write = boolVal(body.get("write"));
+        boolean approve = boolVal(body.get("approve"));
+        jdbc.update(
+                "INSERT INTO role_page_permission (tenant_id, role_id, page_code, can_read, can_write, can_approve) " +
+                "VALUES (?, ?, ?, ?, ?, ?) " +
+                "ON DUPLICATE KEY UPDATE can_read = VALUES(can_read), can_write = VALUES(can_write), can_approve = VALUES(can_approve)",
+                TenantContext.get(), roleId, pageCode, read, write, approve);
+
+        return ResponseEntity.ok(Map.of("ok", true, "roleId", roleId, "pageCode", pageCode,
+                "read", read, "write", write, "approve", approve));
+    }
+
+    @PutMapping("/employee-permission")
+    public ResponseEntity<?> upsertEmployeePermission(@RequestBody Map<String, Object> body) {
+        ResponseEntity<?> denied = assertRole();
+        if (denied != null) return denied;
+
+        Long employeeId = longVal(body.get("employeeId"));
+        String pageCode = str(body.get("pageCode"));
+        if (employeeId == null || pageCode.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "employeeId and pageCode are required"));
+        }
+        if (!employeeExists(employeeId)) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+                    Map.of("ok", false, "error", "Employee not found: id=" + employeeId));
+        }
+        if (!pageExists(pageCode)) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+                    Map.of("ok", false, "error", "Page not found: code=" + pageCode));
+        }
+
+        boolean read = boolVal(body.get("read"));
+        boolean write = boolVal(body.get("write"));
+        boolean approve = boolVal(body.get("approve"));
+        jdbc.update(
+                "INSERT INTO employee_page_permission (tenant_id, employee_id, page_code, can_read, can_write, can_approve) " +
+                "VALUES (?, ?, ?, ?, ?, ?) " +
+                "ON DUPLICATE KEY UPDATE can_read = VALUES(can_read), can_write = VALUES(can_write), can_approve = VALUES(can_approve)",
+                TenantContext.get(), employeeId, pageCode, read, write, approve);
+
+        return ResponseEntity.ok(Map.of("ok", true, "employeeId", employeeId, "pageCode", pageCode,
+                "read", read, "write", write, "approve", approve));
+    }
+
+    @DeleteMapping("/role-permission")
+    public ResponseEntity<?> deleteRolePermission(@RequestParam Long roleId, @RequestParam String pageCode) {
+        ResponseEntity<?> denied = assertRole();
+        if (denied != null) return denied;
+        int n = jdbc.update(
+                "DELETE FROM role_page_permission WHERE tenant_id IN (?, -1) AND role_id = ? AND page_code = ?",
+                TenantContext.get(), roleId, pageCode);
+        return ResponseEntity.ok(Map.of("ok", true, "deleted", n));
+    }
+
+    @DeleteMapping("/employee-permission")
+    public ResponseEntity<?> deleteEmployeePermission(@RequestParam Long employeeId, @RequestParam String pageCode) {
+        ResponseEntity<?> denied = assertRole();
+        if (denied != null) return denied;
+        int n = jdbc.update(
+                "DELETE FROM employee_page_permission WHERE tenant_id IN (?, -1) AND employee_id = ? AND page_code = ?",
+                TenantContext.get(), employeeId, pageCode);
+        return ResponseEntity.ok(Map.of("ok", true, "deleted", n));
+    }
+
+    // ---- Helpers ----------------------------------------------------------
+
+    private record PermRow(boolean read, boolean write, boolean approve) {}
+
+    private Map<String, PermRow> fetchPermissionMap(String table, String keyColumn, Long keyValue) {
+        // table/keyColumn are fixed literals passed by this class only — never
+        // request-derived — so string-concat here carries no injection risk.
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT page_code, can_read, can_write, can_approve FROM " + table +
+                " WHERE tenant_id IN (?, -1) AND " + keyColumn + " = ?",
+                TenantContext.get(), keyValue);
+        Map<String, PermRow> out = new HashMap<>();
+        for (Map<String, Object> row : rows) {
+            out.put((String) row.get("page_code"), new PermRow(
+                    truthy(row.get("can_read")), truthy(row.get("can_write")), truthy(row.get("can_approve"))));
+        }
+        return out;
+    }
+
+    private boolean roleExists(Long roleId) {
+        Integer c = jdbc.queryForObject("SELECT COUNT(*) FROM role WHERE id = ?", Integer.class, roleId);
+        return c != null && c > 0;
+    }
+
+    private boolean pageExists(String pageCode) {
+        Integer c = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM page_definition WHERE tenant_id IN (?, -1) AND code = ? AND status = 'PUBLISHED'",
+                Integer.class, TenantContext.get(), pageCode);
+        return c != null && c > 0;
+    }
+
+    private boolean employeeExists(Long employeeId) {
+        Integer c = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM employee_details WHERE tenant_id = ? AND id = ?",
+                Integer.class, TenantContext.get(), employeeId);
+        return c != null && c > 0;
+    }
+
+    private static boolean truthy(Object o) {
+        if (o == null) return false;
+        if (o instanceof Boolean b) return b;
+        if (o instanceof Number n) return n.intValue() != 0;
+        return Boolean.parseBoolean(String.valueOf(o));
+    }
+
+    private static boolean boolVal(Object o) {
+        return truthy(o);
+    }
+
+    private static String str(Object o) {
+        return o == null ? "" : String.valueOf(o).trim();
+    }
+
+    private static Long longVal(Object o) {
+        if (o == null) return null;
+        if (o instanceof Number n) return n.longValue();
+        try {
+            return Long.parseLong(String.valueOf(o).trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private static Map<String, Object> toEmployeeJson(Map<String, Object> row) {
@@ -177,9 +371,11 @@ public class EmployeeAccessMatrixController {
     }
 
     // ---- RBAC ---------------------------------------------------------
-    // Self-contained, mirroring GenericEntityController#currentRoleName and
-    // OnboardingController#assertRole — no shared utility exists for this in
-    // the codebase (checked); every bespoke controller replicates it.
+    // SuperAdmin bypasses unconditionally (mirrors
+    // GenericEntityController#checkRole's SUPER_ROLE convention, added in
+    // V182__superadmin_role_and_user.sql); TenantAdmin is the standard admin
+    // role otherwise. No shared utility exists for this in the codebase
+    // (checked); every bespoke controller replicates it.
 
     private ResponseEntity<?> assertRole() {
         String role = currentRoleName();
@@ -187,13 +383,14 @@ public class EmployeeAccessMatrixController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(
                     Map.of("ok", false, "code", "RBAC_NO_USER", "error", "Not authenticated"));
         }
+        if (SUPER_ROLE.equalsIgnoreCase(role)) return null;
         for (String allowed : ALLOWED_ROLES) {
             if (allowed.equalsIgnoreCase(role)) return null;
         }
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(
                 Map.of("ok", false, "code", "RBAC_DENIED",
                         "error", role + " is not permitted to view the access matrix",
-                        "allowed", ALLOWED_ROLES));
+                        "allowed", List.of("TenantAdmin", "SuperAdmin")));
     }
 
     private String currentRoleName() {

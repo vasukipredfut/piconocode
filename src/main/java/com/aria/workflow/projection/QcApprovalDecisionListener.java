@@ -15,10 +15,9 @@ import java.util.Set;
  * Captures aria:qc-approval's literal decision ("APPROVED" / "REJECTED") into
  * qc_preload_detail.qc_decision, plus qc_reject_reason (only present when
  * REJECTED) and unloading_location (only present when item_category ==
- * RETURN), for M10.TankerInbound and M10.ReturnStockIn — both reach
- * aria:qc-approval from the same DISPATCH_QUEUED state name, so one
- * previousState check covers both; only the workflowCode check needs to list
- * both.
+ * RETURN or the flow is M10.PackUnload), for M10.TankerInbound and
+ * M10.ReturnStockIn (both reach aria:qc-approval from DISPATCH_QUEUED) and
+ * M10.PackUnload (reaches it from DISPATCH_VEHICLE_ENTRY instead).
  *
  * <p>Kept OUT of WorkflowProjectionListener's generic field_map_json on
  * purpose, same reasoning as {@link PmtSharedReasonListener}: aria:qc-approval's
@@ -27,15 +26,17 @@ import java.util.Set;
  * WorkflowProjectionListener.pluck() searches every page's submitted data
  * (a plain HashMap, undefined iteration order) for a bare key match — it
  * would risk grabbing a later manager-approval's "status" instead of
- * aria:qc-approval's own. Gating on {@code previousState == DISPATCH_QUEUED}
- * (only aria:qc-approval fires from that state in either workflow) and
- * reading the page's own bag entry directly avoids that ambiguity entirely.
+ * aria:qc-approval's own. Gating on the previousState the QC step actually
+ * transitions from for each workflow (only aria:qc-approval fires from
+ * those states) and reading the page's own bag entry directly avoids that
+ * ambiguity entirely.
  */
 @Component
 public class QcApprovalDecisionListener implements WorkflowTransitionListener {
 
     private static final Logger log = LoggerFactory.getLogger(QcApprovalDecisionListener.class);
-    private static final Set<String> WORKFLOW_CODES = Set.of("M10.TankerInbound", "M10.ReturnStockIn");
+    private static final Set<String> WORKFLOW_CODES = Set.of("M10.TankerInbound", "M10.ReturnStockIn", "M10.PackUnload");
+    private static final Set<String> QC_PREVIOUS_STATES = Set.of("DISPATCH_QUEUED", "DISPATCH_VEHICLE_ENTRY");
 
     private final JdbcTemplate jdbc;
 
@@ -45,7 +46,7 @@ public class QcApprovalDecisionListener implements WorkflowTransitionListener {
 
     @Override
     public void onTransition(WorkflowInstance instance, String previousState, Map<String, Object> bag) {
-        if (bag == null || !"DISPATCH_QUEUED".equals(previousState)
+        if (bag == null || !QC_PREVIOUS_STATES.contains(previousState)
                 || !WORKFLOW_CODES.contains(instance.getWorkflowCode())) {
             return;
         }
