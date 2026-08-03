@@ -3,6 +3,7 @@ package com.aria.action.handler;
 import com.aria.action.ActionHandler;
 import com.aria.action.ActionInvocation;
 import com.aria.action.ActionResult;
+import com.aria.mes.stock.FefoStockPickerService;
 import com.aria.security.TenantContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -35,6 +36,31 @@ import java.util.Map;
  * "Completed"; see {@code M10BayQuantityCompletionValidator}, which only
  * requires every bay to be closed, not the totals to match.
  *
+ * <p>Each closed line also deducts {@code loading_qty} from stock: picked
+ * FEFO (oldest-first, across bins — {@code route_id} is a delivery-route
+ * identifier, not a warehouse bin, so there is no bin to key the deduction
+ * on) via {@link FefoStockPickerService}, one {@code m5_stock_movement}
+ * ledger row (kind {@code CONSUME}) plus one {@code m5_stock_balance}
+ * {@code qty_on_hand} decrement per lot picked. A line whose SKU doesn't
+ * have enough on-hand stock to cover {@code loading_qty} errors out (same
+ * as any other line validation failure) before its bay row is closed —
+ * never mark a bay DONE for stock that wasn't actually available to pull.
+ *
+ * <p><b>Concurrency guard:</b> {@code FefoStockPickerService.pick} is a
+ * plain unlocked {@code SELECT} — two near-simultaneous Bay Complete calls
+ * against the same SKU could both read "enough stock" from the same stale
+ * snapshot. The actual deduction is therefore re-checked atomically at
+ * UPDATE time ({@code WHERE ... AND qty_on_hand >= ?}, row-count verified) —
+ * {@code qty_on_hand} can never be driven negative by this handler, and a
+ * lot that lost the race errors the whole line out (before its bay row is
+ * closed) rather than silently under-deducting or going negative. Per-line
+ * deduction happens fully before that line's bay row closes, for the same
+ * "never mark DONE for stock we didn't actually get" reason above — but
+ * note this repo's existing convention (see the handler's own tests) is
+ * that an earlier LINE's already-applied changes are not rolled back if a
+ * later line fails; the same applies here at the per-lot level within one
+ * line's multi-lot pick.
+ *
  * <p>Payload shape (formData.order_sku_line_items — the grid's current rows
  * with loading_qty already edited by the operator):
  * <pre>
@@ -49,6 +75,7 @@ import java.util.Map;
 public class M10BayCompleteActionHandler implements ActionHandler {
 
     @Autowired private JdbcTemplate jdbc;
+    @Autowired private FefoStockPickerService fefoPicker;
 
     @Override
     public String code() { return "m10.bay-complete"; }
@@ -73,7 +100,11 @@ public class M10BayCompleteActionHandler implements ActionHandler {
         BigDecimal totalProcessed = BigDecimal.ZERO;
 
         for (int i = 0; i < lines.size(); i++) {
-            Map<String, Object> line = lines.get(i);
+            Object lineObj = lines.get(i);
+            if (!(lineObj instanceof Map)) {
+                return ActionResult.error("order_sku_line_items[" + i + "] must be an object");
+            }
+            Map<String, Object> line = (Map<String, Object>) lineObj;
             String routeId = str(line, "route_id");
             String skuCode = str(line, "sku_code");
             if (routeId == null || skuCode == null) {
@@ -89,6 +120,31 @@ public class M10BayCompleteActionHandler implements ActionHandler {
             }
             if (processedQty == null || processedQty.signum() < 0) {
                 return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") needs loading_qty >= 0");
+            }
+
+            List<FefoStockPickerService.FefoPick> picks = fefoPicker.pick(tenantId, skuCode, null, processedQty);
+            BigDecimal residual = fefoPicker.residualQty(processedQty, picks);
+            if (residual.signum() > 0) {
+                return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") insufficient stock: "
+                        + "requested " + processedQty + ", available " + processedQty.subtract(residual));
+            }
+
+            for (FefoStockPickerService.FefoPick pick : picks) {
+                int deducted = jdbc.update(
+                        "UPDATE m5_stock_balance SET qty_on_hand = qty_on_hand - ?, last_movement_at = CURRENT_TIMESTAMP "
+                                + "WHERE tenant_id = ? AND item_code = ? AND "
+                                + "((lot_no IS NULL AND ? IS NULL) OR lot_no = ?) AND bin_code = ? AND qty_on_hand >= ?",
+                        pick.qty(), tenantId, skuCode, pick.lotNo(), pick.lotNo(), pick.binCode(), pick.qty());
+                if (deducted == 0) {
+                    return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") stock changed "
+                            + "concurrently — lot " + pick.lotNo() + "/bin " + pick.binCode()
+                            + " no longer has enough qty_on_hand, retry Bay Complete");
+                }
+                jdbc.update(
+                        "INSERT INTO m5_stock_movement (tenant_id, kind, item_code, lot_no, from_bin, qty, uom, "
+                                + "ref_type, ref_id, ref_number) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        tenantId, "CONSUME", skuCode, pick.lotNo(), pick.binCode(), pick.qty(), pick.uom(),
+                        "BAY", instanceId, routeId);
             }
 
             int n = jdbc.update(
@@ -121,6 +177,8 @@ public class M10BayCompleteActionHandler implements ActionHandler {
 
     private static String str(Map<String, Object> bag, String key) {
         Object v = bag.get(key);
-        return v == null ? null : v.toString();
+        if (v == null) return null;
+        String s = v.toString();
+        return s.isBlank() ? null : s;
     }
 }

@@ -2,6 +2,7 @@ package com.aria.action.handler;
 
 import com.aria.action.ActionInvocation;
 import com.aria.action.ActionResult;
+import com.aria.mes.stock.FefoStockPickerService;
 import com.aria.security.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -10,6 +11,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.math.BigDecimal;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -21,19 +23,31 @@ import static org.mockito.Mockito.*;
 /**
  * Unit test for {@link M10BayCompleteActionHandler}: closes every open
  * loading_progress_detail_bay row named in formData.order_sku_line_items,
- * matched by (route_id, sku_code), and rolls the total into
- * loading_progress_detail. Never touches workflow state.
+ * matched by (route_id, sku_code), rolls the total into
+ * loading_progress_detail, and deducts loading_qty from stock (FEFO across
+ * bins via FefoStockPickerService — one m5_stock_movement + m5_stock_balance
+ * update per lot picked). Never touches workflow state.
+ *
+ * <p>Uses {@link FakeFefoStockPickerService}, a subclass overriding the
+ * protected {@code findAvailableLots} hook the real service documents as
+ * "Hook for tests" — avoids mocking JdbcTemplate's query methods (which
+ * don't reliably match on varargs stubs; see ParkingBayScanServiceTest's
+ * note) for the read side of stock picking entirely.
  */
 class M10BayCompleteActionHandlerTest {
 
     private JdbcTemplate jdbc;
+    private FakeFefoStockPickerService fefoPicker;
     private M10BayCompleteActionHandler handler;
 
     @BeforeEach
     void setUp() {
         jdbc = mock(JdbcTemplate.class);
+        when(jdbc.update(anyString(), any(Object[].class))).thenReturn(1);
+        fefoPicker = new FakeFefoStockPickerService();
         handler = new M10BayCompleteActionHandler();
         ReflectionTestUtils.setField(handler, "jdbc", jdbc);
+        ReflectionTestUtils.setField(handler, "fefoPicker", fefoPicker);
         TenantContext.set(1L);
     }
 
@@ -167,6 +181,123 @@ class M10BayCompleteActionHandlerTest {
         verify(jdbc, never()).update(startsWith("UPDATE loading_progress_detail SET"), any(Object[].class));
     }
 
+    // ---- stock deduction ----------------------------------------------------
+
+    @Test
+    void sufficientStock_writesOneConsumeMovementAndDeductsBalance() {
+        fefoPicker.seed("SKU1215", lotRow("LOT-A", "BIN-A", "KG", "100"));
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(line("ROU028912", "SKU1215", 45))));
+
+        assertThat(r.isOk()).isTrue();
+        verify(jdbc).update(
+                eq("INSERT INTO m5_stock_movement (tenant_id, kind, item_code, lot_no, from_bin, qty, uom, "
+                        + "ref_type, ref_id, ref_number) VALUES (?,?,?,?,?,?,?,?,?,?)"),
+                eq(1L), eq("CONSUME"), eq("SKU1215"), eq("LOT-A"), eq("BIN-A"),
+                eq(new BigDecimal("45")), eq("KG"), eq("BAY"), eq(1495L), eq("ROU028912"));
+        verify(jdbc).update(
+                eq("UPDATE m5_stock_balance SET qty_on_hand = qty_on_hand - ?, last_movement_at = CURRENT_TIMESTAMP "
+                        + "WHERE tenant_id = ? AND item_code = ? AND "
+                        + "((lot_no IS NULL AND ? IS NULL) OR lot_no = ?) AND bin_code = ? AND qty_on_hand >= ?"),
+                eq(new BigDecimal("45")), eq(1L), eq("SKU1215"), eq("LOT-A"), eq("LOT-A"), eq("BIN-A"), eq(new BigDecimal("45")));
+    }
+
+    @Test
+    void raceConditionDetected_balanceGuardAffectsZeroRows_errorsBeforeClosingBayRowOrLoggingMovement() {
+        // The picker's own SELECT snapshot says plenty is available...
+        fefoPicker.seed("SKU1215", lotRow("LOT-A", "BIN-A", "KG", "100"));
+        // ...but by the time the guarded UPDATE actually runs, another concurrent
+        // request already consumed it (or it was otherwise adjusted downward) —
+        // the WHERE qty_on_hand >= ? clause now matches zero rows.
+        when(jdbc.update(startsWith("UPDATE m5_stock_balance"), any(Object[].class))).thenReturn(0);
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(line("ROU028912", "SKU1215", 45))));
+
+        assertThat(r.isOk()).isFalse();
+        assertThat(r.getMessage()).contains("stock changed concurrently").contains("LOT-A").contains("BIN-A");
+        verify(jdbc, never()).update(startsWith("UPDATE loading_progress_detail_bay"), any(Object[].class));
+        verify(jdbc, never()).update(startsWith("INSERT INTO m5_stock_movement"), any(Object[].class));
+        verify(jdbc, never()).update(startsWith("UPDATE loading_progress_detail SET"), any(Object[].class));
+    }
+
+    @Test
+    void lineItemNotAnObject_errorsCleanlyInsteadOfClassCastException() {
+        Object linesObj = List.of("this is not a line item object");
+        ActionResult r = handler.handle(ActionInvocation.builder()
+                .instanceId(1495L)
+                .formData(Map.of("order_sku_line_items", linesObj))
+                .build());
+
+        assertThat(r.isOk()).isFalse();
+        assertThat(r.getMessage()).contains("must be an object");
+        verifyNoInteractions(jdbc);
+    }
+
+    @Test
+    void blankRouteIdOrSkuCode_treatedAsMissing() {
+        Map<String, Object> badLine = new LinkedHashMap<>();
+        badLine.put("route_id", "   ");
+        badLine.put("sku_code", "SKU1215");
+        badLine.put("loading_qty", 45);
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(badLine)));
+
+        assertThat(r.isOk()).isFalse();
+        assertThat(r.getMessage()).contains("missing route_id or sku_code");
+    }
+
+    @Test
+    void stockSpansMultipleLots_writesOneMovementPerLotPickedOldestFirst() {
+        fefoPicker.seed("SKU1215",
+                lotRow("LOT-OLD", "BIN-A", "KG", "20"),
+                lotRow("LOT-NEW", "BIN-B", "KG", "1000"));
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(line("ROU028912", "SKU1215", 45))));
+
+        assertThat(r.isOk()).isTrue();
+        verify(jdbc).update(eq("INSERT INTO m5_stock_movement (tenant_id, kind, item_code, lot_no, from_bin, qty, uom, "
+                        + "ref_type, ref_id, ref_number) VALUES (?,?,?,?,?,?,?,?,?,?)"),
+                eq(1L), eq("CONSUME"), eq("SKU1215"), eq("LOT-OLD"), eq("BIN-A"),
+                eq(new BigDecimal("20")), eq("KG"), eq("BAY"), eq(1495L), eq("ROU028912"));
+        verify(jdbc).update(eq("INSERT INTO m5_stock_movement (tenant_id, kind, item_code, lot_no, from_bin, qty, uom, "
+                        + "ref_type, ref_id, ref_number) VALUES (?,?,?,?,?,?,?,?,?,?)"),
+                eq(1L), eq("CONSUME"), eq("SKU1215"), eq("LOT-NEW"), eq("BIN-B"),
+                eq(new BigDecimal("25")), eq("KG"), eq("BAY"), eq(1495L), eq("ROU028912"));
+    }
+
+    @Test
+    void insufficientStock_errorsBeforeClosingBayRow() {
+        fefoPicker.seed("SKU1215", lotRow("LOT-A", "BIN-A", "KG", "10"));
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(line("ROU028912", "SKU1215", 45))));
+
+        assertThat(r.isOk()).isFalse();
+        assertThat(r.getMessage()).contains("insufficient stock").contains("requested 45").contains("available 10");
+        verify(jdbc, never()).update(startsWith("UPDATE loading_progress_detail_bay"), any(Object[].class));
+        verify(jdbc, never()).update(startsWith("INSERT INTO m5_stock_movement"), any(Object[].class));
+    }
+
+    @Test
+    void noStockAtAll_errorsWithZeroAvailable() {
+        fefoPicker.seed("SKU1215"); // no lots at all
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(line("ROU028912", "SKU1215", 45))));
+
+        assertThat(r.isOk()).isFalse();
+        assertThat(r.getMessage()).contains("available 0");
+    }
+
+    @Test
+    void zeroLoadingQty_pickesNothingAndSucceeds() {
+        ActionResult r = handler.handle(invocationWithLines(List.of(line("ROU028912", "SKU1215", 0))));
+
+        assertThat(r.isOk()).isTrue();
+        verify(jdbc, never()).update(startsWith("INSERT INTO m5_stock_movement"), any(Object[].class));
+        verify(jdbc, never()).update(startsWith("UPDATE m5_stock_balance"), any(Object[].class));
+    }
+
+    // ---- helpers -------------------------------------------------------------
+
     private ActionInvocation invocationWithLines(List<Map<String, Object>> lines) {
         return ActionInvocation.builder()
                 .instanceId(1495L)
@@ -180,5 +311,45 @@ class M10BayCompleteActionHandlerTest {
         line.put("sku_code", skuCode);
         line.put("loading_qty", loadingQty);
         return line;
+    }
+
+    private static Map<String, Object> lotRow(String lotNo, String binCode, String uom, String qtyOnHand) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("lot_no", lotNo);
+        row.put("bin_code", binCode);
+        row.put("uom", uom);
+        row.put("qty_on_hand", new BigDecimal(qtyOnHand));
+        row.put("last_movement_at", null);
+        return row;
+    }
+
+    /**
+     * Subclasses the real service and overrides its documented "Hook for
+     * tests" ({@code findAvailableLots}) instead of mocking JdbcTemplate's
+     * query methods directly — sidesteps the varargs-stubbing unreliability
+     * noted elsewhere in this repo's tests entirely for the read side.
+     *
+     * <p>Any SKU not explicitly {@link #seed}ed gets a default abundant lot
+     * (so tests focused on the bay-close/rollup behavior don't need to know
+     * anything about stock); calling {@code seed(itemCode)} with zero rows
+     * explicitly configures "no stock at all" for that SKU, distinct from
+     * "never configured".
+     */
+    private static class FakeFefoStockPickerService extends FefoStockPickerService {
+        private final Map<String, List<Map<String, Object>>> lotsByItem = new HashMap<>();
+
+        FakeFefoStockPickerService() {
+            super(null);
+        }
+
+        void seed(String itemCode, Map<String, Object>... rows) {
+            lotsByItem.put(itemCode, List.of(rows));
+        }
+
+        @Override
+        protected List<Map<String, Object>> findAvailableLots(long tenantId, String itemCode, String binCode) {
+            if (lotsByItem.containsKey(itemCode)) return lotsByItem.get(itemCode);
+            return List.of(lotRow("LOT-DEFAULT", "BIN-DEFAULT", "KG", "999999"));
+        }
     }
 }
