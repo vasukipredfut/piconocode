@@ -125,7 +125,45 @@ FROM m0_audit_log WHERE gp_number = 'GP-TEST-PARKING-1' ORDER BY id;
 
 First row is `GenericEntityController`'s own audit write from step 1 (creating the `GatePass`, `actor_id=2033` from the JWT). The next two are `ParkingBayScanService`'s writes for scans #1/#2 — `actor_id=NULL` since the parking scan endpoint is tokenless (no authenticated principal for a device to attribute the action to).
 
-## 4. Endpoint summary
+## 4. Re-scan after OUT opens a NEW row, and error handling for a missing/blank gpNumber
+
+A second `GatePass` (`GP-TEST-PARKING-2`, id 517) was created the same way as step 1, then scanned three times in a row plus two deliberately-bad requests.
+
+### 4.1 Scan #1 → IN (row id 2)
+```json
+{"outcome":"IN","reason":null,"gpNumber":"GP-TEST-PARKING-2","parkingBayEntry":{"id":2,"tenant_id":1,"gate_pass_no":"GP-TEST-PARKING-2","in_time":"2026-08-03T01:59:19.000+00:00","out_time":null,"created_by":null,"created_at":"2026-08-03T01:59:19.000+00:00","vehicle_no":"KA05CD5678","flow_variant_code":"M10.PackLoading","loading_type":null}}
+```
+
+### 4.2 Scan #2 → OUT (same row id 2, out_time set)
+```json
+{"outcome":"OUT","reason":null,"gpNumber":"GP-TEST-PARKING-2","parkingBayEntry":{"id":2,"tenant_id":1,"gate_pass_no":"GP-TEST-PARKING-2","in_time":"2026-08-03T01:59:19.000+00:00","out_time":"2026-08-03T01:59:23.000+00:00","created_by":null,"created_at":"2026-08-03T01:59:19.000+00:00","vehicle_no":"KA05CD5678","flow_variant_code":"M10.PackLoading","loading_type":null}}
+```
+
+### 4.3 Scan #3 → IN again — a brand NEW row (id 3), not a reuse of id 2
+```json
+{"outcome":"IN","reason":null,"gpNumber":"GP-TEST-PARKING-2","parkingBayEntry":{"id":3,"tenant_id":1,"gate_pass_no":"GP-TEST-PARKING-2","in_time":"2026-08-03T01:59:27.000+00:00","out_time":null,"created_by":null,"created_at":"2026-08-03T01:59:27.000+00:00","vehicle_no":"KA05CD5678","flow_variant_code":"M10.PackLoading","loading_type":null}}
+```
+Confirms `dispatch_parking_bay_entry` genuinely accumulates one row per visit over time (no unique constraint on `gate_pass_no` — see the guide's data-written section) rather than upserting a single row per gate pass.
+
+### 4.4 Missing `gpNumber` → ERROR, no DB writes
+```
+POST /api/parking/scan
+{}
+```
+```json
+{"outcome":"ERROR","reason":"gpNumber is required","gpNumber":null,"parkingBayEntry":null}
+```
+
+### 4.5 Blank `gpNumber` → same ERROR
+```
+POST /api/parking/scan
+{"gpNumber":""}
+```
+```json
+{"outcome":"ERROR","reason":"gpNumber is required","gpNumber":"","parkingBayEntry":null}
+```
+
+## 5. Endpoint summary
 
 ```
 Setup (needs Authorization: Bearer <jwt>):
