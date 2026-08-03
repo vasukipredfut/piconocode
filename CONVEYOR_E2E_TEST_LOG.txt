@@ -13,6 +13,14 @@ Companion docs in this repo:
 
 Test data used: workflow "M12.ConveyorTest", bay "BAY1", step "SCANNING".
 
+UPDATE (post-dates this capture): V210/V211 added two optional descriptive
+columns to dispatch_task - vehicle_no and gp_number (which physical
+vehicle/gate pass a task is loading). They are not read or matched on
+anywhere in the scan/rule flow below - they don't change any request or
+response shape already captured in this log, they're just extra fields you
+can now include when creating a DispatchTask (section 1.2) and see on the
+admin list page. See CONVEYOR_SCANNER_WORKFLOW_GUIDE.md section 4 for details.
+
 
 ================================================================================
 1. SETUP — one-time admin calls (require a JWT)

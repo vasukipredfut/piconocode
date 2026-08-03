@@ -14,6 +14,7 @@ A reference Python client implementing everything in this guide lives at [`raspb
 | Backend | Resolves Integration IDs, runs the Rule Builder, tracks dispatch-task quantity, tells the device ACCEPT or REJECT. |
 | Barcode Scanner | An `IntegrationInstance` (any connector) bound to a workflow step with role `BARCODE_SCANNER`. |
 | PLC | An `IntegrationInstance` using connector `MODBUS_TCP`, bound with role `PLC`. Receives `signalAccept`/`signalReject`. |
+| MQTT Broker (optional) | An `IntegrationInstance` using connector `MQTT_CONVEYOR`, anticipated as binding role `MQTT_BROKER` (see `WorkflowIntegrationBindingService` javadoc) though nothing currently resolves that role by name — see §9. Lets a device talk to the backend over MQTT instead of the HTTP endpoints in §2/§3. |
 
 ## 2. End-to-end flow
 
@@ -93,7 +94,8 @@ Optional query param **`?bayCode=BAY1`** scopes `integrations`, `plcIntegrations
   ],
   "dispatchTasks": [
     {"id": 1, "workflow_code": "M12.ConveyorTest", "bay_code": "BAY1", "task_code": "TASK-TEST-1",
-     "order_ref": "ORDER-1", "sku_code": "SKU-1", "target_qty": 3.000, "processed_qty": 0.000,
+     "order_ref": "ORDER-1", "sku_code": "SKU-1", "vehicle_no": "TN01AB1234", "gp_number": "GP-2026-0042",
+     "target_qty": 3.000, "processed_qty": 0.000,
      "rejected_qty": 0.000, "status": "IN_PROGRESS", "rule_set_id": 1, "started_at": "...", "completed_at": null}
   ]
 }
@@ -203,10 +205,12 @@ Each `dispatch_task` row tracks:
 
 | Column | Meaning |
 |---|---|
+| `task_code` | Synthetic per-task identifier. **`UNIQUE (tenant_id, task_code)`, forever — not scoped by status, bay, or date.** A `COMPLETED` task's `task_code` can never be reused, so it must not be a plain business value that legitimately repeats over time (e.g. a raw vehicle number, which comes back on every future trip) — use `vehicle_no`/`gp_number` below for that instead, and keep `task_code` synthetic (e.g. `TASK-{timestamp}` as in the E2E log, or `{vehicle_no}-{order_ref}`). |
 | `target_qty` | Goal quantity for this order/SKU. |
 | `processed_qty` | Running total of ACCEPTED scans. |
 | `rejected_qty` | Running total of REJECTED scans against this task. |
 | `status` | `PENDING` → `IN_PROGRESS` → `COMPLETED` (or `CANCELLED`). |
+| `vehicle_no`, `gp_number` | Optional descriptive fields (added V210) — which physical vehicle/gate pass this task is loading. Not read or matched on anywhere in the scan/rule-evaluation flow (§3.2, §5) — purely for admin visibility/filtering (`entity_field_registry`, marked `filterable`/`sortable`/`searchable`, and shown as columns on `aria:conveyor-dispatch-tasks`, added V211). Naming matches the existing `GatePass.vehicle_no`/`GatePass.gp_number` convention used elsewhere in M10. |
 
 On every **accepted** scan:
 ```
@@ -250,7 +254,9 @@ The scan orchestration never touches a coil address directly — it just calls `
 ```json
 { "acceptCoilAddress": 10, "rejectCoilAddress": 11, "pulseMs": 250, "dryRun": true }
 ```
-`dryRun: true` (the current default — no physical PLC exists in dev) logs the pulse and returns success; flip to `false` once real hardware is wired (real Modbus TCP transport is not yet implemented — same convention as every other stub adapter in this codebase).
+`dryRun: true` (the current default — no physical PLC exists in dev) logs the pulse and returns success; flip to `false` once real hardware is wired (real Modbus TCP transport is not yet implemented). Note this is now the *only* stub left in the conveyor stack — the MQTT adapter (§9) has a real, non-stub broker client.
+
+`ModbusTcpAdapter` also exposes raw `readHoldingRegisters`/`writeSingleRegister`/`readCoils`/`writeSingleCoil` operations beyond `signalAccept`/`signalReject`, for other integrations that need direct register access — not used by the conveyor scan flow itself.
 
 ## 7. Data model (new tables)
 
@@ -315,3 +321,91 @@ curl -X POST $HOST/api/m0/entities/WorkflowIntegrationBinding -H "Authorization:
 ```
 
 **Known gap:** the binding row's own `config_overrides_json` is round-tripped to the Pi in the aggregate response but is **not** consulted by `PlcSignalService`/`ModbusTcpAdapter` — a register-range override there is display-only today. If you need a *single* PLC `IntegrationInstance` to serve multiple scanners/bays with genuinely different register ranges per scanner (not just per bay), that requires a code change (threading the resolved binding's config through to `ModbusTcpAdapter.invoke()`) — ask if you want that implemented; the per-bay-instance approach above covers the common case without it.
+
+## 9. MQTT transport (alternative to HTTP)
+
+Everything in §2/§3 describes the HTTP path. A device can *instead* talk to the backend over MQTT — same underlying logic (`ConveyorScanService`, `DeviceHeartbeatService`), different transport. This lives in `com.aria.integration.mqtt` / `com.aria.integration.adapter.ConveyorMqttAdapter`, connector code `MQTT_CONVEYOR`. Unlike `ModbusTcpAdapter` (§6), this is a real Eclipse Paho MQTT client, not a stub — `dryRun: false` genuinely connects to a broker.
+
+**Topic convention** (`MqttTopicRouter`):
+- Outbound (backend → device, commands): `{topicBase}/{lineId}/cmd`
+- Inbound (device → backend, events): `{topicBase}/{lineId}/evt/{eventType}`
+
+**Inbound event routing** — `MqttClientManager` subscribes to `{topicBase}/+/evt/#` on every ACTIVE, non-dryRun `MQTT_CONVEYOR` instance at startup, and on message arrival dispatches by `eventType`:
+
+| `eventType` | Behavior |
+|---|---|
+| `barcode-scanned` | Payload JSON-deserialized straight into `ScanRequest` and passed to `ConveyorScanService.scan(...)` — identical processing to `POST /api/conveyor/scan`. |
+| `heartbeat` | Payload deserialized into `HeartbeatRequest`, passed to `DeviceHeartbeatService.upsert(...)` — identical processing to `POST /api/conveyor/heartbeat`. |
+| `dispatch-completed`, `carton-rejected`, `task-progress`, `plc-status` | Recognized by `MqttTopicRouter.EVENT_TYPES` but **not wired to any handler yet** — logged only, no processing. Reserved for future use. |
+
+A device therefore has two independent ways to submit scans/heartbeats (HTTP or MQTT) — pick one per device, they land in the same tables either way.
+
+**Outbound commands** — `ConveyorMqttAdapter` (called the same way any `IntegrationAdapter` is invoked, e.g. via the M11 outbound caller) supports:
+
+| Operation | Payload | Published topic body |
+|---|---|---|
+| `start` | `{lineId}` | `{cmd:"START", lineId, topic, ts}` |
+| `stop` | `{lineId}` | `{cmd:"STOP", ...}` |
+| `setSpeed` | `{lineId, speedRpm}` | `{cmd:"SET_SPEED", args:{speedRpm}, ...}` |
+| `divert` | `{lineId, divertTo}` | `{cmd:"DIVERT", args:{divertTo}, ...}` |
+
+**Config** (on the `MQTT_CONVEYOR` `IntegrationInstance.config_json`):
+```json
+{ "brokerUrl": "tcp://factory.local:1883", "clientId": "earms-edge", "topicBase": "factory/conveyor", "dryRun": true }
+```
+`dryRun: true` logs the publish and returns success with no broker connection (same convention as `MODBUS_TCP`'s dry-run mode). `dryRun: false` opens (or reuses) one shared `MqttAsyncClient` per distinct `brokerUrl` — connections are deduped across every instance/line that shares a broker — and publishes for real via `MqttClientManager.publish(...)`.
+
+**Caveats:**
+- No broker exists in this dev environment to verify the live path against — the connect/subscribe/publish code is real (not a stub), but unexercised against an actual Mosquitto/HiveMQ/etc. instance.
+- `MqttClientManager` is a background subscriber with no per-request auth context; it resolves tenant from whichever `IntegrationInstance` owns the broker+topicBase pair a message arrived on, defaulting to the global tenant if none matches.
+- The `raspberry-pi-client/conveyor_client.py` reference client does **not** implement this path at all — it's HTTP-only. Treat MQTT today as a backend-ready, device-side-unimplemented option, not a drop-in alternative to `conveyor_client.py`.
+- The anticipated `MQTT_BROKER` workflow-integration-binding role (per `WorkflowIntegrationBindingService`'s javadoc, alongside `BARCODE_SCANNER`/`PLC`) isn't actually resolved anywhere — binding a step/bay to an `MQTT_CONVEYOR` instance today is just bookkeeping; the runtime dispatch in this section works purely off broker/topic, not off any workflow binding.
+
+## 10. Manual testing without a physical scanner
+
+Nothing in this flow requires real hardware — `barcode` in `POST /api/conveyor/scan` is just a string, and `dryRun: true` (the default) on both the PLC and MQTT adapters means no physical device is ever contacted. A full real captured run (real requests/responses, no fabricated data) lives in [`CONVEYOR_E2E_TEST_LOG.txt`](CONVEYOR_E2E_TEST_LOG.txt) — use it as the reference when in doubt about an exact response shape.
+
+**Option A — drive the HTTP API directly with curl (fastest; hit a specific outcome on demand):**
+```bash
+# 1. Login (admin setup calls need a JWT; the device-facing endpoints below don't)
+TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/signin \
+  -H 'content-type: application/json' \
+  -d '{"username":"2033","password":"Test@1234"}' | jq -r .accessToken)
+
+# 2. Create a DispatchTask, then flip it to IN_PROGRESS (PUT, not PATCH — PATCH returns 405)
+curl -s -X POST http://localhost:8080/api/m0/entities/DispatchTask \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"workflow_code":"M12.ConveyorTest","bay_code":"BAY1","task_code":"TASK-MANUAL-1","order_ref":"ORDER-1","sku_code":"SKU-1","target_qty":3,"vehicle_no":"TN01AB1234","gp_number":"GP-2026-0042"}'
+# -> note the returned "id"
+
+curl -s -X PUT http://localhost:8080/api/m0/entities/DispatchTask/{id} \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"status":"IN_PROGRESS"}'
+
+# 3. Confirm config resolves (no auth needed — permit-all)
+curl -s "http://localhost:8080/api/scanner/workflows/M12.ConveyorTest?bayCode=BAY1"
+
+# 4. Fake a scan — repeat with different "barcode" values (qty defaults to 1) until
+#    processed_qty hits target_qty -> status flips to COMPLETED
+curl -s -X POST http://localhost:8080/api/conveyor/scan \
+  -H 'content-type: application/json' \
+  -d '{"workflowCode":"M12.ConveyorTest","stepCode":"SCANNING","bayCode":"BAY1","barcode":"BC-TEST-1","sku":"SKU-1","orderRef":"ORDER-1"}'
+
+# 5. Fake a heartbeat
+curl -s -X POST http://localhost:8080/api/conveyor/heartbeat \
+  -H 'content-type: application/json' \
+  -d '{"workflowCode":"M12.ConveyorTest","deviceId":"MANUAL-TEST","workflowStatus":"RUNNING","currentDispatchTaskId":{id},"deviceStatus":"ONLINE"}'
+```
+To force a `REJECT`, attach a `rule_set_id` to the task first (e.g. `UPDATE dispatch_task SET rule_set_id = 1 WHERE id = {id}`, using an existing SKU_MATCH/QTY_OK rule set) and then scan with a mismatched `sku` — see §2.3/§2.4 of the E2E log for exactly this sequence and the resulting `SKU_MISMATCH` response.
+
+**Option B — run the reference Pi client with keyboard input instead of a real scanner:**
+```bash
+cd raspberry-pi-client
+# copy config.example.json -> config.json, set workflowId/bayCode to match, leave scannerIp unset
+python conveyor_client.py
+# logs "no scannerIp configured - reading barcodes from stdin (dev/testing mode)"
+# then type a barcode and press enter per scan
+```
+This exercises the full device-side logic too — local qty pre-check (§3.4), the 5s heartbeat loop, and task tracking/resync — not just the bare HTTP calls. Prefer Option A when you need a specific outcome (e.g. forcing a REJECT); prefer Option B to sanity-check the client logic itself.
+
+Both options are HTTP-only exercises of §2/§3 — neither touches the MQTT path in §9, which has no broker in this dev environment to test against at all.
