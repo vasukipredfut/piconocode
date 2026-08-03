@@ -1,0 +1,6 @@
+{
+  "baseUrl": "http://localhost:8080",
+  "deviceId": "PARKING-GATE1",
+  "scannerIp": "192.168.1.51",
+  "scannerPort": 9200
+}

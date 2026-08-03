@@ -95,6 +95,9 @@ public class WebSecurityConfig {
                     // via TenantContextFilter, same as any other permit-all route).
                     "/api/scanner/workflows/**",
                     "/api/conveyor/**",
+                    // Raspberry Pi ParkingBayScanner — same tokenless-device
+                    // convention as the conveyor scanner above.
+                    "/api/parking/**",
                     // Uploaded avatars/documents served as plain static files
                     // (<img src>, direct links) — browsers don't attach the JWT
                     // Authorization header to those requests, so this must stay
