@@ -19,8 +19,9 @@ import java.util.Map;
  * every {@code loading_progress_detail_bay} row for that SKU — a vehicle
  * can load the same SKU across more than one bay session; see
  * {@code M10StartBayActionHandler}/{@code M10BayCompleteActionHandler}).
- * Response is SKU codes only — the totals drive the comparison but aren't
- * returned.
+ * Each content item carries {@code sku_code}, {@code order_qty} (the
+ * summed target across every bay session for that SKU), and
+ * {@code processed_qty} (the summed total done so far).
  *
  * <p>Wrapped in {@link DataSourceSpec.Response} — the existing
  * "frontend-friendly shape mirroring Spring's Page" envelope this repo
@@ -55,10 +56,10 @@ public class PendingSkuController {
     @GetMapping("/{vehicleNo}/pending-skus")
     public DataSourceSpec.Response pendingSkus(@PathVariable String vehicleNo) {
         long tenantId = TenantContext.get();
-        // total_order_quantity/processed_quantity drive the HAVING comparison
-        // but aren't projected — the response returns sku_code only.
         List<Map<String, Object>> content = jdbc.queryForList(
-                "SELECT b.sku_code AS sku_code "
+                "SELECT b.sku_code AS sku_code, "
+                        + "SUM(b.quantity) AS order_qty, "
+                        + "SUM(COALESCE(b.processed_quantity, 0)) AS processed_qty "
                         + "FROM loading_progress_detail_bay b "
                         + "JOIN loading_progress_detail d ON d.workflow_instance_id = b.workflow_instance_id "
                         + "AND d.tenant_id = b.tenant_id "
@@ -72,6 +73,8 @@ public class PendingSkuController {
                 .map(r -> {
                     Map<String, Object> row = new LinkedHashMap<>();
                     row.put("sku_code", r.get("sku_code"));
+                    row.put("order_qty", r.get("order_qty"));
+                    row.put("processed_qty", r.get("processed_qty"));
                     return row;
                 })
                 .toList();

@@ -7,6 +7,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -27,9 +28,8 @@ import static org.mockito.Mockito.when;
  *
  * <p>Response is the shared {@link DataSourceSpec.Response} page envelope
  * ({@code content}/{@code totalElements}/{@code totalPages}/{@code number}/
- * {@code size}), with {@code content} items shaped {@code {"sku_code": ...}}.
- * total_order_quantity/processed_quantity drive the SQL's HAVING comparison
- * but are not returned to the caller.
+ * {@code size}), with {@code content} items shaped
+ * {@code {"sku_code": ..., "order_qty": ..., "processed_qty": ...}}.
  */
 class PendingSkuControllerTest {
 
@@ -49,18 +49,23 @@ class PendingSkuControllerTest {
     }
 
     @Test
-    void pendingSkus_returnsPageEnvelopeWithSkuCodeContent() {
+    void pendingSkus_returnsPageEnvelopeWithSkuCodeOrderQtyAndProcessedQty() {
         Map<String, Object> row1 = new LinkedHashMap<>();
         row1.put("sku_code", "SKU1024");
+        row1.put("order_qty", new BigDecimal("50.000"));
+        row1.put("processed_qty", new BigDecimal("30.000"));
         Map<String, Object> row2 = new LinkedHashMap<>();
         row2.put("sku_code", "SKU1220");
+        row2.put("order_qty", new BigDecimal("20.000"));
+        row2.put("processed_qty", new BigDecimal("10.000"));
         when(jdbc.queryForList(contains("loading_progress_detail_bay"), any(Long.class), any(String.class)))
                 .thenReturn(List.of(row1, row2));
 
         DataSourceSpec.Response result = controller.pendingSkus("TN01AB1234");
 
         assertThat(result.getContent()).containsExactly(
-                Map.of("sku_code", "SKU1024"), Map.of("sku_code", "SKU1220"));
+                Map.of("sku_code", "SKU1024", "order_qty", new BigDecimal("50.000"), "processed_qty", new BigDecimal("30.000")),
+                Map.of("sku_code", "SKU1220", "order_qty", new BigDecimal("20.000"), "processed_qty", new BigDecimal("10.000")));
         assertThat(result.getTotalElements()).isEqualTo(2);
         assertThat(result.getTotalPages()).isEqualTo(1);
         assertThat(result.getNumber()).isEqualTo(0);
