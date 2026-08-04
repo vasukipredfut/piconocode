@@ -34,9 +34,12 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>{@code POST /api/m5/order-dispatch-detail/import} — multipart
  * {@code file} (csv/tsv), bulk-inserts one row per data line into
- * {@code m5_order_dispatch_detail}. Append-only: no upsert key, re-importing
- * the same file creates duplicate rows (a point-in-time reconciliation
- * snapshot, not master data).
+ * {@code m5_order_dispatch_detail}: a point-in-time reconciliation snapshot,
+ * not master data, so there's still no upsert (no row is ever updated). A
+ * row is instead skipped outright — not inserted, not updated — when its
+ * (order_id, route_id, sku_code) already exists for this tenant ({@link
+ * #isAlreadyExists}), so re-uploading the same export doesn't keep
+ * duplicating identical lines; counted separately as {@code rowsSkippedDuplicate}.
  *
  * <p>{@code GET /api/m5/order-dispatch-detail/import-page} — a
  * self-contained HTML+JS upload form. This exists because the page-JSON
@@ -78,6 +81,7 @@ public class OrderDispatchDetailImportController {
         String sourceFile = file.getOriginalFilename();
         List<String> errors = new ArrayList<>();
         int imported = 0;
+        int skipped = 0;
 
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8))) {
@@ -102,6 +106,11 @@ public class OrderDispatchDetailImportController {
                     rowNum++;
                     if (!headerSkipped) { headerSkipped = true; continue; }
                     try {
+                        // Positional columns per insertRow(): order_id=1, sku_code=14, route_id=24.
+                        if (isAlreadyExists(tenantId, str(r, 1), str(r, 24), str(r, 14))) {
+                            skipped++;
+                            continue;
+                        }
                         insertRow(tenantId, r, sourceFile);
                         imported++;
                     } catch (Exception rowEx) {
@@ -117,18 +126,20 @@ public class OrderDispatchDetailImportController {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("ok", true);
         body.put("rowsImported", imported);
+        body.put("rowsSkippedDuplicate", skipped);
         body.put("rowsFailed", errors.size());
         body.put("errors", errors);
         return ResponseEntity.ok(body);
     }
-    	private boolean isAlreadyExists(Long tenantId,String orderId, String routeId,String sku) {
-    			Integer count = jdbc.queryForObject("""
-    					SELECT COUNT(*) FROM order_dispatch_detail WHERE tenant_id = ?
-    					AND order_id = ? AND route_id = ? AND sku = ? """, Integer.class,
-     tenantId, orderId, routeId, sku);
 
-    			return count != null && count > 0;
-}
+    /** True if a row for this (order_id, route_id, sku_code) was already imported for this tenant. */
+    private boolean isAlreadyExists(Long tenantId, String orderId, String routeId, String skuCode) {
+        Integer count = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM m5_order_dispatch_detail WHERE tenant_id = ?
+                AND order_id = ? AND route_id = ? AND sku_code = ? """, Integer.class,
+            tenantId, orderId, routeId, skuCode);
+        return count != null && count > 0;
+    }
 
     private void insertRow(Long tenantId, CSVRecord r, String sourceFile) {
         jdbc.update(
