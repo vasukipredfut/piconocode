@@ -61,13 +61,66 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
         } catch (Exception e) {
             return; // table not applied yet — nothing to project
         }
+        // Resolved lazily (only if some config actually has a page_code to
+        // check against) since it's an extra query per transition.
+        String triggeringPageCode = null;
+        boolean triggeringPageCodeResolved = false;
         for (Map<String, Object> cfg : configs) {
+            String pageCodeScope = (String) cfg.get("page_code");
+            if (pageCodeScope != null && !pageCodeScope.isBlank()) {
+                if (!triggeringPageCodeResolved) {
+                    triggeringPageCode = resolveTriggeringPageCode(instance, tenantId, previousState);
+                    triggeringPageCodeResolved = true;
+                }
+                // NULL/blank page_code means "always applies" (every workflow's
+                // existing rows, unchanged); a non-blank one restricts this
+                // target_table to the page(s) that legitimately feed it — see
+                // V214. If the triggering page couldn't be resolved, fail open
+                // (project anyway) rather than silently stop writing a table
+                // that used to always get synced.
+                if (triggeringPageCode != null && !splitCsv(pageCodeScope).contains(triggeringPageCode)) {
+                    continue;
+                }
+            }
             try {
                 project(cfg, instance, tenantId, previousState, submittedDataBag);
             } catch (Exception ex) {
                 log.warn("projection failed for workflow={} instance={}: {}",
                         code, instance.getId(), ex.getMessage());
             }
+        }
+    }
+
+    /**
+     * Which page's submission actually drove this transition, resolved by
+     * matching (previousState -&gt; instance.getCurrentState()) against the
+     * workflow_definition's own transitions[] (each transition already
+     * declares the pageCode that triggers it — see WorkflowEngineService).
+     * Self-contained rather than widening {@link WorkflowTransitionListener}
+     * to carry pageCode itself, which would touch every implementing
+     * listener for a value only this one currently needs.
+     */
+    @SuppressWarnings("unchecked")
+    private String resolveTriggeringPageCode(WorkflowInstance instance, Long tenantId, String previousState) {
+        try {
+            Long ownerTenantId = instance.getWorkflowOwnerTenantId() != null
+                    ? instance.getWorkflowOwnerTenantId() : instance.getTenantId();
+            String bodyJson = jdbc.queryForObject(
+                    "SELECT body_json FROM workflow_definition WHERE tenant_id=? AND code=? AND version=?",
+                    String.class, ownerTenantId, instance.getWorkflowCode(), instance.getWorkflowVersion());
+            Map<String, Object> body = MAPPER.readValue(bodyJson, Map.class);
+            List<Map<String, Object>> transitions = (List<Map<String, Object>>) body.get("transitions");
+            if (transitions == null) return null;
+            String currentState = instance.getCurrentState();
+            for (Map<String, Object> t : transitions) {
+                if (Objects.equals(previousState, t.get("from")) && Objects.equals(currentState, t.get("to"))) {
+                    Object pc = t.get("pageCode");
+                    if (pc != null) return pc.toString();
+                }
+            }
+            return null;
+        } catch (Exception e) {
+            return null;
         }
     }
 
