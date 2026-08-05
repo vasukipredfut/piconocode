@@ -40,6 +40,10 @@ import java.util.Map;
  * vehicle_no} is not unique on {@code loading_progress_detail}; the same
  * physical vehicle gets a new row on every future visit. An unscoped query
  * would mix unrelated historical loading transactions together.
+ *
+ * <p>{@link #skuStatus} is the sibling endpoint: same scope and grouping,
+ * collapsed to a single boolean for the whole vehicle rather than a per-SKU
+ * list.
  */
 @RestController
 @RequestMapping("/api/m10/loading")
@@ -86,5 +90,33 @@ public class PendingSkuController {
                 .number(0)
                 .size(PAGE_SIZE)
                 .build();
+    }
+
+    /**
+     * {@code GET /api/m10/loading/{vehicleNo}/sku-status} — collapses
+     * {@link #pendingSkus}'s per-SKU comparison into one boolean for the
+     * whole vehicle: {@code true} only if every {@code loading_progress_detail_bay}
+     * SKU group for the vehicle's OPEN loading transaction has
+     * {@code SUM(processed_quantity) == SUM(quantity)} (including the
+     * vacuous case of no bay rows at all — nothing pending). {@code false}
+     * if at least one SKU still has processed short of (or over) its order
+     * total.
+     */
+    @GetMapping("/{vehicleNo}/sku-status")
+    public boolean skuStatus(@PathVariable String vehicleNo) {
+        long tenantId = TenantContext.get();
+        Integer incompleteSkuCount = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM ( "
+                        + "SELECT b.sku_code "
+                        + "FROM loading_progress_detail_bay b "
+                        + "JOIN loading_progress_detail d ON d.workflow_instance_id = b.workflow_instance_id "
+                        + "AND d.tenant_id = b.tenant_id "
+                        + "JOIN workflow_instance wi ON wi.id = d.workflow_instance_id AND wi.tenant_id = d.tenant_id "
+                        + "WHERE b.tenant_id = ? AND d.vehicle_no = ? AND wi.status = 'OPEN' "
+                        + "GROUP BY b.sku_code "
+                        + "HAVING SUM(COALESCE(b.processed_quantity, 0)) <> SUM(b.quantity) "
+                        + ") incomplete",
+                Integer.class, tenantId, vehicleNo);
+        return incompleteSkuCount == null || incompleteSkuCount == 0;
     }
 }

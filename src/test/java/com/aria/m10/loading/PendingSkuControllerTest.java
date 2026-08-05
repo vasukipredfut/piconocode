@@ -26,10 +26,11 @@ import static org.mockito.Mockito.when;
  * matcher — see ParkingBayScanServiceTest's note on why the array-any()
  * trick doesn't reliably match queryForList in this repo's Mockito setup.
  *
- * <p>Response is the shared {@link DataSourceSpec.Response} page envelope
- * ({@code content}/{@code totalElements}/{@code totalPages}/{@code number}/
- * {@code size}), with {@code content} items shaped
+ * <p>{@code pendingSkus} returns the shared {@link DataSourceSpec.Response}
+ * page envelope ({@code content}/{@code totalElements}/{@code totalPages}/
+ * {@code number}/{@code size}), with {@code content} items shaped
  * {@code {"sku_code": ..., "order_qty": ..., "processed_qty": ...}}.
+ * {@code skuStatus} returns a bare boolean for the whole vehicle.
  */
 class PendingSkuControllerTest {
 
@@ -94,5 +95,35 @@ class PendingSkuControllerTest {
         controller.pendingSkus("TN01AB1234");
 
         verify(jdbc).queryForList(contains("wi.status = 'OPEN'"), eq(1L), eq("TN01AB1234"));
+    }
+
+    @Test
+    void skuStatus_falseWhenAnySkuIncomplete() {
+        when(jdbc.queryForObject(contains("loading_progress_detail_bay"), eq(Integer.class), any(Long.class), any(String.class)))
+                .thenReturn(1);
+
+        boolean result = controller.skuStatus("TN01AB1234");
+
+        assertThat(result).isFalse();
+    }
+
+    @Test
+    void skuStatus_trueWhenEverySkuMatches() {
+        when(jdbc.queryForObject(contains("loading_progress_detail_bay"), eq(Integer.class), any(Long.class), any(String.class)))
+                .thenReturn(0);
+
+        boolean result = controller.skuStatus("TN01AB1234");
+
+        assertThat(result).isTrue();
+    }
+
+    @Test
+    void skuStatus_scopesToOpenWorkflowInstanceOnly() {
+        when(jdbc.queryForObject(any(String.class), eq(Integer.class), any(Long.class), any(String.class)))
+                .thenReturn(0);
+
+        controller.skuStatus("TN01AB1234");
+
+        verify(jdbc).queryForObject(contains("wi.status = 'OPEN'"), eq(Integer.class), eq(1L), eq("TN01AB1234"));
     }
 }
