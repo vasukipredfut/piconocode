@@ -168,21 +168,21 @@ public class EmployeeAccessMatrixController {
                 if (!codeMatches && !titleMatches) continue;
             }
 
-            PermRow override = employeeOverrides.get(pageCode);
+    PermRow override = employeeOverrides.get(pageCode);
             PermRow roleDefault = roleDefaults.get(pageCode);
-            boolean read, write, approve;
+            boolean read, write, approve, delete;
             String source;
             if (override != null) {
-                read = override.read(); write = override.write(); approve = override.approve();
+                read = override.read(); write = override.write(); approve = override.approve(); delete = override.delete();
                 source = "employee-override";
             } else if (roleDefault != null) {
-                read = roleDefault.read(); write = roleDefault.write(); approve = roleDefault.approve();
+                read = roleDefault.read(); write = roleDefault.write(); approve = roleDefault.approve(); delete = roleDefault.delete();
                 source = "role";
             } else {
-                read = true; write = false; approve = false;
+                read = true; write = false; approve = false; delete = false;
                 source = "default";
             }
-            if (onlyGranted && !read && !write && !approve) continue;
+            if (onlyGranted && !read && !write && !approve && !delete) continue;
 
             Map<String, Object> screen = new LinkedHashMap<>();
             screen.put("pageCode", pageCode);
@@ -191,9 +191,10 @@ public class EmployeeAccessMatrixController {
             screen.put("read", read);
             screen.put("write", write);
             screen.put("approve", approve);
+            screen.put("delete", delete);
             screen.put("source", source);
             screens.add(screen);
-            if (read || write || approve) granted++;
+            if (read || write || approve || delete) granted++;
         }
 
         screens.sort(Comparator
@@ -231,17 +232,18 @@ public class EmployeeAccessMatrixController {
                     Map.of("ok", false, "error", "Page not found: code=" + pageCode));
         }
 
-        boolean read = boolVal(body.get("read"));
+boolean read = boolVal(body.get("read"));
         boolean write = boolVal(body.get("write"));
         boolean approve = boolVal(body.get("approve"));
+        boolean delete = boolVal(body.get("delete"));
         jdbc.update(
-                "INSERT INTO role_page_permission (tenant_id, role_id, page_code, can_read, can_write, can_approve) " +
-                "VALUES (?, ?, ?, ?, ?, ?) " +
-                "ON DUPLICATE KEY UPDATE can_read = VALUES(can_read), can_write = VALUES(can_write), can_approve = VALUES(can_approve)",
-                TenantContext.get(), roleId, pageCode, read, write, approve);
+                "INSERT INTO role_page_permission (tenant_id, role_id, page_code, can_read, can_write, can_approve, can_delete) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?) " +
+                "ON DUPLICATE KEY UPDATE can_read = VALUES(can_read), can_write = VALUES(can_write), can_approve = VALUES(can_approve), can_delete = VALUES(can_delete)",
+                TenantContext.get(), roleId, pageCode, read, write, approve, delete);
 
         return ResponseEntity.ok(Map.of("ok", true, "roleId", roleId, "pageCode", pageCode,
-                "read", read, "write", write, "approve", approve));
+                "read", read, "write", write, "approve", approve, "delete", delete));
     }
 
     @PutMapping("/employee-permission")
@@ -263,17 +265,18 @@ public class EmployeeAccessMatrixController {
                     Map.of("ok", false, "error", "Page not found: code=" + pageCode));
         }
 
-        boolean read = boolVal(body.get("read"));
+boolean read = boolVal(body.get("read"));
         boolean write = boolVal(body.get("write"));
         boolean approve = boolVal(body.get("approve"));
+        boolean delete = boolVal(body.get("delete"));
         jdbc.update(
-                "INSERT INTO employee_page_permission (tenant_id, employee_id, page_code, can_read, can_write, can_approve) " +
-                "VALUES (?, ?, ?, ?, ?, ?) " +
-                "ON DUPLICATE KEY UPDATE can_read = VALUES(can_read), can_write = VALUES(can_write), can_approve = VALUES(can_approve)",
-                TenantContext.get(), employeeId, pageCode, read, write, approve);
+                "INSERT INTO employee_page_permission (tenant_id, employee_id, page_code, can_read, can_write, can_approve, can_delete) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?) " +
+                "ON DUPLICATE KEY UPDATE can_read = VALUES(can_read), can_write = VALUES(can_write), can_approve = VALUES(can_approve), can_delete = VALUES(can_delete)",
+                TenantContext.get(), employeeId, pageCode, read, write, approve, delete);
 
         return ResponseEntity.ok(Map.of("ok", true, "employeeId", employeeId, "pageCode", pageCode,
-                "read", read, "write", write, "approve", approve));
+                "read", read, "write", write, "approve", approve, "delete", delete));
     }
 
     @DeleteMapping("/role-permission")
@@ -296,21 +299,175 @@ public class EmployeeAccessMatrixController {
         return ResponseEntity.ok(Map.of("ok", true, "deleted", n));
     }
 
+    // ---- Role page visibility (nav allow-list) ---------------------------
+    // A role with zero rows in role_page_visibility is unrestricted (sees
+    // every published page — today's behaviour, unchanged). A role with any
+    // rows there is restricted to exactly those pages. See
+    // com.aria.access.PageVisibilityController for the self-service side
+    // (what a given logged-in user is allowed to see) that this data feeds.
+
+    @GetMapping("/role-visibility")
+    public ResponseEntity<?> roleVisibility(@RequestParam Long roleId,
+                                             @RequestParam(required = false) String category,
+                                             @RequestParam(required = false, name = "_q") String q) {
+        ResponseEntity<?> denied = assertRole();
+        if (denied != null) return denied;
+        if (!roleExists(roleId)) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+                    Map.of("ok", false, "error", "Role not found: id=" + roleId));
+        }
+
+        Set<String> visiblePages = new HashSet<>(jdbc.queryForList(
+                "SELECT page_code FROM role_page_visibility WHERE tenant_id IN (?, -1) AND role_id = ?",
+                String.class, TenantContext.get(), roleId));
+        boolean restricted = !visiblePages.isEmpty();
+
+        List<Map<String, Object>> pages = jdbc.queryForList(
+                "SELECT code, title, category FROM page_definition WHERE tenant_id IN (?, -1) AND status = 'PUBLISHED'",
+                TenantContext.get());
+        Map<String, PermRow> roleDefaults = fetchPermissionMap("role_page_permission", "role_id", roleId);
+
+        String qLower = (q == null) ? null : q.trim().toLowerCase(Locale.ROOT);
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Map<String, Object> page : pages) {
+            String pageCode = (String) page.get("code");
+            String title = (String) page.get("title");
+            String pageCategory = (String) page.get("category");
+
+            if (category != null && !category.isBlank() && !category.equalsIgnoreCase(pageCategory)) continue;
+            if (qLower != null && !qLower.isEmpty()) {
+                boolean codeMatches = pageCode != null && pageCode.toLowerCase(Locale.ROOT).contains(qLower);
+                boolean titleMatches = title != null && title.toLowerCase(Locale.ROOT).contains(qLower);
+                if (!codeMatches && !titleMatches) continue;
+            }
+
+            PermRow perm = roleDefaults.get(pageCode);
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("pageCode", pageCode);
+            row.put("title", title);
+            row.put("category", pageCategory);
+            row.put("visible", restricted ? visiblePages.contains(pageCode) : true);
+            row.put("read", perm != null && perm.read());
+            row.put("write", perm != null && perm.write());
+            row.put("approve", perm != null && perm.approve());
+            row.put("delete", perm != null && perm.delete());
+            out.add(row);
+        }
+        out.sort(Comparator
+                .comparing((Map<String, Object> s) -> (String) s.get("category"), Comparator.nullsLast(String::compareTo))
+                .thenComparing(s -> (String) s.get("title"), Comparator.nullsLast(String::compareTo)));
+
+        return ResponseEntity.ok(Map.of("ok", true, "roleId", roleId, "restricted", restricted, "pages", out));
+    }
+
+    /**
+     * Replaces the entire visible-page set for a role in one call — matches
+     * a checkbox-list UI where the admin ticks N pages and hits Save.
+     * Passing an empty pageCodes list clears all rows, which reverts the
+     * role to unrestricted (sees every published page).
+     */
+    @PutMapping("/role-visibility")
+    public ResponseEntity<?> replaceRoleVisibility(@RequestBody Map<String, Object> body) {
+        ResponseEntity<?> denied = assertRole();
+        if (denied != null) return denied;
+
+        Long roleId = longVal(body.get("roleId"));
+        if (roleId == null) {
+            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "roleId is required"));
+        }
+        if (!roleExists(roleId)) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+                    Map.of("ok", false, "error", "Role not found: id=" + roleId));
+        }
+        Object rawCodes = body.get("pageCodes");
+        List<String> pageCodes = new ArrayList<>();
+        if (rawCodes instanceof List<?> list) {
+            for (Object o : list) {
+                String code = str(o);
+                if (!code.isBlank()) pageCodes.add(code);
+            }
+        }
+        for (String code : pageCodes) {
+            if (!pageExists(code)) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+                        Map.of("ok", false, "error", "Page not found: code=" + code));
+            }
+        }
+
+        long tenantId = TenantContext.get();
+        jdbc.update("DELETE FROM role_page_visibility WHERE tenant_id IN (?, -1) AND role_id = ?", tenantId, roleId);
+        for (String code : pageCodes) {
+            jdbc.update(
+                    "INSERT INTO role_page_visibility (tenant_id, role_id, page_code) VALUES (?, ?, ?)",
+                    tenantId, roleId, code);
+        }
+
+        return ResponseEntity.ok(Map.of("ok", true, "roleId", roleId,
+                "restricted", !pageCodes.isEmpty(), "pageCodes", pageCodes));
+    }
+
+    /**
+     * Toggles visibility for exactly one (role, page) pair — safe to call
+     * from a UI that's showing a filtered/searched subset of pages, unlike
+     * {@link #replaceRoleVisibility}, which replaces the role's entire set
+     * and would silently drop visibility for any page not currently on
+     * screen.
+     */
+    @PutMapping("/role-visibility/toggle")
+    public ResponseEntity<?> toggleRoleVisibility(@RequestBody Map<String, Object> body) {
+        ResponseEntity<?> denied = assertRole();
+        if (denied != null) return denied;
+
+        Long roleId = longVal(body.get("roleId"));
+        String pageCode = str(body.get("pageCode"));
+        if (roleId == null || pageCode.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "roleId and pageCode are required"));
+        }
+        if (!roleExists(roleId)) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+                    Map.of("ok", false, "error", "Role not found: id=" + roleId));
+        }
+        if (!pageExists(pageCode)) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+                    Map.of("ok", false, "error", "Page not found: code=" + pageCode));
+        }
+
+        boolean visible = boolVal(body.get("visible"));
+        long tenantId = TenantContext.get();
+        if (visible) {
+            jdbc.update(
+                    "INSERT INTO role_page_visibility (tenant_id, role_id, page_code) VALUES (?, ?, ?) " +
+                    "ON DUPLICATE KEY UPDATE page_code = page_code",
+                    tenantId, roleId, pageCode);
+        } else {
+            jdbc.update(
+                    "DELETE FROM role_page_visibility WHERE tenant_id IN (?, -1) AND role_id = ? AND page_code = ?",
+                    tenantId, roleId, pageCode);
+        }
+
+        Integer remaining = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM role_page_visibility WHERE tenant_id IN (?, -1) AND role_id = ?",
+                Integer.class, tenantId, roleId);
+        return ResponseEntity.ok(Map.of("ok", true, "roleId", roleId, "pageCode", pageCode,
+                "visible", visible, "restricted", remaining != null && remaining > 0));
+    }
+
     // ---- Helpers ----------------------------------------------------------
 
-    private record PermRow(boolean read, boolean write, boolean approve) {}
+private record PermRow(boolean read, boolean write, boolean approve, boolean delete) {}
 
     private Map<String, PermRow> fetchPermissionMap(String table, String keyColumn, Long keyValue) {
         // table/keyColumn are fixed literals passed by this class only — never
         // request-derived — so string-concat here carries no injection risk.
         List<Map<String, Object>> rows = jdbc.queryForList(
-                "SELECT page_code, can_read, can_write, can_approve FROM " + table +
+                "SELECT page_code, can_read, can_write, can_approve, can_delete FROM " + table +
                 " WHERE tenant_id IN (?, -1) AND " + keyColumn + " = ?",
                 TenantContext.get(), keyValue);
         Map<String, PermRow> out = new HashMap<>();
         for (Map<String, Object> row : rows) {
             out.put((String) row.get("page_code"), new PermRow(
-                    truthy(row.get("can_read")), truthy(row.get("can_write")), truthy(row.get("can_approve"))));
+                    truthy(row.get("can_read")), truthy(row.get("can_write")),
+                    truthy(row.get("can_approve")), truthy(row.get("can_delete"))));
         }
         return out;
     }

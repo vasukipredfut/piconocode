@@ -112,7 +112,12 @@ public class WebSecurityConfig {
                     "/configuration/security",
                     "/swagger-ui.html",
                     "/swagger-ui/**",
-                    "/webjars/**"
+                    "/webjars/**",
+                    // Standalone static admin tools (e.g. role-page-access.html)
+                    // that handle their own login and call the JWT-protected
+                    // APIs client-side — the HTML shell itself must be
+                    // reachable before the user has a token.
+                    "/admin/**"
                 ).permitAll()
                 .anyRequest().authenticated()
             )

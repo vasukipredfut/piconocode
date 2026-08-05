@@ -38,15 +38,18 @@ import java.util.Map;
  * no row yet the first time — INSERT ... ON DUPLICATE KEY UPDATE, keyed on
  * the table's (tenant_id, workflow_instance_id) unique constraint.
  *
- * <p>Also denormalises a print-friendly summary onto {@code gate_pass}
- * itself (invoice_qty, w1/w2 weight, computed unloaded qty + difference,
- * GRN status/number) — {@code PrintController} only ever does a plain
- * {@code SELECT * FROM target_table WHERE id=?} with no joins, so a document
- * that needs fields from more than one satellite table has nowhere to read
- * them from except gate_pass, the one table every M10 print template already
- * targets. w1/w2 weight can't be read off the submission bag reliably (both
- * weighments share the same pageCode, so the bag only ever holds the LATEST
- * one), so they're read back from weighment_capture_detail instead.
+ * <p>Also updates gate_pass.total_unloading_qty (w1 - w2) — an existing
+ * cross-cutting summary column gate_pass already carries for other workflows
+ * (same pattern as qc_status/variance_reason). invoice_qty, w1/w2 weight, and
+ * GRN status/number are NOT copied onto gate_pass: they already live on
+ * dispatch_vehicle_detail / weighment_capture_detail / unload_reconciliation_detail,
+ * and {@code PrintController} (like {@code GenericEntityController}) reads
+ * gate_pass through {@link com.aria.entity.GatePassSatelliteJoin}, which joins
+ * those tables in directly — see V214, which reverted V162's attempt to
+ * duplicate these columns onto gate_pass. w1/w2 weight can't be read off the
+ * submission bag reliably (both weighments share the same pageCode, so the
+ * bag only ever holds the LATEST one), so they're read back from
+ * weighment_capture_detail instead.
  */
 @Component
 public class ReconciliationDecisionListener implements WorkflowTransitionListener {
@@ -71,14 +74,7 @@ public class ReconciliationDecisionListener implements WorkflowTransitionListene
             Map<String, Object> page = pageData(bag, "aria:reconciliation");
             String reason = str(page, "variance_reason");
             String withinTolerance = str(page, "withinTolerance");
-            // grn_status/grn_number are read here only to forward onto gate_pass
-            // below (see projectGatePassSummary) — their write into
-            // unload_reconciliation_detail itself is already handled generically
-            // by WorkflowProjectionListener's field_map_json (V160), so they
-            // aren't added to `cols` a second time here.
-            String grnStatus = str(page, "grn_status");
-            String grnNumber = str(page, "grn_number");
-            if (reason == null && withinTolerance == null && grnStatus == null) return;
+            if (reason == null && withinTolerance == null) return;
 
             Map<String, Object> cols = new LinkedHashMap<>();
             if (reason != null) cols.put("variance_reason", reason);
@@ -105,14 +101,14 @@ public class ReconciliationDecisionListener implements WorkflowTransitionListene
                     "ON DUPLICATE KEY UPDATE " + updates,
                 args);
 
-            projectGatePassSummary(instance, tenantId, grnStatus, grnNumber);
+            projectGatePassSummary(instance, tenantId);
         } catch (Exception e) {
             log.warn("reconciliation decision capture failed for instance={}: {}", instance.getId(), e.getMessage());
         }
     }
 
-    private void projectGatePassSummary(WorkflowInstance instance, Long tenantId, String grnStatus, String grnNumber) {
-        Double w1 = null, w2 = null, invoiceQty = null;
+    private void projectGatePassSummary(WorkflowInstance instance, Long tenantId) {
+        Double w1 = null, w2 = null;
         try {
             Map<String, Object> w = jdbc.queryForMap(
                 "SELECT w1_weight_kg, w2_weight_kg FROM weighment_capture_detail WHERE tenant_id=? AND workflow_instance_id=?",
@@ -120,31 +116,10 @@ public class ReconciliationDecisionListener implements WorkflowTransitionListene
             w1 = toDouble(w.get("w1_weight_kg"));
             w2 = toDouble(w.get("w2_weight_kg"));
         } catch (Exception ignored) { }
-        try {
-            Map<String, Object> d = jdbc.queryForMap(
-                "SELECT invoice_qty FROM dispatch_vehicle_detail WHERE tenant_id=? AND workflow_instance_id=?",
-                tenantId, instance.getId());
-            invoiceQty = toDouble(d.get("invoice_qty"));
-        } catch (Exception ignored) { }
+        if (w1 == null || w2 == null) return;
 
-        Double unloadedQty = (w1 != null && w2 != null) ? (w1 - w2) : null;
-        Double difference = (invoiceQty != null && unloadedQty != null) ? (invoiceQty - unloadedQty) : null;
-
-        LinkedHashMap<String, Object> cols = new LinkedHashMap<>();
-        if (invoiceQty != null) cols.put("invoice_qty", invoiceQty);
-        if (w1 != null) cols.put("w1_weight_kg", w1);
-        if (w2 != null) cols.put("w2_weight_kg", w2);
-        if (unloadedQty != null) cols.put("total_unloading_qty", unloadedQty);
-        if (difference != null) cols.put("qty_difference_kg", difference);
-        if (grnStatus != null) cols.put("grn_status", grnStatus);
-        if (grnNumber != null) cols.put("grn_number", grnNumber);
-        if (cols.isEmpty()) return;
-
-        String sets = String.join(", ", cols.keySet().stream().map(c -> c + "=?").toList());
-        java.util.List<Object> args = new java.util.ArrayList<>(cols.values());
-        args.add(instance.getId());
-        args.add(tenantId);
-        jdbc.update("UPDATE gate_pass SET " + sets + " WHERE workflow_instance_id=? AND tenant_id=?", args.toArray());
+        jdbc.update("UPDATE gate_pass SET total_unloading_qty=? WHERE workflow_instance_id=? AND tenant_id=?",
+                w1 - w2, instance.getId(), tenantId);
     }
 
     private static Double toDouble(Object v) {

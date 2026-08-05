@@ -1,5 +1,6 @@
 package com.aria.print;
 
+import com.aria.entity.GatePassSatelliteJoin;
 import com.aria.security.TenantContext;
 import com.aria.tenant.TenantSettings;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -79,7 +80,7 @@ public class PrintController {
         }
         Map<String, Object> row;
         try {
-            row = jdbc.queryForMap("SELECT * FROM " + ident((String) tpl.get("target_table")) + " WHERE id=?", id);
+            row = fetchTargetRow(ident((String) tpl.get("target_table")), id);
         } catch (Exception e) {
             return ResponseEntity.status(404).body(Map.of("ok", false, "error", code + " #" + id + " not found"));
         }
@@ -113,7 +114,7 @@ public class PrintController {
         String table = ident((String) tpl.get("target_table"));
         Map<String, Object> row;
         try {
-            row = jdbc.queryForMap("SELECT * FROM " + table + " WHERE id=?", id);
+            row = fetchTargetRow(table, id);
         } catch (Exception e) {
             return ResponseEntity.status(404).body(errorPage(code + " #" + id + " not found"));
         }
@@ -139,6 +140,21 @@ public class PrintController {
         } catch (Exception e) {
             return ResponseEntity.status(500).body(errorPage("Bad template spec: " + e.getMessage()));
         }
+    }
+
+    /**
+     * gate_pass reads join in its satellite detail tables (same mechanism as
+     * GenericEntityController) rather than a plain {@code SELECT *} — several
+     * fields a print voucher needs (invoice_qty, w1/w2 weight, GRN status)
+     * live only on those satellite tables, not on gate_pass itself.
+     */
+    private Map<String, Object> fetchTargetRow(String table, long id) {
+        if ("gate_pass".equals(table)) {
+            return jdbc.queryForMap(
+                    "SELECT " + GatePassSatelliteJoin.SELECT + " FROM gate_pass gp" + GatePassSatelliteJoin.JOIN +
+                            " WHERE gp.id=?", id);
+        }
+        return jdbc.queryForMap("SELECT * FROM " + table + " WHERE id=?", id);
     }
 
     // ---- rendering ---------------------------------------------------------
