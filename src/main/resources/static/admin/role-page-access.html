@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Role Page Access</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --border: #dfe3e8; --text: #1f2430; --muted: #6b7280;
+    --accent: #2563eb; --accent-ink: #ffffff; --danger: #dc2626; --ok: #16a34a;
+    --row-alt: #fafbfc; --chip: #eef2ff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --panel: #1c1f26; --border: #2c313c; --text: #e5e7eb; --muted: #9aa3b2;
+      --accent: #3b82f6; --accent-ink: #ffffff; --danger: #f87171; --ok: #4ade80;
+      --row-alt: #20242c; --chip: #1e2a4a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    background: var(--bg); color: var(--text); min-height: 100vh;
+  }
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 24px; background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  .topbar .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  #whoami { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 10px; }
+  button { cursor: pointer; }
+  .btn {
+    border: 1px solid var(--border); background: var(--panel); color: var(--text);
+    padding: 7px 14px; border-radius: 6px; font-size: 13px; font-weight: 500;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .btn.small { padding: 4px 10px; font-size: 12px; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  #loginScreen {
+    max-width: 380px; margin: 90px auto; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 28px;
+  }
+  #loginScreen h2 { margin: 0 0 4px; font-size: 18px; }
+  #loginScreen .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+  input[type=text], input[type=password], input[type=search], select {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--text); font-size: 13px;
+  }
+  #loginError { color: var(--danger); font-size: 12px; margin-top: 10px; min-height: 16px; }
+
+  main { max-width: 1180px; margin: 24px auto; padding: 0 20px 60px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px 20px; margin-bottom: 18px;
+  }
+  .modeTabs { display: flex; gap: 8px; margin-bottom: 16px; }
+  .modeTabs .tab {
+    padding: 7px 16px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg);
+    font-size: 13px; font-weight: 500; color: var(--muted);
+  }
+  .modeTabs .tab.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+
+  .controlsRow { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+  .controlsRow .field { margin-bottom: 0; flex: 1 1 200px; min-width: 180px; }
+  .controlsRow .field.narrow { flex: 0 0 160px; }
+  .controlsRow .actions { flex: 0 0 auto; }
+
+  #banner {
+    margin-top: 14px; padding: 9px 12px; border-radius: 6px; font-size: 12.5px; display: none;
+  }
+  #banner.restricted { display: block; background: #fff7e6; color: #92620a; border: 1px solid #f0d58c; }
+  #banner.unrestricted { display: block; background: #eefaf0; color: #146c2e; border: 1px solid #bce4c7; }
+  @media (prefers-color-scheme: dark) {
+    #banner.restricted { background: #3a2f13; color: #f0c26a; border-color: #5c4a1e; }
+    #banner.unrestricted { background: #123322; color: #8fe6ac; border-color: #1f5a3a; }
+  }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th {
+    text-align: left; padding: 9px 10px; border-bottom: 2px solid var(--border);
+    color: var(--muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .03em;
+  }
+  tbody td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  tbody tr:nth-child(even) { background: var(--row-alt); }
+  .catChip {
+    display: inline-block; background: var(--chip); color: var(--accent); font-size: 11px;
+    padding: 2px 8px; border-radius: 999px; font-weight: 600;
+  }
+  .pageTitle { font-weight: 500; }
+  .pageCode { color: var(--muted); font-size: 11px; }
+  td.chk { text-align: center; width: 64px; }
+  input[type=checkbox] { width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent); }
+  input[type=checkbox]:disabled { cursor: not-allowed; opacity: .4; }
+  .rowStatus { font-size: 11px; color: var(--muted); min-width: 44px; display: inline-block; }
+  .rowStatus.ok { color: var(--ok); }
+  .rowStatus.err { color: var(--danger); }
+  .emptyState { color: var(--muted); font-size: 13px; padding: 30px 10px; text-align: center; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .toast {
+    position: fixed; bottom: 20px; right: 20px; background: var(--panel); border: 1px solid var(--border);
+    padding: 10px 16px; border-radius: 8px; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.15);
+    display: none;
+  }
+  .toast.show { display: block; }
+  .toast.err { color: var(--danger); border-color: var(--danger); }
+</style>
+</head>
+<body>
+
+<div id="loginScreen">
+  <h2>Role Page Access</h2>
+  <div class="sub">Sign in with a TenantAdmin or SuperAdmin account.</div>
+  <div class="field">
+    <label for="loginUser">Username</label>
+    <input type="text" id="loginUser" autocomplete="username">
+  </div>
+  <div class="field">
+    <label for="loginPass">Password</label>
+    <input type="password" id="loginPass" autocomplete="current-password">
+  </div>
+  <button class="btn primary" id="loginBtn" style="width:100%">Sign in</button>
+  <div id="loginError"></div>
+</div>
+
+<div id="appShell" style="display:none">
+  <div class="topbar">
+    <div>
+      <h1>Role Page Access</h1>
+      <div class="sub">Pick which pages a role can see, and Read / Write / Approve / Delete for each.</div>
+    </div>
+    <div id="whoami">
+      <span id="whoamiText"></span>
+      <button class="btn small" id="logoutBtn">Log out</button>
+    </div>
+  </div>
+
+  <main>
+    <div class="card">
+      <div class="modeTabs">
+        <button class="tab active" data-mode="role">By Role</button>
+        <button class="tab" data-mode="employee">By Employee</button>
+      </div>
+
+      <div class="controlsRow" id="roleControls">
+        <div class="field">
+          <label for="roleSelect">Role</label>
+          <select id="roleSelect"><option value="">Select a role…</option></select>
+        </div>
+        <div class="field narrow">
+          <label for="categoryFilter">Module</label>
+          <select id="categoryFilter"><option value="">All</option></select>
+        </div>
+        <div class="field">
+          <label for="searchBox">Search page</label>
+          <input type="search" id="searchBox" placeholder="Filter by title or code…">
+        </div>
+        <div class="actions">
+          <button class="btn primary" id="showPagesBtn">Show Pages</button>
+        </div>
+      </div>
+
+      <div class="controlsRow" id="employeeControls" style="display:none">
+        <div class="field">
+          <label for="employeeSearch">Employee</label>
+          <input type="text" id="employeeSearch" placeholder="Type a name or username…" list="employeeList" autocomplete="off">
+          <datalist id="employeeList"></datalist>
+        </div>
+        <div class="field narrow">
+          <label for="categoryFilterEmp">Module</label>
+          <select id="categoryFilterEmp"><option value="">All</option></select>
+        </div>
+        <div class="field">
+          <label for="searchBoxEmp">Search page</label>
+          <input type="search" id="searchBoxEmp" placeholder="Filter by title or code…">
+        </div>
+        <div class="actions">
+          <button class="btn primary" id="showPagesEmpBtn">Show Pages</button>
+        </div>
+      </div>
+
+      <div id="banner"></div>
+    </div>
+
+    <div class="card">
+      <table>
+        <thead id="tableHead"></thead>
+        <tbody id="tableBody">
+          <tr><td class="emptyState" colspan="8">Select a role or employee above, then click "Show Pages".</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  var token = null;
+  var mode = 'role';
+  var employeesCache = {}; // name/username -> id
+  var currentRows = [];    // last loaded rows, for re-render after a toggle
+
+  var loginScreen = document.getElementById('loginScreen');
+  var appShell = document.getElementById('appShell');
+  var toastEl = document.getElementById('toast');
+
+  function showToast(msg, isErr) {
+    toastEl.textContent = msg;
+    toastEl.className = 'toast show' + (isErr ? ' err' : '');
+    setTimeout(function () { toastEl.className = 'toast'; }, 2600);
+  }
+
+  function api(path, opts) {
+    opts = opts || {};
+    var headers = opts.headers || {};
+    headers['Authorization'] = 'Bearer ' + token;
+    if (opts.body) headers['Content-Type'] = 'application/json';
+    return fetch(path, Object.assign({}, opts, { headers: headers }))
+      .then(function (res) {
+        return res.json().then(function (data) {
+          if (!res.ok || data.ok === false) {
+            throw new Error(data.error || ('HTTP ' + res.status));
+          }
+          return data;
+        });
+      });
+  }
+
+  // ---- Login -----------------------------------------------------------
+
+  document.getElementById('loginBtn').addEventListener('click', function () {
+    var username = document.getElementById('loginUser').value.trim();
+    var password = document.getElementById('loginPass').value;
+    var errEl = document.getElementById('loginError');
+    errEl.textContent = '';
+    if (!username || !password) { errEl.textContent = 'Username and password are required.'; return; }
+
+    fetch('/api/auth/signin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: username, password: password })
+    })
+      .then(function (res) { return res.json().then(function (d) { return { ok: res.ok, data: d }; }); })
+      .then(function (r) {
+        if (!r.ok || !r.data.accessToken) {
+          throw new Error(r.data.message || r.data.error || 'Login failed');
+        }
+        token = r.data.accessToken;
+        document.getElementById('whoamiText').textContent = r.data.username + ' (role id ' + (r.data.roles || [])[0] + ')';
+        loginScreen.style.display = 'none';
+        appShell.style.display = 'block';
+        bootstrap();
+      })
+      .catch(function (e) { errEl.textContent = e.message; });
+  });
+
+  document.getElementById('logoutBtn').addEventListener('click', function () {
+    token = null;
+    appShell.style.display = 'none';
+    loginScreen.style.display = 'block';
+    document.getElementById('loginPass').value = '';
+  });
+
+  // ---- Bootstrap: roles + categories ------------------------------------
+
+  function bootstrap() {
+    api('/api/m0/access-matrix/roles').then(function (d) {
+      var sel = document.getElementById('roleSelect');
+      (d.roles || []).forEach(function (r) {
+        var opt = document.createElement('option');
+        opt.value = r.id; opt.textContent = r.name + ' (#' + r.id + ')';
+        sel.appendChild(opt);
+      });
+    }).catch(function (e) { showToast('Could not load roles: ' + e.message, true); });
+
+    api('/api/m0/categories').then(function (d) {
+      var cats = d.categories || d || [];
+      if (!Array.isArray(cats)) cats = [];
+      [document.getElementById('categoryFilter'), document.getElementById('categoryFilterEmp')].forEach(function (sel) {
+        cats.forEach(function (c) {
+          var code = typeof c === 'string' ? c : (c.code || c.name);
+          if (!code) return;
+          var label = typeof c === 'string' ? c : (c.label || code);
+          var opt = document.createElement('option');
+          opt.value = code; opt.textContent = label;
+          sel.appendChild(opt);
+        });
+      });
+    }).catch(function () { /* categories are a nice-to-have filter; ignore failure */ });
+  }
+
+  // ---- Mode tabs ---------------------------------------------------------
+
+  document.querySelectorAll('.modeTabs .tab').forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      document.querySelectorAll('.modeTabs .tab').forEach(function (t) { t.classList.remove('active'); });
+      tab.classList.add('active');
+      mode = tab.getAttribute('data-mode');
+      document.getElementById('roleControls').style.display = mode === 'role' ? 'flex' : 'none';
+      document.getElementById('employeeControls').style.display = mode === 'employee' ? 'flex' : 'none';
+      document.getElementById('banner').style.display = 'none';
+      renderEmpty();
+    });
+  });
+
+  function renderEmpty() {
+    document.getElementById('tableHead').innerHTML = '';
+    document.getElementById('tableBody').innerHTML =
+      '<tr><td class="emptyState" colspan="8">Select a role or employee above, then click "Show Pages".</td></tr>';
+  }
+
+  // ---- Employee search (datalist) ---------------------------------------
+
+  var empSearchTimer = null;
+  document.getElementById('employeeSearch').addEventListener('input', function () {
+    var q = this.value.trim();
+    clearTimeout(empSearchTimer);
+    empSearchTimer = setTimeout(function () {
+      if (q.length < 2) return;
+      api('/api/m0/access-matrix/employees?q=' + encodeURIComponent(q)).then(function (d) {
+        var dl = document.getElementById('employeeList');
+        dl.innerHTML = '';
+        employeesCache = {};
+        (d.employees || []).forEach(function (e) {
+          var label = e.employeeName + ' (' + (e.username || 'no username') + ') — ' + (e.roleName || 'no role');
+          employeesCache[label] = e.id;
+          var opt = document.createElement('option');
+          opt.value = label;
+          dl.appendChild(opt);
+        });
+      }).catch(function () { /* ignore transient search errors */ });
+    }, 250);
+  });
+
+  // ---- Show Pages: Role mode --------------------------------------------
+
+  document.getElementById('showPagesBtn').addEventListener('click', function () {
+    var roleId = document.getElementById('roleSelect').value;
+    if (!roleId) { showToast('Pick a role first.', true); return; }
+    var category = document.getElementById('categoryFilter').value;
+    var q = document.getElementById('searchBox').value.trim();
+
+    var url = '/api/m0/access-matrix/role-visibility?roleId=' + encodeURIComponent(roleId);
+    if (category) url += '&category=' + encodeURIComponent(category);
+    if (q) url += '&_q=' + encodeURIComponent(q);
+
+    api(url).then(function (d) {
+      currentRows = d.pages || [];
+      var visibleCount = currentRows.filter(function (r) { return r.visible; }).length;
+      renderBanner(d.restricted, visibleCount, 'role');
+      renderTable('role', roleId, null);
+    }).catch(function (e) { showToast('Failed to load: ' + e.message, true); });
+  });
+
+  // ---- Show Pages: Employee mode ----------------------------------------
+
+  document.getElementById('showPagesEmpBtn').addEventListener('click', function () {
+    var label = document.getElementById('employeeSearch').value.trim();
+    var employeeId = employeesCache[label];
+    if (!employeeId) { showToast('Pick an employee from the suggestions list.', true); return; }
+    var category = document.getElementById('categoryFilterEmp').value;
+    var q = document.getElementById('searchBoxEmp').value.trim();
+
+    var url = '/api/m0/access-matrix?employeeId=' + encodeURIComponent(employeeId);
+    if (category) url += '&category=' + encodeURIComponent(category);
+    if (q) url += '&_q=' + encodeURIComponent(q);
+
+    api(url).then(function (d) {
+      currentRows = d.screens || [];
+      document.getElementById('banner').style.display = 'block';
+      document.getElementById('banner').className = 'unrestricted';
+      document.getElementById('banner').textContent =
+        (d.employee ? d.employee.employeeName : 'Employee') + ' — role: ' +
+        (d.role ? d.role.name : '(none)') +
+        '. Overrides here apply only to this person and take priority over their role\'s defaults. ' +
+        'Page visibility in navigation is controlled at the role level, not here.';
+      renderTable('employee', null, employeeId);
+    }).catch(function (e) { showToast('Failed to load: ' + e.message, true); });
+  });
+
+  function renderBanner(restricted, count, forMode) {
+    var el = document.getElementById('banner');
+    el.style.display = 'block';
+    if (restricted) {
+      el.className = 'restricted';
+      el.textContent = 'RESTRICTED — this role only sees the ' + count + ' page(s) checked "Visible" below. Uncheck all to make it unrestricted again.';
+    } else {
+      el.className = 'unrestricted';
+      el.textContent = 'UNRESTRICTED — this role currently sees every published page. Check "Visible" on any page below to switch this role into allow-list mode.';
+    }
+  }
+
+  // ---- Table rendering ----------------------------------------------------
+
+  function renderTable(forMode, roleId, employeeId) {
+    var head = document.getElementById('tableHead');
+    var body = document.getElementById('tableBody');
+
+    var cols = ['Module', 'Page'];
+    if (forMode === 'role') cols.push('Visible');
+    cols.push('Read', 'Write', 'Approve', 'Delete', '');
+
+    head.innerHTML = '<tr>' + cols.map(function (c) { return '<th>' + c + '</th>'; }).join('') + '</tr>';
+
+    if (!currentRows.length) {
+      body.innerHTML = '<tr><td class="emptyState" colspan="' + cols.length + '">No pages match this filter.</td></tr>';
+      return;
+    }
+
+    body.innerHTML = '';
+    currentRows.forEach(function (row) {
+      var tr = document.createElement('tr');
+
+      var tdCat = document.createElement('td');
+      tdCat.innerHTML = '<span class="catChip">' + (row.category || '—') + '</span>';
+      tr.appendChild(tdCat);
+
+      var tdTitle = document.createElement('td');
+      tdTitle.innerHTML = '<div class="pageTitle">' + escapeHtml(row.title || row.pageCode) + '</div>' +
+        '<div class="pageCode">' + escapeHtml(row.pageCode) + '</div>';
+      tr.appendChild(tdTitle);
+
+      if (forMode === 'role') {
+        tr.appendChild(checkboxCell(row.pageCode, 'visible', row.visible, function (checked, statusEl) {
+          api('/api/m0/access-matrix/role-visibility/toggle', {
+            method: 'PUT',
+            body: JSON.stringify({ roleId: roleId, pageCode: row.pageCode, visible: checked })
+          }).then(function (d) {
+            markSaved(statusEl);
+            row.visible = checked;
+            var restrictedNow = currentRows.some(function (r) { return r.visible; });
+            renderBanner(restrictedNow, currentRows.filter(function (r) { return r.visible; }).length, 'role');
+          }).catch(function (e) { markError(statusEl, e); });
+        }));
+      }
+
+      ['read', 'write', 'approve', 'delete'].forEach(function (field) {
+        tr.appendChild(checkboxCell(row.pageCode, field, row[field], function (checked, statusEl) {
+          var payload = {
+            pageCode: row.pageCode,
+            read: field === 'read' ? checked : !!row.read,
+            write: field === 'write' ? checked : !!row.write,
+            approve: field === 'approve' ? checked : !!row.approve,
+            delete: field === 'delete' ? checked : !!row.delete
+          };
+          var endpoint, body2;
+          if (forMode === 'role') {
+            endpoint = '/api/m0/access-matrix/role-permission';
+            body2 = Object.assign({ roleId: roleId }, payload);
+          } else {
+            endpoint = '/api/m0/access-matrix/employee-permission';
+            body2 = Object.assign({ employeeId: employeeId }, payload);
+          }
+          api(endpoint, { method: 'PUT', body: JSON.stringify(body2) }).then(function (d) {
+            row.read = d.read; row.write = d.write; row.approve = d.approve; row.delete = d.delete;
+            markSaved(statusEl);
+          }).catch(function (e) { markError(statusEl, e); });
+        }));
+      });
+
+      var tdStatus = document.createElement('td');
+      tdStatus.innerHTML = '<span class="rowStatus"></span>';
+      tr.appendChild(tdStatus);
+
+      body.appendChild(tr);
+    });
+  }
+
+  function checkboxCell(pageCode, field, checked, onChange) {
+    var td = document.createElement('td');
+    td.className = 'chk';
+    var input = document.createElement('input');
+    input.type = 'checkbox';
+    input.checked = !!checked;
+    input.addEventListener('change', function () {
+      var statusEl = td.parentElement.querySelector('.rowStatus');
+      statusEl.className = 'rowStatus'; statusEl.textContent = 'saving…';
+      onChange(input.checked, statusEl);
+    });
+    td.appendChild(input);
+    return td;
+  }
+
+  function markSaved(statusEl) {
+    if (!statusEl) return;
+    statusEl.className = 'rowStatus ok'; statusEl.textContent = 'saved ✓';
+    setTimeout(function () { statusEl.textContent = ''; statusEl.className = 'rowStatus'; }, 1800);
+  }
+  function markError(statusEl, e) {
+    showToast('Save failed: ' + e.message, true);
+    if (!statusEl) return;
+    statusEl.className = 'rowStatus err'; statusEl.textContent = 'failed';
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+})();
+</script>
+</body>
+</html>
