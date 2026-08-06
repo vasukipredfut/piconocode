@@ -13,6 +13,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -36,6 +37,7 @@ public class AccountController {
         this.jdbc = jdbc;
         this.storageDir = storageDir;
         new File(storageDir, "avatars").mkdirs();
+        new File(storageDir, "backgrounds").mkdirs();
     }
 
     public static class ProfileUpdateRequest {
@@ -44,6 +46,14 @@ public class AccountController {
         public String phoneno;
     }
 
+    /**
+     * Bound via {@code @ModelAttribute} from the multipart request — Spring
+     * fills {@code file} from the file part and the rest from form fields.
+     * Every field is optional; {@link #updatePreferences} only overwrites
+     * whichever ones actually arrived. Add new preference fields here (plus
+     * the matching DB column + COALESCE clause) rather than growing a long
+     * {@code @RequestParam} method signature.
+     */
     public static class PreferencesUpdateRequest {
         public String themeMode;
         public String primaryColor;
@@ -51,6 +61,7 @@ public class AccountController {
         public String appColor;
         public String buttonStyle;
         public String fontSize;
+        public MultipartFile file;
     }
 
     // ---- Profile ---------------------------------------------------------
@@ -107,7 +118,7 @@ public class AccountController {
         Long userId = currentUserId();
         try {
             return jdbc.queryForMap(
-                    "SELECT theme_mode, primary_color, secondary_color, app_color, button_style, font_size " +
+                    "SELECT theme_mode, primary_color, secondary_color, app_color, button_style, font_size, background_image " +
                     "FROM user_ui_preference WHERE user_id = ?",
                     userId);
         } catch (EmptyResultDataAccessException e) {
@@ -118,23 +129,53 @@ public class AccountController {
             defaults.put("app_color", null);
             defaults.put("button_style", "PILL");
             defaults.put("font_size", "MEDIUM");
+            defaults.put("background_image", null);
             return defaults;
         }
     }
 
-    @PutMapping("/preferences")
-    @Operation(summary = "Save (create or update) the logged-in user's UI preferences.")
-    public Map<String, Object> updatePreferences(@RequestBody PreferencesUpdateRequest req) {
+    /**
+     * Single call for the whole Preferences form: theme/color/style fields
+     * plus an optional new background image, all in one multipart request
+     * (a background image can only travel as a file part, so this can't be
+     * plain JSON). {@code file} is optional — omit it to save the other
+     * fields without touching whatever background image is already set.
+     */
+    @PutMapping(value = "/preferences", consumes = "multipart/form-data")
+    @Operation(summary = "Save (create or update) the logged-in user's UI preferences, optionally replacing the background image.")
+    public Map<String, Object> updatePreferences(@ModelAttribute PreferencesUpdateRequest req) throws IOException {
         Long userId = currentUserId();
+
+        String backgroundUrl = null;
+        if (req.file != null && !req.file.isEmpty()) {
+            String safeName = (req.file.getOriginalFilename() == null ? "background.bin"
+                    : req.file.getOriginalFilename().replaceAll("[^A-Za-z0-9._-]", "_"));
+            String storedName = "user-" + userId + "-" + System.currentTimeMillis() + "-" + safeName;
+            File target = new File(new File(storageDir, "backgrounds"), storedName);
+            try (FileOutputStream fos = new FileOutputStream(target)) {
+                fos.write(req.file.getBytes());
+            }
+            backgroundUrl = "/uploads/backgrounds/" + storedName;
+        }
+
+        // COALESCE(?, existing/default) on every field — so a request that only
+        // carries a subset (e.g. just the background image file, or just the
+        // theme) leaves the rest of an existing row untouched instead of
+        // nulling out NOT NULL columns (theme_mode/button_style/font_size).
         jdbc.update(
                 "INSERT INTO user_ui_preference " +
-                "(user_id, theme_mode, primary_color, secondary_color, app_color, button_style, font_size) " +
-                "VALUES (?,?,?,?,?,?,?) " +
-                "ON DUPLICATE KEY UPDATE theme_mode=VALUES(theme_mode), primary_color=VALUES(primary_color), " +
-                "secondary_color=VALUES(secondary_color), app_color=VALUES(app_color), " +
-                "button_style=VALUES(button_style), font_size=VALUES(font_size)",
-                userId, req.themeMode, req.primaryColor, req.secondaryColor, req.appColor,
-                req.buttonStyle, req.fontSize);
+                "(user_id, theme_mode, primary_color, secondary_color, app_color, button_style, font_size, background_image) " +
+                "VALUES (?, COALESCE(?, 'LIGHT'), ?, ?, ?, COALESCE(?, 'PILL'), COALESCE(?, 'MEDIUM'), ?) " +
+                "ON DUPLICATE KEY UPDATE " +
+                "theme_mode = COALESCE(?, theme_mode), " +
+                "primary_color = COALESCE(?, primary_color), " +
+                "secondary_color = COALESCE(?, secondary_color), " +
+                "app_color = COALESCE(?, app_color), " +
+                "button_style = COALESCE(?, button_style), " +
+                "font_size = COALESCE(?, font_size), " +
+                "background_image = COALESCE(?, background_image)",
+                userId, req.themeMode, req.primaryColor, req.secondaryColor, req.appColor, req.buttonStyle, req.fontSize, backgroundUrl,
+                req.themeMode, req.primaryColor, req.secondaryColor, req.appColor, req.buttonStyle, req.fontSize, backgroundUrl);
         return getPreferences();
     }
 
