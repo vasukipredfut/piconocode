@@ -74,6 +74,48 @@ public class WorkflowEngineService {
                 : inst.getTenantId();
     }
 
+    /**
+     * Resolves which definition to actually use RIGHT NOW for this instance:
+     * the latest PUBLISHED one if it's different from the pin AND still
+     * declares the instance's {@code currentState} — otherwise the pin
+     * itself, unchanged. {@code latestPublished} is returned alongside
+     * {@code toUse} even when it wasn't picked, so a caller can tell "no
+     * newer version exists" apart from "a newer version exists but isn't
+     * safe to use yet" for logging.
+     *
+     * <p>Used by both {@link #handlePageSubmission} (which also persists the
+     * upgrade onto {@code inst.workflowVersion} when {@code toUse} wins) and
+     * {@link #availableTransitions} (read-only — no persistence). Editing a
+     * workflow's states/transitions via the Designer used to never reach an
+     * already-running instance at all: {@link #startInstance} pins (owner,
+     * code, version) onto the instance, and every later call re-read that
+     * exact version. Auto-upgrading here — but ONLY when the current state
+     * still exists in the new definition — lets an open instance pick up a
+     * compatible edit on its very next page submission, with no manual
+     * resync step, while an incompatible edit (a state renamed or removed)
+     * safely keeps the instance on its pin instead of corrupting it.
+     *
+     * <p>Both callers resolving THE SAME WAY matters: an earlier version of
+     * this class had {@code availableTransitions} always read "latest" while
+     * {@code handlePageSubmission} enforced the pin — an operator could see
+     * a button for a transition the pinned version didn't have, click it,
+     * and get a 409. Keeping both sides on identical resolution removes that
+     * mismatch instead of trading it for a different one.
+     */
+    private EffectiveDefinition resolveEffectiveDefinition(WorkflowInstance inst, WorkflowDefinition pinned) {
+        Optional<WorkflowDefinition> latestOpt = definitions.findLatestPublishedSingle(ownerOf(inst), inst.getWorkflowCode());
+        WorkflowDefinition latest = latestOpt.orElse(null);
+        if (latest == null || latest.getVersion().equals(pinned.getVersion())) {
+            return new EffectiveDefinition(pinned, latest);
+        }
+        if (!stateExists(parseBody(latest), inst.getCurrentState())) {
+            return new EffectiveDefinition(pinned, latest);
+        }
+        return new EffectiveDefinition(latest, latest);
+    }
+
+    private record EffectiveDefinition(WorkflowDefinition toUse, WorkflowDefinition latestPublished) {}
+
     // ---------------------------------------------------------------- start
     @Transactional("m0PageTransactionManager")
     public WorkflowInstance startInstance(String workflowCode, Map<String, Object> initialContext) {
@@ -136,11 +178,44 @@ public class WorkflowEngineService {
         inst.setSubmittedDataJson(writeJson(bag));
 
         // Find transition.
-        WorkflowDefinition def = definitions.findByTenantIdAndCodeAndVersion(
+        WorkflowDefinition pinnedDef = definitions.findByTenantIdAndCodeAndVersion(
                 ownerOf(inst), inst.getWorkflowCode(), inst.getWorkflowVersion())
                 .orElseThrow(() -> new WorkflowDefinitionNotFoundException(
                         "definition gone for instance " + instanceId));
+        EffectiveDefinition effective = resolveEffectiveDefinition(inst, pinnedDef);
+        WorkflowDefinition def = effective.toUse();
         Map<String, Object> body = parseBody(def);
+        Integer fromVersion = inst.getWorkflowVersion();
+        if (!def.getVersion().equals(fromVersion)) {
+            // Compatible newer version — auto-adopt it before evaluating this
+            // submission, so the transition/guard just edited via the
+            // Designer applies on THIS click, not just to instances started
+            // after the edit.
+            inst.setWorkflowVersion(def.getVersion());
+            inst.setAssignedRole(roleForState(body, inst.getCurrentState()));
+            events.save(WorkflowEvent.builder()
+                    .tenantId(tenantId)
+                    .instanceId(inst.getId())
+                    .kind(WorkflowEvent.KIND_DEFINITION_RESYNC)
+                    .fromState(inst.getCurrentState())
+                    .toState(inst.getCurrentState())
+                    .actorUserId(actorUserId)
+                    .payloadJson(writeJson(Map.of("fromVersion", fromVersion, "toVersion", def.getVersion(), "trigger", "auto-on-submit")))
+                    .build());
+            log.info("workflow.auto-resync tenant={} instance={} code={} state={} v{}->v{}",
+                    tenantId, inst.getId(), inst.getWorkflowCode(), inst.getCurrentState(), fromVersion, def.getVersion());
+        } else if (effective.latestPublished() != null && !effective.latestPublished().getVersion().equals(fromVersion)) {
+            // A newer version exists but doesn't declare this instance's
+            // current state — auto-adopting it would leave the instance
+            // pointed at a definition that can't even describe where it is.
+            // Stays safely on the pin; this instance needs a manual look
+            // (fix the definition, or migrate the instance) before it can
+            // ever pick up a version past this one.
+            log.warn("workflow.pinned-version-incompatible tenant={} instance={} code={} state={} pinnedVersion={} latestPublishedVersion={} "
+                            + "— cannot auto-resync: '{}' does not exist in the latest definition",
+                    tenantId, inst.getId(), inst.getWorkflowCode(), inst.getCurrentState(), fromVersion,
+                    effective.latestPublished().getVersion(), inst.getCurrentState());
+        }
         List<Map<String, Object>> candidates = transitionsFor(body, inst.getCurrentState(), pageCode);
         if (candidates.isEmpty()) {
             instances.save(inst);
@@ -538,16 +613,20 @@ public class WorkflowEngineService {
                 .filter(i -> i.getTenantId().equals(tenantId))
                 .orElseThrow(() -> new WorkflowInstanceNotFoundException(
                         "instance " + instanceId + " not found for tenant " + tenantId));
-        // Read the version this instance was STARTED on, not the latest published.
-        // handlePageSubmission enforces the pinned version, so reading "latest" here
-        // meant that republishing a workflow made in-flight instances render buttons
-        // from the new definition while the engine still enforced the old one — the
-        // operator clicked and got a 409. Admins must be able to edit a live workflow
-        // without breaking vehicles already moving through the plant.
-        WorkflowDefinition def = definitions.findByTenantIdAndCodeAndVersion(
+        // Resolved the SAME way handlePageSubmission resolves the definition
+        // it will actually enforce (see resolveEffectiveDefinition) — latest
+        // PUBLISHED if it's compatible with this instance's current state,
+        // otherwise the pin. They used to differ (this method always read
+        // latest while handlePageSubmission enforced the pin), which let an
+        // operator see a button for a transition the engine didn't have yet
+        // and get a 409 on click; auto-resync in handlePageSubmission means
+        // this read-only view has to track the exact same rule or the two
+        // would drift apart again, just in the opposite direction.
+        WorkflowDefinition pinnedDef = definitions.findByTenantIdAndCodeAndVersion(
                 ownerOf(inst), inst.getWorkflowCode(), inst.getWorkflowVersion())
                 .orElseThrow(() -> new WorkflowDefinitionNotFoundException(
                         "definition v" + inst.getWorkflowVersion() + " gone for instance " + instanceId));
+        WorkflowDefinition def = resolveEffectiveDefinition(inst, pinnedDef).toUse();
         Map<String, Object> body = parseBody(def);
         return transitionsFor(body, inst.getCurrentState(), pageCode);
     }
@@ -607,6 +686,23 @@ public class WorkflowEngineService {
             if (stateCode.equals(s.get("code"))) {
                 return Boolean.TRUE.equals(s.get("terminal"));
             }
+        }
+        return false;
+    }
+
+    /**
+     * Distinct from {@link #roleForState} returning null: that null is
+     * ambiguous between "state doesn't exist" and "state exists with no
+     * assignedRole". {@link #resolveEffectiveDefinition} and {@link
+     * #resyncToLatestDefinition} need the unambiguous answer before
+     * committing to a version bump.
+     */
+    @SuppressWarnings("unchecked")
+    private boolean stateExists(Map<String, Object> body, String stateCode) {
+        Object raw = body.get("states");
+        if (!(raw instanceof List<?> list)) return false;
+        for (Object o : list) {
+            if (o instanceof Map<?, ?> s && stateCode.equals(s.get("code"))) return true;
         }
         return false;
     }

@@ -30,6 +30,7 @@ public class WorkflowEvent {
     public static final String KIND_PAGE_SUBMITTED = "PAGE_SUBMITTED";
     public static final String KIND_ACTION_FIRED = "ACTION_FIRED";
     public static final String KIND_ERROR = "ERROR";
+    public static final String KIND_DEFINITION_RESYNC = "DEFINITION_RESYNC";
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
