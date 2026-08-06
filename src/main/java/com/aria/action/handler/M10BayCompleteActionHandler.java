@@ -5,10 +5,14 @@ import com.aria.action.ActionInvocation;
 import com.aria.action.ActionResult;
 import com.aria.mes.stock.FefoStockPickerService;
 import com.aria.security.TenantContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.interceptor.TransactionAspectSupport;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -55,11 +59,21 @@ import java.util.Map;
  * lot that lost the race errors the whole line out (before its bay row is
  * closed) rather than silently under-deducting or going negative. Per-line
  * deduction happens fully before that line's bay row closes, for the same
- * "never mark DONE for stock we didn't actually get" reason above — but
- * note this repo's existing convention (see the handler's own tests) is
- * that an earlier LINE's already-applied changes are not rolled back if a
- * later line fails; the same applies here at the per-lot level within one
- * line's multi-lot pick.
+ * "never mark DONE for stock we didn't actually get" reason above.
+ *
+ * <p><b>Whole-request atomicity:</b> a plain {@code return ActionResult.error(...)}
+ * does NOT roll back a Spring {@code @Transactional} method — only a thrown
+ * exception does (see {@link M10StartBayActionHandler}'s identical note on
+ * its own workflow-transition branch). Without an explicit rollback, a later
+ * line failing (bad payload, insufficient stock, a lost stock race, or an
+ * already-closed bay row) would let every earlier line's stock deduction +
+ * bay-row close commit anyway while the whole action reports failure — and
+ * since deduction happens before the bay-row-open check, a resubmitted line
+ * that's already DONE would silently double-consume stock before erroring.
+ * {@link #markRollbackOnly()} is called on every error return from inside
+ * the line loop so a failed Bay Complete never leaves partial stock/bay
+ * changes behind — same as the whole-request-must-fully-succeed workflow
+ * this button already implies.
  *
  * <p>Payload shape (formData.order_sku_line_items — the grid's current rows
  * with loading_qty already edited by the operator):
@@ -73,6 +87,8 @@ import java.util.Map;
  */
 @Component
 public class M10BayCompleteActionHandler implements ActionHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(M10BayCompleteActionHandler.class);
 
     @Autowired private JdbcTemplate jdbc;
     @Autowired private FefoStockPickerService fefoPicker;
@@ -96,18 +112,24 @@ public class M10BayCompleteActionHandler implements ActionHandler {
         long tenantId = TenantContext.get();
         Long instanceId = inv.getInstanceId();
 
+        log.info("action.bay-complete.start tenantId={} instanceId={} lineCount={}", tenantId, instanceId, lines.size());
+
         List<Map<String, Object>> closed = new ArrayList<>();
         BigDecimal totalProcessed = BigDecimal.ZERO;
 
         for (int i = 0; i < lines.size(); i++) {
             Object lineObj = lines.get(i);
             if (!(lineObj instanceof Map)) {
+                markRollbackOnly();
+                log.warn("action.bay-complete.bad-line tenantId={} instanceId={} index={} reason=not-an-object", tenantId, instanceId, i);
                 return ActionResult.error("order_sku_line_items[" + i + "] must be an object");
             }
             Map<String, Object> line = (Map<String, Object>) lineObj;
             String routeId = str(line, "route_id");
             String skuCode = str(line, "sku_code");
             if (routeId == null || skuCode == null) {
+                markRollbackOnly();
+                log.warn("action.bay-complete.bad-line tenantId={} instanceId={} index={} reason=missing-route-or-sku", tenantId, instanceId, i);
                 return ActionResult.error("order_sku_line_items[" + i + "] is missing route_id or sku_code");
             }
 
@@ -116,15 +138,24 @@ public class M10BayCompleteActionHandler implements ActionHandler {
                 Object qtyObj = line.get("loading_qty") != null ? line.get("loading_qty") : line.get("processed_quantity");
                 processedQty = qtyObj == null ? null : new BigDecimal(qtyObj.toString());
             } catch (NumberFormatException e) {
+                markRollbackOnly();
+                log.warn("action.bay-complete.bad-line tenantId={} instanceId={} routeId={} skuCode={} reason=non-numeric-qty",
+                        tenantId, instanceId, routeId, skuCode);
                 return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") loading_qty must be a number");
             }
             if (processedQty == null || processedQty.signum() < 0) {
+                markRollbackOnly();
+                log.warn("action.bay-complete.bad-line tenantId={} instanceId={} routeId={} skuCode={} reason=negative-or-missing-qty",
+                        tenantId, instanceId, routeId, skuCode);
                 return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") needs loading_qty >= 0");
             }
 
             List<FefoStockPickerService.FefoPick> picks = fefoPicker.pick(tenantId, skuCode, null, processedQty);
             BigDecimal residual = fefoPicker.residualQty(processedQty, picks);
             if (residual.signum() > 0) {
+                markRollbackOnly();
+                log.warn("action.bay-complete.insufficient-stock tenantId={} instanceId={} routeId={} skuCode={} requestedQty={} availableQty={}",
+                        tenantId, instanceId, routeId, skuCode, processedQty, processedQty.subtract(residual));
                 return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") insufficient stock: "
                         + "requested " + processedQty + ", available " + processedQty.subtract(residual));
             }
@@ -136,6 +167,9 @@ public class M10BayCompleteActionHandler implements ActionHandler {
                                 + "((lot_no IS NULL AND ? IS NULL) OR lot_no = ?) AND bin_code = ? AND qty_on_hand >= ?",
                         pick.qty(), tenantId, skuCode, pick.lotNo(), pick.lotNo(), pick.binCode(), pick.qty());
                 if (deducted == 0) {
+                    markRollbackOnly();
+                    log.warn("action.bay-complete.stock-race tenantId={} instanceId={} routeId={} skuCode={} lotNo={} binCode={} qty={}",
+                            tenantId, instanceId, routeId, skuCode, pick.lotNo(), pick.binCode(), pick.qty());
                     return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") stock changed "
                             + "concurrently — lot " + pick.lotNo() + "/bin " + pick.binCode()
                             + " no longer has enough qty_on_hand, retry Bay Complete");
@@ -145,6 +179,8 @@ public class M10BayCompleteActionHandler implements ActionHandler {
                                 + "ref_type, ref_id, ref_number) VALUES (?,?,?,?,?,?,?,?,?,?)",
                         tenantId, "CONSUME", skuCode, pick.lotNo(), pick.binCode(), pick.qty(), pick.uom(),
                         "BAY", instanceId, routeId);
+                log.info("action.bay-complete.stock-consume tenantId={} instanceId={} routeId={} skuCode={} lotNo={} binCode={} qty={} uom={}",
+                        tenantId, instanceId, routeId, skuCode, pick.lotNo(), pick.binCode(), pick.qty(), pick.uom());
             }
 
             int n = jdbc.update(
@@ -152,8 +188,14 @@ public class M10BayCompleteActionHandler implements ActionHandler {
                             + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND sku_code = ? AND status = 'IN_PROGRESS'",
                     processedQty, tenantId, instanceId, routeId, skuCode);
             if (n == 0) {
+                markRollbackOnly();
+                log.warn("action.bay-complete.bay-row-missing tenantId={} instanceId={} routeId={} skuCode={}",
+                        tenantId, instanceId, routeId, skuCode);
                 return ActionResult.error("no open bay row found for route_id=" + routeId + " sku_code=" + skuCode);
             }
+
+            log.info("action.bay-complete.bay-row-closed tenantId={} instanceId={} routeId={} skuCode={} processedQty={}",
+                    tenantId, instanceId, routeId, skuCode, processedQty);
 
             totalProcessed = totalProcessed.add(processedQty);
             Map<String, Object> row = new HashMap<>();
@@ -168,11 +210,32 @@ public class M10BayCompleteActionHandler implements ActionHandler {
                         + "WHERE tenant_id = ? AND workflow_instance_id = ?",
                 totalProcessed, tenantId, instanceId);
 
+        log.info("action.bay-complete.done tenantId={} instanceId={} linesClosed={} totalProcessed={}",
+                tenantId, instanceId, closed.size(), totalProcessed);
+
         return ActionResult.builder()
                 .ok(true)
                 .message(closed.size() + " bay line(s) closed, processed " + totalProcessed + " total — pick another bay or press Completed")
                 .data(Map.of("closed", closed, "totalProcessed", totalProcessed))
                 .build();
+    }
+
+    /**
+     * Marks the enclosing {@code @Transactional} method rollback-only before
+     * an error return, so a mid-loop failure doesn't leave earlier lines'
+     * stock deduction / bay-row close committed (see class javadoc). Guarded
+     * on {@link TransactionSynchronizationManager#isActualTransactionActive()}
+     * because {@code TransactionAspectSupport.currentTransactionStatus()}
+     * throws {@code NoTransactionException} outside a live Spring AOP proxy —
+     * exactly the unit-test setup this handler's own test suite uses (plain
+     * {@code new M10BayCompleteActionHandler()} + a mocked JdbcTemplate, no
+     * real transaction manager), same constraint {@code M10StartBayActionHandler}
+     * documents on its own rollback branch.
+     */
+    private static void markRollbackOnly() {
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
+        }
     }
 
     private static String str(Map<String, Object> bag, String key) {
