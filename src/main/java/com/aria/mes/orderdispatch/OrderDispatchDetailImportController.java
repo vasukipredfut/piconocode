@@ -37,9 +37,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * {@code m5_order_dispatch_detail}: a point-in-time reconciliation snapshot,
  * not master data, so there's still no upsert (no row is ever updated). A
  * row is instead skipped outright — not inserted, not updated — when its
- * (order_id, route_id, sku_code) already exists for this tenant ({@link
- * #isAlreadyExists}), so re-uploading the same export doesn't keep
- * duplicating identical lines; counted separately as {@code rowsSkippedDuplicate}.
+ * (order_id, route_id, sku_code, order_rate, line_order_qty) already exists
+ * for this tenant ({@link #isAlreadyExists}), so re-uploading the same
+ * export doesn't keep duplicating identical lines; counted separately as
+ * {@code rowsSkippedDuplicate}. A re-upload where the rate or line order qty
+ * changed is imported as a new row rather than skipped.
  *
  * <p>{@code GET /api/m5/order-dispatch-detail/import-page} — a
  * self-contained HTML+JS upload form. This exists because the page-JSON
@@ -106,8 +108,10 @@ public class OrderDispatchDetailImportController {
                     rowNum++;
                     if (!headerSkipped) { headerSkipped = true; continue; }
                     try {
-                        // Positional columns per insertRow(): order_id=1, sku_code=14, route_id=24.
-                        if (isAlreadyExists(tenantId, str(r, 1), str(r, 24), str(r, 14))) {
+                        // Positional columns per insertRow(): order_id=1, sku_code=14, route_id=24,
+                        // order_rate=19, line_order_qty=21.
+                        if (isAlreadyExists(tenantId, str(r, 1), str(r, 24), str(r, 14),
+                                decVal(r, 19), intVal(r, 21))) {
                             skipped++;
                             continue;
                         }
@@ -132,12 +136,18 @@ public class OrderDispatchDetailImportController {
         return ResponseEntity.ok(body);
     }
 
-    /** True if a row for this (order_id, route_id, sku_code) was already imported for this tenant. */
-    private boolean isAlreadyExists(Long tenantId, String orderId, String routeId, String skuCode) {
+    /**
+     * True if a row for this (order_id, route_id, sku_code, order_rate, line_order_qty) was
+     * already imported for this tenant. Rate/qty are part of the key so a re-uploaded export
+     * with a changed rate or line order qty is imported as a new snapshot row, not skipped.
+     */
+    private boolean isAlreadyExists(Long tenantId, String orderId, String routeId, String skuCode,
+            BigDecimal orderRate, Integer lineOrderQty) {
         Integer count = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM m5_order_dispatch_detail WHERE tenant_id = ?
-                AND order_id = ? AND route_id = ? AND sku_code = ? """, Integer.class,
-            tenantId, orderId, routeId, skuCode);
+                AND order_id = ? AND route_id = ? AND sku_code = ?
+                AND order_rate <=> ? AND line_order_qty <=> ? """, Integer.class,
+            tenantId, orderId, routeId, skuCode, orderRate, lineOrderQty);
         return count != null && count > 0;
     }
 
