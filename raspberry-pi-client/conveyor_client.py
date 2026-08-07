@@ -21,6 +21,19 @@ network (TCP/IP) barcode scanner (ScannerSocketReader below, newline-framed,
 auto-reconnecting). Leave "scannerIp" unset to read barcodes from stdin
 instead (dev/testing, or a USB scanner enumerating as a keyboard on the Pi).
 
+Running two independent scanners on one Pi: this script is single-config,
+single-scanner by design (one ConveyorClient = one bayCode = one dispatch
+task's qty tracking = one heartbeat identity). To run a second, independent
+one, launch a second OS process of this SAME script with its own config file
+as the first CLI argument:
+
+    python conveyor_client.py                 # uses config.json (default)
+    python conveyor_client.py config_bay2.json # a second, independent process
+
+Each process gets its own rotating log file too (named after its config
+file's stem) so two processes never interleave writes into the same file —
+see resolve_paths().
+
 Step 2's local pre-check (see ConveyorClient.check_qty_limit) compares the
 scan's quantity against the tracked dispatch task's remaining allowed
 quantity (target_qty - processed_qty) BEFORE calling the backend at all. If
@@ -44,8 +57,8 @@ from pathlib import Path
 
 import requests
 
-CONFIG_PATH = Path(__file__).parent / "config.json"
-LOG_FILE_PATH = Path(__file__).parent / "conveyor_client.log"
+SCRIPT_DIR = Path(__file__).parent
+DEFAULT_CONFIG_PATH = (SCRIPT_DIR / "config.json").resolve()
 LOG_FILE_MAX_BYTES = 5 * 1024 * 1024
 LOG_FILE_BACKUP_COUNT = 5
 HEARTBEAT_INTERVAL_S = 5
@@ -62,24 +75,43 @@ CRASH_RESTART_DELAY_S = 5
 # can go back and read after the fact, not just whatever scrolled past on a
 # terminal nobody was watching.
 _LOG_FORMAT = "%(asctime)s %(levelname)-7s [%(threadName)s] %(message)s"
-_formatter = logging.Formatter(_LOG_FORMAT)
-
-_console_handler = logging.StreamHandler(sys.stdout)
-_console_handler.setFormatter(_formatter)
-
-_file_handler = logging.handlers.RotatingFileHandler(
-    LOG_FILE_PATH, maxBytes=LOG_FILE_MAX_BYTES, backupCount=LOG_FILE_BACKUP_COUNT, encoding="utf-8",
-)
-_file_handler.setFormatter(_formatter)
 
 log = logging.getLogger("conveyor_client")
-log.setLevel(logging.INFO)
-log.addHandler(_console_handler)
-log.addHandler(_file_handler)
 
 
-def load_config():
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+def resolve_paths():
+    """
+    Config path comes from the first CLI argument, defaulting to config.json
+    next to this script — see the module docstring for running a second,
+    independent scanner process. The log file name is derived from the
+    config file's stem (default config.json -> conveyor_client.log,
+    unchanged from before) so two processes on the same Pi, each with their
+    own config file, never interleave writes into the same rotating file.
+    """
+    config_path = Path(sys.argv[1]).expanduser().resolve() if len(sys.argv) > 1 else DEFAULT_CONFIG_PATH
+    log_stem = "conveyor_client" if config_path == DEFAULT_CONFIG_PATH else f"conveyor_client.{config_path.stem}"
+    log_path = SCRIPT_DIR / f"{log_stem}.log"
+    return config_path, log_path
+
+
+def configure_logging(log_file_path):
+    formatter = logging.Formatter(_LOG_FORMAT)
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_file_path, maxBytes=LOG_FILE_MAX_BYTES, backupCount=LOG_FILE_BACKUP_COUNT, encoding="utf-8",
+    )
+    file_handler.setFormatter(formatter)
+
+    log.setLevel(logging.INFO)
+    log.addHandler(console_handler)
+    log.addHandler(file_handler)
+
+
+def load_config(config_path):
+    with open(config_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -429,7 +461,10 @@ def main():
     is logged and retried from scratch after a short delay instead of letting
     the process die, since nothing else in this deployment restarts it.
     """
-    config = load_config()
+    config_path, log_file_path = resolve_paths()
+    configure_logging(log_file_path)
+    log.info("using config %s (log file %s)", config_path, log_file_path)
+    config = load_config(config_path)
     while True:
         try:
             run(config)
