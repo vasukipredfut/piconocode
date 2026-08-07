@@ -1,0 +1,14 @@
+-- gate_pass.gp_number is NOT NULL with no default, normally populated only by
+-- WorkflowProjectionListener's number_column/number_pattern mechanism on the
+-- first workflow transition (INSERT branch only — see project()). The new
+-- plain "save" Gate Pass path (V224/V225) has no workflow instance yet at
+-- save time, so there is nothing to generate a "GP-{tenant}-{instance}" number
+-- from — the INSERT fails outright without this.
+--
+-- Relaxed to NULL rather than adding a default: multiple NULLs are allowed
+-- under the existing UNIQUE KEY (tenant_id, gp_number), so this doesn't
+-- weaken that constraint, and every other write path (which always sets
+-- gp_number via the workflow projection) is unaffected. GatePassDispatchLinkListener
+-- fills in the real "GP-{tenant}-{instance}" number once the workflow
+-- actually starts, matching the existing convention exactly.
+ALTER TABLE gate_pass MODIFY gp_number VARCHAR(32) NULL;
