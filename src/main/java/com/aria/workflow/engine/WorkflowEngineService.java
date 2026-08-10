@@ -359,22 +359,64 @@ public class WorkflowEngineService {
                 .toList();
     }
 
+    private static final String DISPATCH_VEHICLE_DETAILS_PAGE = "aria:dispatch-vehicle-details";
+
     /**
      * Page-scoped work queue: only the open instances whose current state is
      * a state this page acts on (the {@code from} of a transition that submits
      * this page). Returns {@code null} when {@code pageCode} is not used by any
      * transition — i.e. it is not a workflow step page (e.g. a persona inbox) —
      * so the caller can fall back to the persona queue.
+     *
+     * <p>For {@link #DISPATCH_VEHICLE_DETAILS_PAGE} specifically, this is
+     * appended with plain-saved gate passes that have no workflow_instance at
+     * all yet (see {@link #plainGatePassQueueItems}) — otherwise a gate pass
+     * created without picking a Flow Variant (see
+     * {@code GatePassCreateActionHandler}) would never show up anywhere for
+     * the operator to act on.
      */
     @Transactional(value = "m0PageTransactionManager", readOnly = true)
     public List<WorkflowQueueItem> queueForPage(String pageCode, int page, int size) {
         Long tenantId = TenantContext.get();
         Set<String> keys = statesForPage(tenantId, pageCode);
-        if (keys.isEmpty()) return null; // not a step page — caller falls back
+        if (keys.isEmpty() && !DISPATCH_VEHICLE_DETAILS_PAGE.equals(pageCode)) {
+            return null; // not a step page — caller falls back
+        }
         Pageable p = PageRequest.of(Math.max(page, 0), Math.max(1, Math.min(size, 100)));
-        return instances.queueForWorkflowStates(tenantId, keys, p).getContent().stream()
-                .map(this::toQueueItem)
-                .toList();
+        List<WorkflowQueueItem> items = new ArrayList<>(keys.isEmpty()
+                ? List.of()
+                : instances.queueForWorkflowStates(tenantId, keys, p).getContent().stream()
+                        .map(this::toQueueItem)
+                        .toList());
+        if (DISPATCH_VEHICLE_DETAILS_PAGE.equals(pageCode)) {
+            items.addAll(plainGatePassQueueItems(tenantId));
+        }
+        return items;
+    }
+
+    /**
+     * gate_pass rows saved via {@code gatepass.create} with no Flow Variant
+     * picked (see {@code GatePassCreateActionHandler}) — {@code
+     * workflow_instance_id} stays {@code NULL} forever until one starts, so
+     * {@link #queueForWorkflowStates} never surfaces them. {@code id} here is
+     * the {@code gate_pass.id}, not a workflow instance id — {@code
+     * workflowCode}/{@code currentState} are null, the caller distinguishes
+     * these "not started yet" rows from real instance rows on that basis.
+     */
+    private List<WorkflowQueueItem> plainGatePassQueueItems(Long tenantId) {
+        return jdbc.queryForList(
+                "SELECT id, gp_number, vehicle_no, status, updated_at FROM gate_pass " +
+                "WHERE tenant_id=? AND workflow_instance_id IS NULL AND status='GATE_PASS_CREATED' " +
+                "ORDER BY updated_at DESC",
+                tenantId).stream()
+            .map(row -> WorkflowQueueItem.builder()
+                    .id((Long) row.get("id"))
+                    .gpNumber((String) row.get("gp_number"))
+                    .businessRef((String) row.get("vehicle_no"))
+                    .status((String) row.get("status"))
+                    .updatedAt(toInstant(row.get("updated_at")))
+                    .build())
+            .toList();
     }
 
     /**
