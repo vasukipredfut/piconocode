@@ -407,7 +407,7 @@ public class WorkflowEngineService {
         return jdbc.queryForList(
                 "SELECT id, gp_number, vehicle_no, status, updated_at FROM gate_pass " +
                 "WHERE tenant_id=? AND workflow_instance_id IS NULL AND status='GATE_PASS_CREATED' " +
-                "ORDER BY updated_at DESC",
+                "ORDER BY updated_at ASC",
                 tenantId).stream()
             .map(row -> WorkflowQueueItem.builder()
                     .id((Long) row.get("id"))

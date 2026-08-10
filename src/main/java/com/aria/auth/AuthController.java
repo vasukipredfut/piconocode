@@ -78,6 +78,7 @@ public class AuthController {
 
             List<Map<String, Object>> permissions = List.of();
             String landingRoute = null;
+            String roleName = null;
             Integer roleId = parseRoleId(roles);
             if (roleId != null) {
                 permissions = jdbc.queryForList("SELECT * FROM permissions WHERE role_id = ?", roleId);
@@ -86,6 +87,13 @@ public class AuthController {
                 // the home dashboard. See V126__role_landing_route.sql.
                 landingRoute = jdbc.query(
                         "SELECT landing_route FROM role WHERE id = ?",
+                        rs -> rs.next() ? rs.getString(1) : null, roleId);
+                // roles[] only ever carries the numeric role_id (see
+                // parseRoleId) — the frontend needs the human-readable name
+                // too (e.g. for menu/role labels), same lookup
+                // PageDefinitionController#currentRoleName does per-request.
+                roleName = jdbc.query(
+                        "SELECT name FROM role WHERE id = ?",
                         rs -> rs.next() ? rs.getString(1) : null, roleId);
             }
 
@@ -96,6 +104,7 @@ public class AuthController {
             resp.put("id", principal.getId());
             resp.put("username", principal.getUsername());
             resp.put("roles", roles);
+            resp.put("roleName", roleName);
             resp.put("permissions", permissions);
             resp.put("landingRoute", landingRoute);
             return ResponseEntity.ok(resp);

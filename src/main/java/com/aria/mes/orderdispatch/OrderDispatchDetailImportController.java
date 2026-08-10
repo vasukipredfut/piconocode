@@ -274,6 +274,11 @@ public class OrderDispatchDetailImportController {
             return ResponseEntity.status(HttpStatus.FORBIDDEN)
                 .body(Map.of("ok", false, "error", "Not authenticated"));
         }
+        // SuperAdmin bypasses every write-role check, same convention as
+        // PageDefinitionController#SUPER_ROLE and GenericEntityController#checkRole.
+        if ("SuperAdmin".equalsIgnoreCase(roleName)) {
+            return null;
+        }
         if (!WRITE_ROLES.contains(roleName.toLowerCase(Locale.ROOT))) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN)
                 .body(Map.of("ok", false, "error", "Role '" + roleName + "' cannot import Order Dispatch Detail"));

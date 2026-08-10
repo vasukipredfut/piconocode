@@ -11,7 +11,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
-import java.util.Set;
 
 /**
  * Links the just-started workflow instance back onto the {@code gate_pass}
@@ -40,6 +39,15 @@ import java.util.Set;
  * already stamped a permanent one from the per-tenant sequence at save time,
  * and the operator needs that same number to stay on the printed slip.
  *
+ * <p>Scoped by tenant, not by a hardcoded workflow-code allowlist: every
+ * tenant-1 M10/M5 workflow is meant to eventually follow this decoupled
+ * plain-save-then-link pattern, so re-checking a fixed code list on every
+ * addition would just be a maintenance trap. For a workflow that DOESN'T use
+ * this pattern (its entry page starts the workflow directly, e.g. some
+ * M10.PackLoading/TankerOutbound/FGLoading flows), the lookup below simply
+ * finds no unlinked row and no-ops — see the two WARN branches, which fire
+ * every time for those, so are expected noise for such flows, not errors.
+ *
  * <p>{@code @Order(HIGHEST_PRECEDENCE)} so this runs before
  * WorkflowProjectionListener in WorkflowEngineService's
  * {@code List<WorkflowTransitionListener>} autowiring — otherwise the generic
@@ -51,8 +59,7 @@ import java.util.Set;
 public class GatePassDispatchLinkListener implements WorkflowTransitionListener {
 
     private static final Logger log = LoggerFactory.getLogger(GatePassDispatchLinkListener.class);
-    private static final Set<String> WORKFLOW_CODES =
-            Set.of("M10.TankerInbound", "M10.PackUnload", "M10.ReturnStockIn");
+    private static final long LINKED_TENANT_ID = 1L;
 
     private final JdbcTemplate jdbc;
 
@@ -62,13 +69,20 @@ public class GatePassDispatchLinkListener implements WorkflowTransitionListener 
 
     @Override
     public void onTransition(WorkflowInstance instance, String previousState, Map<String, Object> bag) {
-        if (bag == null || !"DRAFT".equals(previousState) || !WORKFLOW_CODES.contains(instance.getWorkflowCode())) {
+        if (bag == null || !"DRAFT".equals(previousState)
+                || instance.getTenantId() == null || instance.getTenantId() != LINKED_TENANT_ID) {
+            log.debug("gate pass link skipped: instance={} workflowCode={} tenantId={} previousState={} bagPresent={}",
+                    instance.getId(), instance.getWorkflowCode(), instance.getTenantId(), previousState, bag != null);
             return;
         }
         try {
             Map<String, Object> page = pageData(bag, "aria:dispatch-vehicle-details");
             String vehicleNo = str(page, "vehicleNo");
-            if (vehicleNo == null) return;
+            if (vehicleNo == null) {
+                log.warn("gate pass link failed for instance={}: no vehicleNo in bag[aria:dispatch-vehicle-details]={}",
+                        instance.getId(), page);
+                return;
+            }
 
             Long tenantId = TenantContext.get();
             Long instanceId = instance.getId();
@@ -78,12 +92,18 @@ public class GatePassDispatchLinkListener implements WorkflowTransitionListener 
                     "ORDER BY created_at DESC LIMIT 1",
                     rs -> rs.next() ? rs.getLong(1) : null,
                     tenantId, vehicleNo);
-            if (gatePassId == null) return;
+            if (gatePassId == null) {
+                log.warn("gate pass link failed for instance={}: no unlinked gate_pass row for tenant={} vehicleNo='{}'",
+                        instance.getId(), tenantId, vehicleNo);
+                return;
+            }
 
-            jdbc.update(
+            int updated = jdbc.update(
                     "UPDATE gate_pass SET workflow_instance_id=?, flow_variant_code=? " +
                     "WHERE id=? AND tenant_id=? AND workflow_instance_id IS NULL",
                     instanceId, instance.getWorkflowCode(), gatePassId, tenantId);
+            log.debug("gate pass link: instance={} vehicleNo='{}' gatePassId={} rowsUpdated={}",
+                    instanceId, vehicleNo, gatePassId, updated);
         } catch (Exception e) {
             log.warn("gate pass dispatch link failed for instance={}: {}", instance.getId(), e.getMessage());
         }
