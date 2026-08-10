@@ -63,7 +63,8 @@ public class PageDefinitionController {
 
     @GetMapping("/api/m0/pages")
     @Operation(summary = "List pages (paginated). Optional category + status filters. " +
-            "Also hides pages the caller's role has explicitly denied read on.")
+            "Non-SuperAdmin callers only see pages their role has an explicit " +
+            "role_page_permission can_read=1 grant for.")
     public ResponseEntity<Page<PageDefinition>> list(
             @RequestParam(required = false) String category,
             @RequestParam(required = false) String status,

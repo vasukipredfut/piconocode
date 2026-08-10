@@ -63,15 +63,27 @@ public interface PageDefinitionRepository extends JpaRepository<PageDefinition, 
      * Same resolved catalogue as {@link #findResolved}, plus a role-level
      * visibility filter so the sidebar only lists pages the caller's role can
      * actually read (no per-employee override layer — out of scope for now).
-     * A {@code role_page_permission} row with {@code can_read = 0} for this
-     * role+page hides it; a missing row never hides anything (default
-     * read=true, same convention as {@code EmployeeAccessMatrixController}).
+     * Whitelist model, opposite of {@code EmployeeAccessMatrixController}'s
+     * "missing row means default read=true" convention: a page only shows up
+     * when {@code role_page_permission} has an explicit {@code can_read = 1}
+     * row for this role+page. No row (or a row with {@code can_read = 0})
+     * hides it — a role with zero granted rows sees an empty page list.
      *
      * <p>Native (not JPQL) because {@code role_page_permission} isn't a JPA
      * entity; {@code SELECT p.*} maps back onto {@link PageDefinition} since
      * its {@code @Column} names match the table 1:1. SuperAdmin bypasses this
      * entirely at the caller (see {@code PageDefinitionController}) rather
      * than being special-cased in the query.
+     *
+     * <p>{@code rpp.page_code = p.code} is explicitly {@code COLLATE}d:
+     * {@code page_definition.code} is {@code utf8mb4_uca1400_ai_ci} (see
+     * V1 baseline) but V195 created {@code role_page_permission} with no
+     * explicit table collation, so it silently inherits whatever the
+     * server's utf8mb4 default collation is — {@code utf8mb4_general_ci} on
+     * at least one deployment, which MariaDB refuses to compare against
+     * {@code utf8mb4_uca1400_ai_ci} without an explicit common collation
+     * ("Illegal mix of collations"). Forcing both sides to the same
+     * collation here avoids depending on the server's per-install default.
      */
     @Query(
         value = "SELECT p.* FROM page_definition p "
@@ -82,11 +94,12 @@ public interface PageDefinitionRepository extends JpaRepository<PageDefinition, 
               + "  AND (p.tenant_id = :tenantId "
               + "       OR NOT EXISTS (SELECT 1 FROM page_definition o "
               + "                      WHERE o.code = p.code AND o.tenant_id = :tenantId)) "
-              + "  AND COALESCE("
-              + "        (SELECT rpp.can_read FROM role_page_permission rpp "
-              + "         WHERE rpp.role_id = :roleId AND rpp.page_code = p.code "
-              + "           AND rpp.tenant_id IN (:tenantId, -1) LIMIT 1), "
-              + "        1) = 1",
+              + "  AND EXISTS ("
+              + "        SELECT 1 FROM role_page_permission rpp "
+              + "        WHERE rpp.role_id = :roleId "
+              + "          AND rpp.page_code COLLATE utf8mb4_general_ci = p.code COLLATE utf8mb4_general_ci "
+              + "          AND rpp.tenant_id IN (:tenantId, -1) "
+              + "          AND rpp.can_read = 1)",
         countQuery =
                 "SELECT COUNT(*) FROM page_definition p "
               + "WHERE p.tenant_id IN (:tenantId, -1) "
@@ -96,11 +109,12 @@ public interface PageDefinitionRepository extends JpaRepository<PageDefinition, 
               + "  AND (p.tenant_id = :tenantId "
               + "       OR NOT EXISTS (SELECT 1 FROM page_definition o "
               + "                      WHERE o.code = p.code AND o.tenant_id = :tenantId)) "
-              + "  AND COALESCE("
-              + "        (SELECT rpp.can_read FROM role_page_permission rpp "
-              + "         WHERE rpp.role_id = :roleId AND rpp.page_code = p.code "
-              + "           AND rpp.tenant_id IN (:tenantId, -1) LIMIT 1), "
-              + "        1) = 1",
+              + "  AND EXISTS ("
+              + "        SELECT 1 FROM role_page_permission rpp "
+              + "        WHERE rpp.role_id = :roleId "
+              + "          AND rpp.page_code COLLATE utf8mb4_general_ci = p.code COLLATE utf8mb4_general_ci "
+              + "          AND rpp.tenant_id IN (:tenantId, -1) "
+              + "          AND rpp.can_read = 1)",
         nativeQuery = true)
     Page<PageDefinition> findResolvedForRole(@Param("tenantId") Long tenantId,
                                              @Param("category") String category,

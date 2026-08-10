@@ -74,7 +74,7 @@ public class GatePassDispatchLinkListener implements WorkflowTransitionListener 
             Long instanceId = instance.getId();
             Long gatePassId = jdbc.query(
                     "SELECT id FROM gate_pass WHERE tenant_id=? AND vehicle_no=? " +
-                    "AND workflow_instance_id IS NULL AND loading_type='UN_LOADING' " +
+                    "AND workflow_instance_id IS NULL " +
                     "ORDER BY created_at DESC LIMIT 1",
                     rs -> rs.next() ? rs.getLong(1) : null,
                     tenantId, vehicleNo);
