@@ -19,9 +19,11 @@ import java.util.Map;
  * every {@code loading_progress_detail_bay} row for that SKU — a vehicle
  * can load the same SKU across more than one bay session; see
  * {@code M10StartBayActionHandler}/{@code M10BayCompleteActionHandler}).
- * Each content item carries {@code sku_code}, {@code order_qty} (the
- * summed target across every bay session for that SKU), and
- * {@code processed_qty} (the summed total done so far).
+ * Each content item carries {@code sku_code}, {@code sku_desc} (the SKU's
+ * display name, taken from whichever bay row happens to win {@code MAX()} —
+ * bay entries for the same SKU are expected to carry the same description),
+ * {@code order_qty} (the summed target across every bay session for that
+ * SKU), and {@code processed_qty} (the summed total done so far).
  *
  * <p>Wrapped in {@link DataSourceSpec.Response} — the existing
  * "frontend-friendly shape mirroring Spring's Page" envelope this repo
@@ -62,6 +64,7 @@ public class PendingSkuController {
         long tenantId = TenantContext.get();
         List<Map<String, Object>> content = jdbc.queryForList(
                 "SELECT b.sku_code AS sku_code, "
+                        + "MAX(b.sku_desc) AS sku_desc, "
                         + "SUM(b.quantity) AS order_qty, "
                         + "SUM(COALESCE(b.processed_quantity, 0)) AS processed_qty "
                         + "FROM loading_progress_detail_bay b "
@@ -77,6 +80,7 @@ public class PendingSkuController {
                 .map(r -> {
                     Map<String, Object> row = new LinkedHashMap<>();
                     row.put("sku_code", r.get("sku_code"));
+                    row.put("sku_desc", r.get("sku_desc"));
                     row.put("order_qty", r.get("order_qty"));
                     row.put("processed_qty", r.get("processed_qty"));
                     return row;
