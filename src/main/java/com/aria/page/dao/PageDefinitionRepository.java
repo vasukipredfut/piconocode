@@ -59,6 +59,56 @@ public interface PageDefinitionRepository extends JpaRepository<PageDefinition, 
                                       @Param("excludeStatus") String excludeStatus,
                                       Pageable pageable);
 
+    /**
+     * Same resolved catalogue as {@link #findResolved}, plus a role-level
+     * visibility filter so the sidebar only lists pages the caller's role can
+     * actually read (no per-employee override layer — out of scope for now).
+     * A {@code role_page_permission} row with {@code can_read = 0} for this
+     * role+page hides it; a missing row never hides anything (default
+     * read=true, same convention as {@code EmployeeAccessMatrixController}).
+     *
+     * <p>Native (not JPQL) because {@code role_page_permission} isn't a JPA
+     * entity; {@code SELECT p.*} maps back onto {@link PageDefinition} since
+     * its {@code @Column} names match the table 1:1. SuperAdmin bypasses this
+     * entirely at the caller (see {@code PageDefinitionController}) rather
+     * than being special-cased in the query.
+     */
+    @Query(
+        value = "SELECT p.* FROM page_definition p "
+              + "WHERE p.tenant_id IN (:tenantId, -1) "
+              + "  AND (:category IS NULL OR p.category = :category) "
+              + "  AND (:status IS NULL OR p.status = :status) "
+              + "  AND (:excludeStatus IS NULL OR p.status <> :excludeStatus) "
+              + "  AND (p.tenant_id = :tenantId "
+              + "       OR NOT EXISTS (SELECT 1 FROM page_definition o "
+              + "                      WHERE o.code = p.code AND o.tenant_id = :tenantId)) "
+              + "  AND COALESCE("
+              + "        (SELECT rpp.can_read FROM role_page_permission rpp "
+              + "         WHERE rpp.role_id = :roleId AND rpp.page_code = p.code "
+              + "           AND rpp.tenant_id IN (:tenantId, -1) LIMIT 1), "
+              + "        1) = 1",
+        countQuery =
+                "SELECT COUNT(*) FROM page_definition p "
+              + "WHERE p.tenant_id IN (:tenantId, -1) "
+              + "  AND (:category IS NULL OR p.category = :category) "
+              + "  AND (:status IS NULL OR p.status = :status) "
+              + "  AND (:excludeStatus IS NULL OR p.status <> :excludeStatus) "
+              + "  AND (p.tenant_id = :tenantId "
+              + "       OR NOT EXISTS (SELECT 1 FROM page_definition o "
+              + "                      WHERE o.code = p.code AND o.tenant_id = :tenantId)) "
+              + "  AND COALESCE("
+              + "        (SELECT rpp.can_read FROM role_page_permission rpp "
+              + "         WHERE rpp.role_id = :roleId AND rpp.page_code = p.code "
+              + "           AND rpp.tenant_id IN (:tenantId, -1) LIMIT 1), "
+              + "        1) = 1",
+        nativeQuery = true)
+    Page<PageDefinition> findResolvedForRole(@Param("tenantId") Long tenantId,
+                                             @Param("category") String category,
+                                             @Param("status") String status,
+                                             @Param("excludeStatus") String excludeStatus,
+                                             @Param("roleId") Long roleId,
+                                             Pageable pageable);
+
     Page<PageDefinition> findByTenantId(Long tenantId, Pageable pageable);
 
     Page<PageDefinition> findByTenantIdAndStatus(Long tenantId, String status, Pageable pageable);

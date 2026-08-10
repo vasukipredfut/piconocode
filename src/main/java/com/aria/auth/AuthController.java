@@ -32,15 +32,15 @@ import com.aria.config.JwtUtils;
  * <p>Login is a straight credential check → JWT (no shift/attendance gate — the
  * legacy controller's biometric precondition was deliberately dropped). The
  * response shape matches what the frontend consumes:
- * {@code {accessToken, tokenType, refreshToken, id, username, roles[], permissions[], pagePermissions[]}}.
+ * {@code {accessToken, tokenType, refreshToken, id, username, roles[], permissions[]}}.
  *
  * <p>{@code permissions} is the older Module/SubModule/ActionItem-shaped grant
  * ({@code permissions} table, role_id-keyed) — kept as-is, untouched here.
- * {@code pagePermissions} is the newer page-substrate-shaped grant
- * ({@code role_page_permission}, V195/V210): one entry per (role, page_code)
- * with can_read/can_write/can_approve. A page_code with no entry here means
- * the hardcoded default (read=true, write=false, approve=false) — same
- * resolution convention as {@code EmployeeAccessMatrixController}.
+ * {@code role_page_permission} (V195/V210) grants are not shipped at login —
+ * they're enforced server-side per request instead: see
+ * {@code PageDefinitionRepository#findResolvedForRole}, which filters the
+ * {@code GET /api/m0/pages} sidebar listing directly by the caller's role, so
+ * there's no login-time snapshot for a client to keep in sync.
  */
 @RestController
 public class AuthController {
@@ -77,14 +77,10 @@ public class AuthController {
                     Timestamp.from(Instant.now().plus(Duration.ofDays(7))));
 
             List<Map<String, Object>> permissions = List.of();
-            List<Map<String, Object>> pagePermissions = List.of();
             String landingRoute = null;
             Integer roleId = parseRoleId(roles);
             if (roleId != null) {
                 permissions = jdbc.queryForList("SELECT * FROM permissions WHERE role_id = ?", roleId);
-                pagePermissions = jdbc.queryForList(
-                        "SELECT page_code, can_read, can_write, can_approve FROM role_page_permission WHERE role_id = ?",
-                        roleId);
                 // DB-driven post-login landing route (per role — customizable data,
                 // not hardcoded in the frontend). NULL → frontend falls back to
                 // the home dashboard. See V126__role_landing_route.sql.
@@ -101,7 +97,6 @@ public class AuthController {
             resp.put("username", principal.getUsername());
             resp.put("roles", roles);
             resp.put("permissions", permissions);
-            resp.put("pagePermissions", pagePermissions);
             resp.put("landingRoute", landingRoute);
             return ResponseEntity.ok(resp);
 

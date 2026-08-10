@@ -34,14 +34,14 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>{@code POST /api/m5/order-dispatch-detail/import} — multipart
  * {@code file} (csv/tsv), bulk-inserts one row per data line into
- * {@code m5_order_dispatch_detail}: a point-in-time reconciliation snapshot,
- * not master data, so there's still no upsert (no row is ever updated). A
- * row is instead skipped outright — not inserted, not updated — when its
- * (order_id, route_id, sku_code, order_rate, line_order_qty) already exists
- * for this tenant ({@link #isAlreadyExists}), so re-uploading the same
- * export doesn't keep duplicating identical lines; counted separately as
- * {@code rowsSkippedDuplicate}. A re-upload where the rate or line order qty
- * changed is imported as a new row rather than skipped.
+ * {@code m5_order_dispatch_detail}: a point-in-time reconciliation snapshot.
+ * Re-uploading for a route that's already been imported doesn't duplicate
+ * lines: for every distinct {@code route_id} seen in the file, the first row
+ * for that route triggers a delete of that route's existing still-{@code
+ * active} rows for this tenant (see {@code vehicle_status}, stamped "active"
+ * on every import and flipped to "inactive" by {@link #gateOut}) before any
+ * new rows for the route are inserted — rows already gated out are historical
+ * and left alone. Deleted-row count is reported as {@code rowsReplaced}.
  *
  * <p>{@code GET /api/m5/order-dispatch-detail/import-page} — a
  * self-contained HTML+JS upload form. This exists because the page-JSON
@@ -82,8 +82,9 @@ public class OrderDispatchDetailImportController {
         Long tenantId = TenantContext.get();
         String sourceFile = file.getOriginalFilename();
         List<String> errors = new ArrayList<>();
+        Set<String> clearedRoutes = new HashSet<>();
         int imported = 0;
-        int skipped = 0;
+        int replaced = 0;
 
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8))) {
@@ -108,12 +109,13 @@ public class OrderDispatchDetailImportController {
                     rowNum++;
                     if (!headerSkipped) { headerSkipped = true; continue; }
                     try {
-                        // Positional columns per insertRow(): order_id=1, sku_code=14, route_id=24,
-                        // order_rate=19, line_order_qty=21.
-                        if (isAlreadyExists(tenantId, str(r, 1), str(r, 24), str(r, 14),
-                                decVal(r, 19), intVal(r, 21))) {
-                            skipped++;
-                            continue;
+                        // route_id is column 24 per insertRow()'s positional mapping.
+                        String routeId = str(r, 24);
+                        if (routeId != null && clearedRoutes.add(routeId)) {
+                            replaced += jdbc.update(
+                                "DELETE FROM m5_order_dispatch_detail " +
+                                "WHERE tenant_id = ? AND route_id = ? AND vehicle_status = 'active'",
+                                tenantId, routeId);
                         }
                         insertRow(tenantId, r, sourceFile);
                         imported++;
@@ -130,41 +132,64 @@ public class OrderDispatchDetailImportController {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("ok", true);
         body.put("rowsImported", imported);
-        body.put("rowsSkippedDuplicate", skipped);
+        body.put("rowsReplaced", replaced);
         body.put("rowsFailed", errors.size());
         body.put("errors", errors);
         return ResponseEntity.ok(body);
     }
 
     /**
-     * True if a row for this (order_id, route_id, sku_code, order_rate, line_order_qty) was
-     * already imported for this tenant. Rate/qty are part of the key so a re-uploaded export
-     * with a changed rate or line order qty is imported as a new snapshot row, not skipped.
+     * {@code POST /api/m5/order-dispatch-detail/gate-out} — {@code {"vehicleNo": "..."}}.
+     * Flips every "active" row for this vehicle to "inactive": once it has
+     * gated out, the order data imported for it has been fully consumed.
+     * Matches by {@code vehicle_no} alone (no route_id/order_id needed) —
+     * there is no existing FK from a gate pass/dispatch record to this table,
+     * so vehicle_no is the one field both sides already share.
      */
-    private boolean isAlreadyExists(Long tenantId, String orderId, String routeId, String skuCode,
-            BigDecimal orderRate, Integer lineOrderQty) {
-        Integer count = jdbc.queryForObject("""
-                SELECT COUNT(*) FROM m5_order_dispatch_detail WHERE tenant_id = ?
-                AND order_id = ? AND route_id = ? AND sku_code = ?
-                AND order_rate <=> ? AND line_order_qty <=> ? """, Integer.class,
-            tenantId, orderId, routeId, skuCode, orderRate, lineOrderQty);
-        return count != null && count > 0;
+    @PostMapping("/gate-out")
+    public ResponseEntity<?> gateOut(@RequestBody Map<String, Object> body) {
+        ResponseEntity<?> denied = checkWriteRole();
+        if (denied != null) return denied;
+        String vehicleNo = body == null ? null : str(body.get("vehicleNo"));
+        if (vehicleNo == null || vehicleNo.isBlank())
+            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "vehicleNo required"));
+
+        Long tenantId = TenantContext.get();
+        int updated = jdbc.update(
+            "UPDATE m5_order_dispatch_detail SET vehicle_status = 'inactive' " +
+            "WHERE tenant_id = ? AND vehicle_no = ? AND vehicle_status = 'active'",
+            tenantId, vehicleNo);
+
+        return ResponseEntity.ok(Map.of("ok", true, "vehicleNo", vehicleNo, "rowsUpdated", updated));
     }
 
+    private static String str(Object v) {
+        if (v == null) return null;
+        String s = String.valueOf(v).trim();
+        return s.isEmpty() ? null : s;
+    }
+
+    /**
+     * vehicle_status (separate from the pre-existing status column, which
+     * already carries its own Dispatched/Assigned All/Pending meaning — see
+     * V7's list-page filter) is always stamped "active" on import.
+     * {@link #gateOut} is what later flips it to "inactive", once the
+     * vehicle it's tied to has gated out.
+     */
     private void insertRow(Long tenantId, CSVRecord r, String sourceFile) {
         jdbc.update(
             "INSERT INTO m5_order_dispatch_detail (" +
             "tenant_id, customer_email, order_id, rd_code, rd_desc, created_on, submitted_on, updated_on, " +
-            "order_qty, cancel_qty, dispatch_qty, remaining_qty, status, detained, sku_group, sku_code, sku_desc, " +
+            "order_qty, cancel_qty, dispatch_qty, remaining_qty, status, vehicle_status, detained, sku_group, sku_code, sku_desc, " +
             "sku_active_on, staged_on, staged_rate, order_rate, stock_qty, line_order_qty, line_cancel_qty, " +
             "line_remaining_qty, route_id, line_dispatch_qty, assign_qty, dispatched_on, vehicle_no, driver_name, " +
             "driver_phone, dispatch_by, load_wgt, dispatch_wgt, reason, source_file) " +
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             tenantId,
             str(r, 0), str(r, 1), str(r, 2), str(r, 3),
             dateVal(r, 4), dateVal(r, 5), dateVal(r, 6),
             intVal(r, 7), intVal(r, 8), intVal(r, 9), intVal(r, 10),
-            str(r, 11), boolVal(r, 12), str(r, 13), str(r, 14), str(r, 15),
+            str(r, 11), "active", boolVal(r, 12), str(r, 13), str(r, 14), str(r, 15),
             dateVal(r, 16), dateVal(r, 17), decVal(r, 18), decVal(r, 19), intVal(r, 20),
             intVal(r, 21), intVal(r, 22), intVal(r, 23), str(r, 24), intVal(r, 25), intVal(r, 26),
             dateVal(r, 27), str(r, 28), str(r, 29), str(r, 30), str(r, 31),

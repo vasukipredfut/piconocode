@@ -18,12 +18,17 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * REST surface for the M0 page-definition substrate.
@@ -49,14 +54,54 @@ public class PageDefinitionController {
     @Autowired private PageElementCatalogRepository catalogRepo;
     @Autowired private org.springframework.jdbc.core.JdbcTemplate jdbc;
 
+    // SuperAdmin bypasses every role_page_permission check, same convention
+    // as GenericEntityController#checkRole and EmployeeAccessMatrixController.
+    // No shared utility exists for this in the codebase (checked); every
+    // bespoke controller replicates it.
+    private static final String SUPER_ROLE = "SuperAdmin";
+    private final ConcurrentHashMap<Long, String> roleNameCache = new ConcurrentHashMap<>();
+
     @GetMapping("/api/m0/pages")
-    @Operation(summary = "List pages (paginated). Optional category + status filters.")
+    @Operation(summary = "List pages (paginated). Optional category + status filters. " +
+            "Also hides pages the caller's role has explicitly denied read on.")
     public ResponseEntity<Page<PageDefinition>> list(
             @RequestParam(required = false) String category,
             @RequestParam(required = false) String status,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(pages.list(tenant(), category, status, PageRequest.of(page, size)));
+        PageRequest pageable = PageRequest.of(page, size);
+
+        Long roleId = currentRoleId();
+        if (roleId == null || SUPER_ROLE.equalsIgnoreCase(currentRoleName(roleId))) {
+            return ResponseEntity.ok(pages.list(tenant(), category, status, pageable));
+        }
+        return ResponseEntity.ok(pages.listForRole(tenant(), category, status, roleId, pageable));
+    }
+
+    private static Long currentRoleId() {
+        Authentication a = SecurityContextHolder.getContext().getAuthentication();
+        if (a == null || a.getAuthorities() == null) return null;
+        for (GrantedAuthority ga : a.getAuthorities()) {
+            String s = ga.getAuthority();
+            if (s == null) continue;
+            try {
+                return Long.parseLong(s.trim());
+            } catch (NumberFormatException nfe) {
+                // Already a role name (older code paths) — no numeric id to resolve.
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private String currentRoleName(Long roleId) {
+        return roleNameCache.computeIfAbsent(roleId, id -> {
+            try {
+                return jdbc.queryForObject("SELECT name FROM role WHERE id=?", String.class, id);
+            } catch (EmptyResultDataAccessException e) {
+                return null;
+            }
+        });
     }
 
     /**

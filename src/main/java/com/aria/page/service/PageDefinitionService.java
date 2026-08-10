@@ -178,6 +178,18 @@ public class PageDefinitionService {
         return defRepo.findResolved(tenantId, category, status, excludeStatus, pageable);
     }
 
+    /**
+     * Same listing as {@link #list}, filtered to pages the given role can
+     * actually read (see {@link com.aria.page.dao.PageDefinitionRepository#findResolvedForRole}).
+     * Callers resolve SuperAdmin bypass themselves and call {@link #list} instead.
+     */
+    @Transactional(value = "m0PageTransactionManager", readOnly = true)
+    public Page<PageDefinition> listForRole(Long tenantId, String category, String status,
+                                             Long roleId, Pageable pageable) {
+        String excludeStatus = (status == null) ? "ARCHIVED" : null;
+        return defRepo.findResolvedForRole(tenantId, category, status, excludeStatus, roleId, pageable);
+    }
+
     @Transactional(value = "m0PageTransactionManager", readOnly = true)
     public Optional<PageVersion> loadDraft(Long tenantId, String code) {
         PageDefinition def = mustFind(tenantId, code);
