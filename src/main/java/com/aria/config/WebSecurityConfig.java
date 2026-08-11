@@ -98,6 +98,10 @@ public class WebSecurityConfig {
                     // Raspberry Pi ParkingBayScanner — same tokenless-device
                     // convention as the conveyor scanner above.
                     "/api/parking/**",
+                    // Raspberry Pi hand scanner (Gate Pass QR -> gate pass /
+                    // workflow instance / order dispatch / bay assignment
+                    // lookup) — same tokenless-device convention.
+                    "/api/handscanner/**",
                     // Uploaded avatars/documents served as plain static files
                     // (<img src>, direct links) — browsers don't attach the JWT
                     // Authorization header to those requests, so this must stay

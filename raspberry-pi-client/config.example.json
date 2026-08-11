@@ -3,8 +3,6 @@
   "workflowCode": "M12.ConveyorTest",
   "stepCode": "SCANNING",
   "bayCode": "BAY1",
-  "deviceId": "PI-BAY1",
-  "scannerIntegrationId": 10,
-  "scannerIp": "192.168.1.50",
-  "scannerPort": 9200
+  "deviceId": "PI-BAY1-HANDSCANNER",
+  "scannerIntegrationId": 10
 }
