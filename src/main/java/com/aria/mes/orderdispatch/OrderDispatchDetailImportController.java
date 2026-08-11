@@ -5,6 +5,16 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVParser;
 import org.apache.commons.csv.CSVRecord;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.text.PDFTextStripper;
+import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.CellType;
+import org.apache.poi.ss.usermodel.DataFormatter;
+import org.apache.poi.ss.usermodel.DateUtil;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -27,14 +37,27 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Real CSV import for the OrderApp order-vs-dispatch reconciliation export.
- * See {@code V7__order_dispatch_detail.sql} for the full column-mapping
- * rationale (several source headers repeat — once at order level, once at
- * SKU-line level — hence positional, not name-based, column mapping).
+ * Import for the OrderApp order-vs-dispatch reconciliation export. Accepts
+ * CSV/TSV, Excel (.xlsx/.xls), and PDF, all funneled through a common
+ * {@code List<String>} row representation (see {@link #parseRows}) so
+ * {@link #insertRow} and its column-value helpers work identically
+ * regardless of source format. See {@code V7__order_dispatch_detail.sql}
+ * for the full column-mapping rationale (several source headers repeat —
+ * once at order level, once at SKU-line level — hence positional, not
+ * name-based, column mapping).
+ *
+ * <p>PDF rows are recovered from extracted text by splitting on runs of 2+
+ * spaces, which only works for text-based PDFs whose table export preserved
+ * wide column gaps (e.g. a print-to-PDF of the same tabular export). It
+ * cannot handle scanned/image PDFs (no OCR here) or PDFs with tight
+ * single-space column gaps — such rows will simply fail per-row validation
+ * (e.g. missing assign_qty) and show up in {@code errors}, same as any other
+ * malformed row.
  *
  * <p>{@code POST /api/m5/order-dispatch-detail/import} — multipart
- * {@code file} (csv/tsv), bulk-inserts one row per data line into
- * {@code m5_order_dispatch_detail}: a point-in-time reconciliation snapshot.
+ * {@code file} (csv/tsv/xlsx/xls/pdf), bulk-inserts one row per data line
+ * into {@code m5_order_dispatch_detail}: a point-in-time reconciliation
+ * snapshot.
  * Re-uploading for a route that's already been imported doesn't duplicate
  * lines: for every distinct {@code route_id} seen in the file, the first row
  * for that route triggers a delete of that route's existing still-{@code
@@ -81,17 +104,92 @@ public class OrderDispatchDetailImportController {
 
         Long tenantId = TenantContext.get();
         String sourceFile = file.getOriginalFilename();
+        List<List<String>> rows;
+        try {
+            rows = parseRows(file);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", e.getMessage()));
+        } catch (IOException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(Map.of("ok", false, "error", "Could not read file: " + e.getMessage()));
+        }
+        if (rows.isEmpty())
+            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "empty file"));
+
         List<String> errors = new ArrayList<>();
         Set<String> clearedRoutes = new HashSet<>();
         int imported = 0;
         int replaced = 0;
 
+        int rowNum = 0;
+        boolean headerSkipped = false;
+        for (List<String> r : rows) {
+            rowNum++;
+            if (!headerSkipped) { headerSkipped = true; continue; }
+            try {
+                // assign_qty is column 26 per insertRow()'s positional mapping.
+                // Validated before the route_id delete below runs, so a bad
+                // row fails without first wiping that route's existing data.
+                Integer assignQty = intVal(r, 26);
+                if (assignQty == null || assignQty == 0) {
+                    throw new IllegalArgumentException("assign_qty value required (null, empty, or 0 is not allowed)");
+                }
+                // route_id is column 24 per insertRow()'s positional mapping.
+                String routeId = str(r, 24);
+                if (routeId != null && clearedRoutes.add(routeId)) {
+                    replaced += jdbc.update(
+                        "DELETE FROM m5_order_dispatch_detail " +
+                        "WHERE tenant_id = ? AND route_id = ? AND vehicle_status = 'active'",
+                        tenantId, routeId);
+                }
+                insertRow(tenantId, r, sourceFile);
+                imported++;
+            } catch (Exception rowEx) {
+                errors.add("Row " + rowNum + ": " + rowEx.getMessage());
+            }
+        }
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("ok", true);
+        body.put("rowsImported", imported);
+        body.put("rowsReplaced", replaced);
+        body.put("rowsFailed", errors.size());
+        body.put("errors", errors);
+        return ResponseEntity.ok(body);
+    }
+
+    /**
+     * Dispatches to a format-specific parser by file extension and returns
+     * every row (header included — the caller skips row 1) as a list of
+     * column strings, so downstream code never needs to know which format
+     * the file came from.
+     */
+    private List<List<String>> parseRows(MultipartFile file) throws IOException {
+        String name = file.getOriginalFilename();
+        String ext = (name == null) ? "" : name.substring(name.lastIndexOf('.') + 1).toLowerCase(Locale.ROOT);
+        switch (ext) {
+            case "xlsx":
+            case "xls":
+                return parseExcelRows(file);
+            case "pdf":
+                return parsePdfRows(file);
+            case "csv":
+            case "tsv":
+            case "txt":
+                return parseCsvRows(file);
+            default:
+                throw new IllegalArgumentException(
+                    "Unsupported file type '" + ext + "'. Supported: csv, tsv, txt, xlsx, xls, pdf");
+        }
+    }
+
+    private List<List<String>> parseCsvRows(MultipartFile file) throws IOException {
+        List<List<String>> rows = new ArrayList<>();
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8))) {
             reader.mark(8192);
             String firstLine = reader.readLine();
-            if (firstLine == null)
-                return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "empty file"));
+            if (firstLine == null) return rows;
             long tabs = firstLine.chars().filter(c -> c == '\t').count();
             long commas = firstLine.chars().filter(c -> c == ',').count();
             char delimiter = tabs > commas ? '\t' : ',';
@@ -103,39 +201,72 @@ public class OrderDispatchDetailImportController {
                 .withTrim(true);
 
             try (CSVParser parser = new CSVParser(reader, format)) {
-                int rowNum = 0;
-                boolean headerSkipped = false;
                 for (CSVRecord r : parser) {
-                    rowNum++;
-                    if (!headerSkipped) { headerSkipped = true; continue; }
-                    try {
-                        // route_id is column 24 per insertRow()'s positional mapping.
-                        String routeId = str(r, 24);
-                        if (routeId != null && clearedRoutes.add(routeId)) {
-                            replaced += jdbc.update(
-                                "DELETE FROM m5_order_dispatch_detail " +
-                                "WHERE tenant_id = ? AND route_id = ? AND vehicle_status = 'active'",
-                                tenantId, routeId);
-                        }
-                        insertRow(tenantId, r, sourceFile);
-                        imported++;
-                    } catch (Exception rowEx) {
-                        errors.add("Row " + rowNum + ": " + rowEx.getMessage());
-                    }
+                    List<String> cols = new ArrayList<>(r.size());
+                    for (int i = 0; i < r.size(); i++) cols.add(r.get(i));
+                    rows.add(cols);
                 }
             }
-        } catch (IOException e) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                .body(Map.of("ok", false, "error", "Could not read file: " + e.getMessage()));
         }
+        return rows;
+    }
 
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("ok", true);
-        body.put("rowsImported", imported);
-        body.put("rowsReplaced", replaced);
-        body.put("rowsFailed", errors.size());
-        body.put("errors", errors);
-        return ResponseEntity.ok(body);
+    private static final DataFormatter DATA_FORMATTER = new DataFormatter();
+
+    private List<List<String>> parseExcelRows(MultipartFile file) throws IOException {
+        List<List<String>> rows = new ArrayList<>();
+        try (Workbook wb = WorkbookFactory.create(file.getInputStream())) {
+            Sheet sheet = wb.getSheetAt(0);
+            for (Row row : sheet) {
+                int lastCol = row.getLastCellNum();
+                if (lastCol < 0) continue;
+                List<String> cols = new ArrayList<>(lastCol);
+                boolean anyValue = false;
+                for (int c = 0; c < lastCol; c++) {
+                    String v = cellToString(row.getCell(c));
+                    if (!v.isBlank()) anyValue = true;
+                    cols.add(v);
+                }
+                if (anyValue) rows.add(cols);
+            }
+        }
+        return rows;
+    }
+
+    private static String cellToString(Cell cell) {
+        if (cell == null) return "";
+        CellType type = cell.getCellType();
+        if (type == CellType.FORMULA) type = cell.getCachedFormulaResultType();
+        if (type == CellType.NUMERIC && DateUtil.isCellDateFormatted(cell)) {
+            return SOURCE_DATE.format(cell.getLocalDateTimeCellValue());
+        }
+        if (type == CellType.NUMERIC) {
+            double d = cell.getNumericCellValue();
+            if (d == Math.rint(d) && !Double.isInfinite(d)) return String.valueOf((long) d);
+            return String.valueOf(d);
+        }
+        if (type == CellType.BOOLEAN) return String.valueOf(cell.getBooleanCellValue());
+        return DATA_FORMATTER.formatCellValue(cell).trim();
+    }
+
+    /**
+     * PDF has no native table structure, so rows are recovered by splitting
+     * extracted text on runs of 2+ spaces — see the class javadoc for when
+     * this does and doesn't work.
+     */
+    private List<List<String>> parsePdfRows(MultipartFile file) throws IOException {
+        List<List<String>> rows = new ArrayList<>();
+        try (PDDocument doc = PDDocument.load(file.getInputStream())) {
+            PDFTextStripper stripper = new PDFTextStripper();
+            stripper.setSortByPosition(true);
+            String text = stripper.getText(doc);
+            for (String line : text.split("\\r?\\n")) {
+                if (line.isBlank()) continue;
+                String[] cols = line.trim().split("\\s{2,}");
+                rows.add(Arrays.asList(cols));
+            }
+        }
+        return rows;
     }
 
     /**
@@ -176,7 +307,7 @@ public class OrderDispatchDetailImportController {
      * {@link #gateOut} is what later flips it to "inactive", once the
      * vehicle it's tied to has gated out.
      */
-    private void insertRow(Long tenantId, CSVRecord r, String sourceFile) {
+    private void insertRow(Long tenantId, List<String> r, String sourceFile) {
         jdbc.update(
             "INSERT INTO m5_order_dispatch_detail (" +
             "tenant_id, customer_email, order_id, rd_code, rd_desc, created_on, submitted_on, updated_on, " +
@@ -196,33 +327,33 @@ public class OrderDispatchDetailImportController {
             decVal(r, 32), decVal(r, 33), str(r, 34), sourceFile);
     }
 
-    private static String str(CSVRecord r, int i) {
+    private static String str(List<String> r, int i) {
         if (i >= r.size()) return null;
         String v = r.get(i);
         return (v == null || v.isBlank()) ? null : v.trim();
     }
 
-    private static Integer intVal(CSVRecord r, int i) {
+    private static Integer intVal(List<String> r, int i) {
         String v = str(r, i);
         if (v == null) return null;
         try { return Integer.valueOf(v.replaceAll("[,\\s]", "")); }
         catch (NumberFormatException e) { return null; }
     }
 
-    private static BigDecimal decVal(CSVRecord r, int i) {
+    private static BigDecimal decVal(List<String> r, int i) {
         String v = str(r, i);
         if (v == null) return null;
         try { return new BigDecimal(v.replaceAll("[,\\s]", "")); }
         catch (NumberFormatException e) { return null; }
     }
 
-    private static Boolean boolVal(CSVRecord r, int i) {
+    private static Boolean boolVal(List<String> r, int i) {
         String v = str(r, i);
         if (v == null) return null;
         return Boolean.parseBoolean(v.trim());
     }
 
-    private static LocalDateTime dateVal(CSVRecord r, int i) {
+    private static LocalDateTime dateVal(List<String> r, int i) {
         String v = str(r, i);
         if (v == null) return null;
         try { return LocalDateTime.parse(v, SOURCE_DATE); }
@@ -243,8 +374,8 @@ public class OrderDispatchDetailImportController {
             "#result{margin-top:16px;white-space:pre-wrap;font-family:monospace;font-size:12px}" +
             ".err{color:#b00020}.ok{color:#0a7d28}</style></head><body>" +
             "<h2>Import Order Dispatch Detail</h2>" +
-            "<p>Select the OrderApp order-vs-dispatch CSV/TSV export (35 columns).</p>" +
-            "<input type='file' id='f' accept='.csv,.tsv,.txt'/>" +
+            "<p>Select the OrderApp order-vs-dispatch export (35 columns) — CSV, TSV, Excel, or PDF.</p>" +
+            "<input type='file' id='f' accept='.csv,.tsv,.txt,.xlsx,.xls,.pdf'/>" +
             "<button id='go'>Upload</button>" +
             "<div id='result'></div>" +
             "<script>" +

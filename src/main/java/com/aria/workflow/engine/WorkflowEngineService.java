@@ -120,6 +120,16 @@ public class WorkflowEngineService {
     @Transactional("m0PageTransactionManager")
     public WorkflowInstance startInstance(String workflowCode, Map<String, Object> initialContext) {
         Long tenantId = TenantContext.get();
+        String vehicleNo = stringOr(initialContext == null ? null : initialContext.get("businessRef"), null);
+        if (vehicleNo != null) {
+            Optional<WorkflowInstance> existing = findOpenGatePassInstance(tenantId, vehicleNo, workflowCode);
+            if (existing.isPresent()) {
+                log.info("workflow.start reused existing OPEN instance={} tenant={} code={} vehicleNo={} "
+                        + "(duplicate start call for a vehicle already mid-flow — no new instance/gate_pass row created)",
+                        existing.get().getId(), tenantId, workflowCode, vehicleNo);
+                return existing.get();
+            }
+        }
         WorkflowDefinition def = definitions.findLatestPublishedSingle(tenantId, workflowCode)
                 .orElseThrow(() -> new WorkflowDefinitionNotFoundException(
                         "No PUBLISHED workflow_definition for code=" + workflowCode));
@@ -156,6 +166,27 @@ public class WorkflowEngineService {
         log.info("workflow.start tenant={} code={} version={} instance={} state={}",
                 tenantId, def.getCode(), def.getVersion(), inst.getId(), initialState);
         return inst;
+    }
+
+    /**
+     * The still-{@code OPEN} instance already linked (via {@code
+     * gate_pass.workflow_instance_id}) to this vehicle/workflowCode, if one
+     * exists. Guards {@link #startInstance} against a duplicate "start"
+     * call for a vehicle that's already mid-flow (e.g. a double-submit) —
+     * without this, {@code GatePassDispatchLinkListener} finds no unlinked
+     * gate_pass row for the second instance (the first one already claimed
+     * it) and {@code WorkflowProjectionListener} INSERTs a second,
+     * disconnected gate_pass row instead of reusing the first.
+     */
+    private Optional<WorkflowInstance> findOpenGatePassInstance(Long tenantId, String vehicleNo, String workflowCode) {
+        Long instanceId = jdbc.query(
+                "SELECT gp.workflow_instance_id FROM gate_pass gp " +
+                "JOIN workflow_instance wi ON wi.id = gp.workflow_instance_id " +
+                "WHERE gp.tenant_id=? AND gp.vehicle_no=? AND wi.workflow_code=? AND wi.status='OPEN' " +
+                "ORDER BY gp.created_at DESC LIMIT 1",
+                rs -> rs.next() ? rs.getLong(1) : null,
+                tenantId, vehicleNo, workflowCode);
+        return instanceId == null ? Optional.empty() : instances.findByIdAndTenantId(instanceId, tenantId);
     }
 
     // ------------------------------------------------- handle page submission
@@ -415,6 +446,7 @@ public class WorkflowEngineService {
                     .businessRef((String) row.get("vehicle_no"))
                     .status((String) row.get("status"))
                     .updatedAt(toInstant(row.get("updated_at")))
+                    .orderSheetUploaded(orderSheetUploadedFor(tenantId, (String) row.get("vehicle_no")))
                     .build())
             .toList();
     }
@@ -546,6 +578,7 @@ public class WorkflowEngineService {
         Map<String, Object> parking = latestParkingAuditRow(i.getTenantId(), i.getBusinessRef());
         String parkingState = parking == null ? null : (String) parking.get("to_state");
         Map<String, Object> gatePass = gatePassFor(i.getTenantId(), i.getId());
+        String vehicleNo = resolveVehicleNo(i.getBusinessRef(), gatePass);
         return WorkflowQueueItem.builder()
                 .id(i.getId())
                 .workflowCode(i.getWorkflowCode())
@@ -561,6 +594,7 @@ public class WorkflowEngineService {
                 .parkingSince(parking == null ? null : toInstant(parking.get("ts")))
                 .parkingLoggedBy(parking == null ? null : (Long) parking.get("actor_id"))
                 .gpNumber(gatePass == null ? null : (String) gatePass.get("gp_number"))
+                .orderSheetUploaded(orderSheetUploadedFor(i.getTenantId(), vehicleNo))
                 .build();
     }
 
@@ -573,10 +607,40 @@ public class WorkflowEngineService {
      */
     private Map<String, Object> gatePassFor(Long tenantId, Long instanceId) {
         List<Map<String, Object>> rows = jdbc.queryForList(
-                "SELECT gp_number FROM gate_pass " +
+                "SELECT gp_number, vehicle_no FROM gate_pass " +
                 "WHERE tenant_id=? AND workflow_instance_id=?",
                 tenantId, instanceId);
         return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /**
+     * businessRef follows the same two conventions noted on
+     * {@link #resolveGpNumber}: "GatePass#id" (GenericEntityController
+     * flows) or the vehicle_no itself (M10 dispatch flows). The gate_pass
+     * row, when one has been projected already, is authoritative; but for a
+     * fresh M10 instance with no gate_pass row yet (gatePass null, as
+     * WorkflowProjectionListener hasn't run), businessRef already holds the
+     * vehicle_no directly and would otherwise be thrown away.
+     */
+    private static String resolveVehicleNo(String businessRef, Map<String, Object> gatePass) {
+        if (gatePass != null && gatePass.get("vehicle_no") != null) return (String) gatePass.get("vehicle_no");
+        if (businessRef != null && !businessRef.contains("#")) return businessRef;
+        return null;
+    }
+
+    /**
+     * True when the Planning Dispatch Order Sheet has already been imported
+     * for this vehicle — i.e. {@code m5_order_dispatch_detail} has an
+     * "active" row for it (see OrderDispatchDetailImportController#gateOut's
+     * javadoc: vehicle_no is the one field both sides already share).
+     */
+    private boolean orderSheetUploadedFor(Long tenantId, String vehicleNo) {
+        if (vehicleNo == null || vehicleNo.isBlank()) return false;
+        Integer count = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM m5_order_dispatch_detail " +
+                "WHERE tenant_id=? AND vehicle_no=? AND vehicle_status='active'",
+                Integer.class, tenantId, vehicleNo);
+        return count != null && count > 0;
     }
 
     /**

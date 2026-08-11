@@ -46,4 +46,13 @@ public class WorkflowQueueItem {
     private String parkingState;
     private Instant parkingSince;
     private Long parkingLoggedBy;
+
+    /**
+     * True when {@code m5_order_dispatch_detail} has an "active" row for this
+     * vehicle's vehicle_no — i.e. the Planning Dispatch Order Sheet has
+     * already been uploaded for it (see OrderDispatchDetailImportController,
+     * whose gate-out javadoc notes vehicle_no as the one field both sides
+     * share). False when the vehicle number is unknown or no such row exists.
+     */
+    private boolean orderSheetUploaded;
 }
