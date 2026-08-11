@@ -15,15 +15,30 @@ import java.util.Map;
 /**
  * {@code GET /api/m10/loading/{vehicleNo}/pending-skus} — read-only lookup:
  * for the given vehicle's currently OPEN loading transaction, which SKU
- * codes still have {@code processed_quantity < quantity} (summed across
- * every {@code loading_progress_detail_bay} row for that SKU — a vehicle
- * can load the same SKU across more than one bay session; see
- * {@code M10StartBayActionHandler}/{@code M10BayCompleteActionHandler}).
- * Each content item carries {@code sku_code}, {@code sku_desc} (the SKU's
- * display name, taken from whichever bay row happens to win {@code MAX()} —
- * bay entries for the same SKU are expected to carry the same description),
- * {@code order_qty} (the summed target across every bay session for that
- * SKU), and {@code processed_qty} (the summed total done so far).
+ * codes still have processed short of their target. Each content item
+ * carries {@code sku_code}, {@code sku_desc}, {@code order_qty}, and
+ * {@code processed_qty}.
+ *
+ * <p><b>Aggregation grain is {@code (route_id, sku_code)}, not raw
+ * {@code loading_progress_detail_bay} rows.</b> One route/SKU pair is one
+ * order line with ONE fixed target quantity — but {@code M10StartBayActionHandler}
+ * inserts a brand new {@code loading_progress_detail_bay} row every time
+ * "Start Bay" is called for that line (e.g. a retried/duplicate scan), each
+ * carrying that same target again. Naively {@code SUM(b.quantity)} across
+ * every such row for a SKU double/triple-counts the target once per repeat
+ * row (observed live: 3 duplicate rows of quantity=200 summed to a reported
+ * order_qty of 600 for a real target of 200). This query instead takes
+ * {@code MAX(b.quantity)} per {@code (route_id, sku_code)} — collapsing any
+ * number of repeat rows for the same line back down to its one true target —
+ * then sums across distinct lines per SKU code (a vehicle can genuinely have
+ * the same SKU on more than one route/order line; those really should add
+ * up). {@code processed_quantity} is still summed across every row
+ * regardless of grain, since physical progress accumulates across repeated
+ * bay attempts and must not be deduped the same way.
+ *
+ * <p>{@code sku_desc} is taken from whichever row happens to win
+ * {@code MAX()} — bay entries for the same SKU are expected to carry the
+ * same description.
  *
  * <p>Wrapped in {@link DataSourceSpec.Response} — the existing
  * "frontend-friendly shape mirroring Spring's Page" envelope this repo
@@ -63,18 +78,21 @@ public class PendingSkuController {
     public DataSourceSpec.Response pendingSkus(@PathVariable String vehicleNo) {
         long tenantId = TenantContext.get();
         List<Map<String, Object>> content = jdbc.queryForList(
-                "SELECT b.sku_code AS sku_code, "
-                        + "MAX(b.sku_desc) AS sku_desc, "
-                        + "SUM(b.quantity) AS order_qty, "
-                        + "SUM(COALESCE(b.processed_quantity, 0)) AS processed_qty "
+                "WITH line_targets AS ( "
+                        + "SELECT b.route_id, b.sku_code, MAX(b.sku_desc) AS sku_desc, "
+                        + "MAX(b.quantity) AS target_qty, SUM(COALESCE(b.processed_quantity, 0)) AS processed_qty "
                         + "FROM loading_progress_detail_bay b "
                         + "JOIN loading_progress_detail d ON d.workflow_instance_id = b.workflow_instance_id "
                         + "AND d.tenant_id = b.tenant_id "
                         + "JOIN workflow_instance wi ON wi.id = d.workflow_instance_id AND wi.tenant_id = d.tenant_id "
                         + "WHERE b.tenant_id = ? AND d.vehicle_no = ? AND wi.status = 'OPEN' "
-                        + "GROUP BY b.sku_code "
-                        + "HAVING SUM(COALESCE(b.processed_quantity, 0)) < SUM(b.quantity) "
-                        + "ORDER BY b.sku_code",
+                        + "GROUP BY b.route_id, b.sku_code) "
+                        + "SELECT sku_code, MAX(sku_desc) AS sku_desc, "
+                        + "SUM(target_qty) AS order_qty, SUM(processed_qty) AS processed_qty "
+                        + "FROM line_targets "
+                        + "GROUP BY sku_code "
+                        + "HAVING SUM(processed_qty) < SUM(target_qty) "
+                        + "ORDER BY sku_code",
                 tenantId, vehicleNo)
                 .stream()
                 .map(r -> {
@@ -99,26 +117,30 @@ public class PendingSkuController {
     /**
      * {@code GET /api/m10/loading/{vehicleNo}/sku-status} — collapses
      * {@link #pendingSkus}'s per-SKU comparison into one boolean for the
-     * whole vehicle: {@code true} only if every {@code loading_progress_detail_bay}
-     * SKU group for the vehicle's OPEN loading transaction has
-     * {@code SUM(processed_quantity) == SUM(quantity)} (including the
-     * vacuous case of no bay rows at all — nothing pending). {@code false}
-     * if at least one SKU still has processed short of (or over) its order
-     * total.
+     * whole vehicle: {@code true} only if every SKU's summed-per-line target
+     * (same {@code (route_id, sku_code)} dedup as {@link #pendingSkus} —
+     * see its Javadoc) for the vehicle's OPEN loading transaction has
+     * {@code processed == target} (including the vacuous case of no bay
+     * rows at all — nothing pending). {@code false} if at least one SKU
+     * still has processed short of (or over) its order total.
      */
     @GetMapping("/{vehicleNo}/sku-status")
     public boolean skuStatus(@PathVariable String vehicleNo) {
         long tenantId = TenantContext.get();
         Integer incompleteSkuCount = jdbc.queryForObject(
-                "SELECT COUNT(*) FROM ( "
-                        + "SELECT b.sku_code "
+                "WITH line_targets AS ( "
+                        + "SELECT b.route_id, b.sku_code, "
+                        + "MAX(b.quantity) AS target_qty, SUM(COALESCE(b.processed_quantity, 0)) AS processed_qty "
                         + "FROM loading_progress_detail_bay b "
                         + "JOIN loading_progress_detail d ON d.workflow_instance_id = b.workflow_instance_id "
                         + "AND d.tenant_id = b.tenant_id "
                         + "JOIN workflow_instance wi ON wi.id = d.workflow_instance_id AND wi.tenant_id = d.tenant_id "
                         + "WHERE b.tenant_id = ? AND d.vehicle_no = ? AND wi.status = 'OPEN' "
-                        + "GROUP BY b.sku_code "
-                        + "HAVING SUM(COALESCE(b.processed_quantity, 0)) <> SUM(b.quantity) "
+                        + "GROUP BY b.route_id, b.sku_code) "
+                        + "SELECT COUNT(*) FROM ( "
+                        + "SELECT sku_code FROM line_targets "
+                        + "GROUP BY sku_code "
+                        + "HAVING SUM(processed_qty) <> SUM(target_qty) "
                         + ") incomplete",
                 Integer.class, tenantId, vehicleNo);
         return incompleteSkuCount == null || incompleteSkuCount == 0;

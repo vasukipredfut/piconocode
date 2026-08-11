@@ -74,7 +74,7 @@ class PendingSkuControllerTest {
         assertThat(result.getNumber()).isEqualTo(0);
         assertThat(result.getSize()).isEqualTo(500);
 
-        verify(jdbc).queryForList(contains("HAVING SUM(COALESCE(b.processed_quantity, 0)) < SUM(b.quantity)"),
+        verify(jdbc).queryForList(contains("HAVING SUM(processed_qty) < SUM(target_qty)"),
                 eq(1L), eq("TN01AB1234"));
     }
 
