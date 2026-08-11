@@ -98,8 +98,12 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
                     if (!PMT_WEIGHT_DIFF_WORKFLOWS.contains(instance.getWorkflowCode())) break;
                     Map<String, Object> page = pageData(bag, "aria:pmt-weight-diff-check");
                     String reason = firstNonBlank(str(page, "variance_reason"), str(page, "varianceReason"));
-                    if (reason != null) {
-                        upsert("pmt_weight_diff_detail", instance, Map.of("pmt_variance_reason", reason));
+                    String queueReason = queueReasonOf(page);
+                    if (reason != null || queueReason != null) {
+                        Map<String, Object> cols = new LinkedHashMap<>();
+                        if (reason != null) cols.put("pmt_variance_reason", reason);
+                        if (queueReason != null) cols.put("queue_reason", queueReason);
+                        upsert("pmt_weight_diff_detail", instance, cols);
                     }
                     break;
                 }
@@ -119,10 +123,12 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
                     Map<String, Object> page = pageData(bag, "aria:manager-qty-approval");
                     String reason = firstNonBlank(str(page, "variance_reason"), str(page, "varianceReason"));
                     String decision = str(page, "status");
-                    if (reason != null || decision != null) {
+                    String queueReason = queueReasonOf(page);
+                    if (reason != null || decision != null || queueReason != null) {
                         Map<String, Object> cols = new LinkedHashMap<>();
                         if (reason != null) cols.put("manager_qty_reason", reason);
                         if (decision != null) cols.put("manager_decision", decision);
+                        if (queueReason != null) cols.put("queue_reason", queueReason);
                         upsert("manager_qty_approval_detail", instance, cols);
                     }
                     break;
@@ -135,10 +141,12 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
                     Map<String, Object> page = pageData(bag, "aria:manager-weight-approval");
                     String reason = firstNonBlank(str(page, "variance_reason"), str(page, "varianceReason"));
                     String decision = str(page, "status");
-                    if (reason != null || decision != null) {
+                    String queueReason = queueReasonOf(page);
+                    if (reason != null || decision != null || queueReason != null) {
                         Map<String, Object> cols = new LinkedHashMap<>();
                         if (reason != null) cols.put("weight_variance_reason", reason);
                         if (decision != null) cols.put("weight_decision", decision);
+                        if (queueReason != null) cols.put("queue_reason", queueReason);
                         upsert("manager_weight_approval_detail", instance, cols);
                     }
                     break;
@@ -152,10 +160,12 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
                     Map<String, Object> page = pageData(bag, "aria:manager-qty-approval");
                     String reason = firstNonBlank(str(page, "variance_reason"), str(page, "varianceReason"));
                     String decision = str(page, "status");
-                    if (reason != null || decision != null) {
+                    String queueReason = queueReasonOf(page);
+                    if (reason != null || decision != null || queueReason != null) {
                         Map<String, Object> cols = new LinkedHashMap<>();
                         if (reason != null) cols.put("manager_qty_reason", reason);
                         if (decision != null) cols.put("manager_decision", decision);
+                        if (queueReason != null) cols.put("queue_reason", queueReason);
                         upsert("manager_qty_approval_detail", instance, cols);
                     }
                     break;
@@ -203,6 +213,18 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
     private static String str(Map<String, Object> bag, String key) {
         Object v = bag.get(key);
         return (v == null || v.toString().isBlank()) ? null : String.valueOf(v);
+    }
+
+    /**
+     * Why the operator picked this instance out of order in its queue —
+     * same field name convention as WorkflowProjectionListener's generic
+     * field_map (V232/V233), looked up here directly off the triggering
+     * page's own bag entry instead, for the same reason variance_reason is:
+     * a plain cross-page pluck() would risk returning a DIFFERENT page's
+     * older queue_reason value.
+     */
+    private static String queueReasonOf(Map<String, Object> page) {
+        return firstNonBlank(str(page, "queue_reason"), str(page, "queueReason"));
     }
 
     private static String firstNonBlank(String... vals) {
