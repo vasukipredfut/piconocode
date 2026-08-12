@@ -77,7 +77,14 @@ public class GatePassDispatchLinkListener implements WorkflowTransitionListener 
         }
         try {
             Map<String, Object> page = pageData(bag, "aria:dispatch-vehicle-details");
-            String vehicleNo = str(page, "vehicleNo");
+            // The actual submitted key is snake_case ("vehicle_no") for at
+            // least M10.FGLoading — checking camelCase only meant this
+            // lookup always came back null and the row never linked,
+            // leaving a permanent orphan + a WorkflowProjectionListener
+            // duplicate every single time (confirmed live: ~10+ vehicles
+            // with an unlinked GATE_PASS_CREATED row alongside a second,
+            // fully-linked row a few minutes later).
+            String vehicleNo = firstNonBlank(str(page, "vehicleNo"), str(page, "vehicle_no"));
             if (vehicleNo == null) {
                 log.warn("gate pass link failed for instance={}: no vehicleNo in bag[aria:dispatch-vehicle-details]={}",
                         instance.getId(), page);
@@ -118,5 +125,10 @@ public class GatePassDispatchLinkListener implements WorkflowTransitionListener 
     private static String str(Map<String, Object> bag, String key) {
         Object v = bag.get(key);
         return (v == null || v.toString().isBlank()) ? null : String.valueOf(v);
+    }
+
+    private static String firstNonBlank(String... vals) {
+        for (String v : vals) if (v != null && !v.isBlank()) return v;
+        return null;
     }
 }

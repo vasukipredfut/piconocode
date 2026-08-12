@@ -46,10 +46,35 @@ public final class GatePassSatelliteJoin {
             // resolve-by-join already done for aria:dispatch-vehicle-details,
             // see V206). Joined here so plain GatePass reads get the name too.
             " LEFT JOIN employee_details uemp ON uemp.id = qua.unloading_supervisor_id" +
-            " LEFT JOIN unload_reconciliation_detail urd ON urd.workflow_instance_id = gp.workflow_instance_id AND urd.tenant_id = gp.tenant_id";
+            " LEFT JOIN unload_reconciliation_detail urd ON urd.workflow_instance_id = gp.workflow_instance_id AND urd.tenant_id = gp.tenant_id" +
+            // manager_qty_approval_detail / manager_weight_approval_detail are
+            // populated by PmtSharedReasonListener (bespoke Java, not this
+            // generic projection) — joined here purely so a plain GatePass
+            // read also surfaces their queue_reason (see SELECT below).
+            " LEFT JOIN manager_qty_approval_detail mqad ON mqad.workflow_instance_id = gp.workflow_instance_id AND mqad.tenant_id = gp.tenant_id" +
+            " LEFT JOIN manager_weight_approval_detail mwad ON mwad.workflow_instance_id = gp.workflow_instance_id AND mwad.tenant_id = gp.tenant_id";
+
+    // Each satellite's own out-of-order-selection reason (see V232/V233,
+    // PmtSharedReasonListener), aliased per table — gate_pass's own bare
+    // "queue_reason" (from gp.*) stays the plain top-level field; every
+    // satellite gets its own distinct alias so a vehicle's full trail of
+    // reasons across every step it passed through is visible in one read,
+    // not just the last one to overwrite a shared column name.
+    private static final String QUEUE_REASON_SELECT =
+            "qpd.queue_reason AS qc_preload_queue_reason, " +
+            "lad.queue_reason AS loading_allocation_queue_reason, " +
+            "gpw.queue_reason AS weighment_capture_queue_reason, " +
+            "spd.queue_reason AS sealing_process_queue_reason, " +
+            "pwd.queue_reason AS pmt_weight_diff_queue_reason, " +
+            "pcvd.queue_reason AS pmt_camera_verification_queue_reason, " +
+            "dvd.queue_reason AS dispatch_vehicle_queue_reason, " +
+            "be.queue_reason AS billing_entry_queue_reason, " +
+            "qua.queue_reason AS qc_unloading_approval_queue_reason, " +
+            "mqad.queue_reason AS manager_qty_approval_queue_reason, " +
+            "mwad.queue_reason AS manager_weight_approval_queue_reason";
 
     public static final String SELECT =
-            "gp.*, " +
+            "gp.*, " + QUEUE_REASON_SELECT + ", " +
             "qpd.loading_supervisor, qpd.loading_tank_location, qpd.qc_reject_reason, " +
             "lad.supervisor_name, lad.loading_bay, lad.reference_no, lad.customer_name, lad.customer_route, lad.ordered_cases, lad.ordered_qty, " +
             // Single unified key for "who's the loading supervisor" — QC_PRELOAD_APPROVED
@@ -75,7 +100,11 @@ public final class GatePassSatelliteJoin {
             "qua.seal_intact, qua.label_match, qua.batch_expiry_check, " +
             "qua.sample_photo, qua.seal_unlock_no, qua.qc_notes, " +
             "qua.unloading_supervisor_id, uemp.employeename AS unloading_supervisor_name, " +
-            "qua.oil_sample_recovered, qua.unloading_location, " +
+            "qua.oil_sample_recovered, " +
+            // M10.PackUnload's aria:qc-approval routes unloading_location into
+            // qc_preload_detail instead of qc_unloading_approval (see V234) —
+            // COALESCE so a plain GatePass read surfaces it either way.
+            "COALESCE(qua.unloading_location, qpd.unloading_location) AS unloading_location, " +
             "qua.status AS qc_decision_status, qua.qc_reject_reason AS qc_approval_reject_reason, " +
             "urd.grn_status, urd.grn_number, " +
             "(dvd.invoice_qty - (gpw.w1_weight_kg - gpw.w2_weight_kg)) AS qty_difference_kg";

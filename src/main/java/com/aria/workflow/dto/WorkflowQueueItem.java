@@ -55,4 +55,12 @@ public class WorkflowQueueItem {
      * share). False when the vehicle number is unknown or no such row exists.
      */
     private boolean orderSheetUploaded;
+
+    /**
+     * Why the operator picked this instance out of order in its queue (see
+     * V232/V233) — looked up from {@code gate_pass.queue_reason} by
+     * workflow_instance_id, same source as {@link #gpNumber}. Null when
+     * there's no gate_pass row yet, or no reason was ever recorded.
+     */
+    private String queueReason;
 }

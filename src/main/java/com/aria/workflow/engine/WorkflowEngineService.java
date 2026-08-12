@@ -436,7 +436,7 @@ public class WorkflowEngineService {
      */
     private List<WorkflowQueueItem> plainGatePassQueueItems(Long tenantId) {
         return jdbc.queryForList(
-                "SELECT id, gp_number, vehicle_no, status, updated_at FROM gate_pass " +
+                "SELECT id, gp_number, vehicle_no, status, updated_at, queue_reason FROM gate_pass " +
                 "WHERE tenant_id=? AND workflow_instance_id IS NULL AND status='GATE_PASS_CREATED' " +
                 "ORDER BY updated_at ASC",
                 tenantId).stream()
@@ -447,6 +447,7 @@ public class WorkflowEngineService {
                     .status((String) row.get("status"))
                     .updatedAt(toInstant(row.get("updated_at")))
                     .orderSheetUploaded(orderSheetUploadedFor(tenantId, (String) row.get("vehicle_no")))
+                    .queueReason((String) row.get("queue_reason"))
                     .build())
             .toList();
     }
@@ -595,6 +596,7 @@ public class WorkflowEngineService {
                 .parkingLoggedBy(parking == null ? null : (Long) parking.get("actor_id"))
                 .gpNumber(gatePass == null ? null : (String) gatePass.get("gp_number"))
                 .orderSheetUploaded(orderSheetUploadedFor(i.getTenantId(), vehicleNo))
+                .queueReason(gatePass == null ? null : (String) gatePass.get("queue_reason"))
                 .build();
     }
 
@@ -607,7 +609,7 @@ public class WorkflowEngineService {
      */
     private Map<String, Object> gatePassFor(Long tenantId, Long instanceId) {
         List<Map<String, Object>> rows = jdbc.queryForList(
-                "SELECT gp_number, vehicle_no FROM gate_pass " +
+                "SELECT gp_number, vehicle_no, queue_reason FROM gate_pass " +
                 "WHERE tenant_id=? AND workflow_instance_id=?",
                 tenantId, instanceId);
         return rows.isEmpty() ? null : rows.get(0);
