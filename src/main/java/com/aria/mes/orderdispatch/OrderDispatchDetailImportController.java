@@ -63,8 +63,24 @@ import java.util.concurrent.ConcurrentHashMap;
  * for that route triggers a delete of that route's existing still-{@code
  * active} rows for this tenant (see {@code vehicle_status}, stamped "active"
  * on every import and flipped to "inactive" by {@link #gateOut}) before any
- * new rows for the route are inserted — rows already gated out are historical
- * and left alone. Deleted-row count is reported as {@code rowsReplaced}.
+ * new rows for the route are inserted. Deleted-row count is reported as
+ * {@code rowsReplaced}.
+ *
+ * <p>The replace is blocked entirely — no delete, no insert, every row for
+ * that {@code route_id} in the file rejected into {@code errors} — when
+ * either of these holds (see {@link #blockReplaceReason}):
+ * <ul>
+ *   <li>Loading has already started for the route: a row exists in either
+ *   {@code loading_progress_detail} (written at WEIGHMENT_1 -&gt;
+ *   LOADING_IN_PROGRESS, before any bay is started) or
+ *   {@code loading_progress_detail_bay} (written once "Start Bay" runs,
+ *   -&gt; BAY_ASSIGNED) for this {@code route_id}.</li>
+ *   <li>The route already has rows in {@code m5_order_dispatch_detail} but
+ *   none are still {@code vehicle_status = 'active'} — the vehicle has
+ *   already gated out, so there's nothing live left to replace.</li>
+ * </ul>
+ * A brand-new route (no existing rows at all) is never blocked by the
+ * second rule — it's a first-time import, not a replace.
  *
  * <p>{@code GET /api/m5/order-dispatch-detail/import-page} — a
  * self-contained HTML+JS upload form. This exists because the page-JSON
@@ -118,6 +134,7 @@ public class OrderDispatchDetailImportController {
 
         List<String> errors = new ArrayList<>();
         Set<String> clearedRoutes = new HashSet<>();
+        Map<String, String> blockedRoutes = new HashMap<>();
         int imported = 0;
         int replaced = 0;
 
@@ -136,11 +153,23 @@ public class OrderDispatchDetailImportController {
                 }
                 // route_id is column 24 per insertRow()'s positional mapping.
                 String routeId = str(r, 24);
-                if (routeId != null && clearedRoutes.add(routeId)) {
-                    replaced += jdbc.update(
-                        "DELETE FROM m5_order_dispatch_detail " +
-                        "WHERE tenant_id = ? AND route_id = ? AND vehicle_status = 'active'",
-                        tenantId, routeId);
+                if (routeId != null) {
+                    if (!clearedRoutes.contains(routeId) && !blockedRoutes.containsKey(routeId)) {
+                        String blockReason = blockReplaceReason(tenantId, routeId);
+                        if (blockReason != null) {
+                            blockedRoutes.put(routeId, blockReason);
+                        } else {
+                            clearedRoutes.add(routeId);
+                            replaced += jdbc.update(
+                                "DELETE FROM m5_order_dispatch_detail " +
+                                "WHERE tenant_id = ? AND route_id = ? AND vehicle_status = 'active'",
+                                tenantId, routeId);
+                        }
+                    }
+                    String blockReason = blockedRoutes.get(routeId);
+                    if (blockReason != null) {
+                        throw new IllegalArgumentException("Route " + routeId + " cannot be replaced — " + blockReason);
+                    }
                 }
                 insertRow(tenantId, r, sourceFile);
                 imported++;
@@ -292,6 +321,40 @@ public class OrderDispatchDetailImportController {
             tenantId, vehicleNo);
 
         return ResponseEntity.ok(Map.of("ok", true, "vehicleNo", vehicleNo, "rowsUpdated", updated));
+    }
+
+    /**
+     * Returns null if the route is safe to replace (new route, or has an
+     * existing {@code vehicle_status = 'active'} row and loading hasn't
+     * started), otherwise a human-readable reason the replace is blocked.
+     * See the class javadoc for the two block conditions.
+     */
+    private String blockReplaceReason(Long tenantId, String routeId) {
+        // loading_progress_detail (parent, one row per workflow instance) is
+        // written at WEIGHMENT_1 -> LOADING_IN_PROGRESS, before "Start Bay" is
+        // even clicked; loading_progress_detail_bay (child) only gets rows once
+        // Start Bay runs (-> BAY_ASSIGNED). Checking only the child table would
+        // miss a route that's already LOADING_IN_PROGRESS but not yet bay-assigned.
+        Integer loadingStarted = jdbc.queryForObject(
+            "SELECT " +
+            "(SELECT COUNT(1) FROM loading_progress_detail WHERE tenant_id = ? AND route_id = ?) + " +
+            "(SELECT COUNT(1) FROM loading_progress_detail_bay WHERE tenant_id = ? AND route_id = ?)",
+            Integer.class, tenantId, routeId, tenantId, routeId);
+        if (loadingStarted != null && loadingStarted > 0) {
+            return "loading has already started for this route";
+        }
+        Integer existingRows = jdbc.queryForObject(
+            "SELECT COUNT(1) FROM m5_order_dispatch_detail WHERE tenant_id = ? AND route_id = ?",
+            Integer.class, tenantId, routeId);
+        if (existingRows != null && existingRows > 0) {
+            Integer activeRows = jdbc.queryForObject(
+                "SELECT COUNT(1) FROM m5_order_dispatch_detail WHERE tenant_id = ? AND route_id = ? AND vehicle_status = 'active'",
+                Integer.class, tenantId, routeId);
+            if (activeRows == null || activeRows == 0) {
+                return "vehicle for this route is no longer active (already gated out)";
+            }
+        }
+        return null;
     }
 
     private static String str(Object v) {

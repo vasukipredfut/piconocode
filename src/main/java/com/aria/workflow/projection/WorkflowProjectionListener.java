@@ -62,16 +62,19 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
             return; // table not applied yet — nothing to project
         }
         // Resolved lazily (only if some config actually has a page_code to
-        // check against) since it's an extra query per transition.
+        // check against, OR maps queue_reason — see below) since it's an
+        // extra query per transition.
         String triggeringPageCode = null;
         boolean triggeringPageCodeResolved = false;
         for (Map<String, Object> cfg : configs) {
             String pageCodeScope = (String) cfg.get("page_code");
+            boolean needsTriggeringPage = (pageCodeScope != null && !pageCodeScope.isBlank())
+                    || mapsQueueReason((String) cfg.get("field_map_json"));
+            if (needsTriggeringPage && !triggeringPageCodeResolved) {
+                triggeringPageCode = resolveTriggeringPageCode(instance, tenantId, previousState);
+                triggeringPageCodeResolved = true;
+            }
             if (pageCodeScope != null && !pageCodeScope.isBlank()) {
-                if (!triggeringPageCodeResolved) {
-                    triggeringPageCode = resolveTriggeringPageCode(instance, tenantId, previousState);
-                    triggeringPageCodeResolved = true;
-                }
                 // NULL/blank page_code means "always applies" (every workflow's
                 // existing rows, unchanged); a non-blank one restricts this
                 // target_table to the page(s) that legitimately feed it — see
@@ -83,12 +86,17 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
                 }
             }
             try {
-                project(cfg, instance, tenantId, previousState, submittedDataBag);
+                project(cfg, instance, tenantId, previousState, submittedDataBag, triggeringPageCode);
             } catch (Exception ex) {
                 log.warn("projection failed for workflow={} instance={}: {}",
                         code, instance.getId(), ex.getMessage());
             }
         }
+    }
+
+    /** Cheap pre-check so resolveTriggeringPageCode's extra query only runs when actually needed. */
+    private static boolean mapsQueueReason(String fieldMapJson) {
+        return fieldMapJson != null && fieldMapJson.contains("queue_reason");
     }
 
     /**
@@ -126,7 +134,8 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
 
     @SuppressWarnings("unchecked")
     private void project(Map<String, Object> cfg, WorkflowInstance instance,
-                         Long tenantId, String previousState, Map<String, Object> bag) throws Exception {
+                         Long tenantId, String previousState, Map<String, Object> bag,
+                         String triggeringPageCode) throws Exception {
         String table = ident((String) cfg.get("target_table"));
         String keyCol = ident(orDefault((String) cfg.get("key_column"), "workflow_instance_id"));
         Long instanceId = instance.getId();
@@ -174,6 +183,23 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
                         cols.put(ident("invoice_numbers"), MAPPER.writeValueAsString(numbers));
                         cols.put(ident("invoice_number_count"), numbers.size());
                     }
+                    continue;
+                }
+                // queue_reason (V232/V233) is deliberately reused as the same
+                // literal field name across every queue-enabled page, so
+                // pluck()'s generic cross-page fallback is exactly wrong here:
+                // it'd happily return an OLDER submission's reason from a
+                // DIFFERENT page still sitting in the bag instead of the one
+                // that's actually submitting right now (confirmed live —
+                // gate_pass.queue_reason picked up a stale value from another
+                // page's earlier entry). Scoped strictly to the triggering
+                // page's own bag entry instead; no triggeringPageCode
+                // resolved (e.g. an unrecognised transition) means skip
+                // rather than risk writing the wrong page's value.
+                if ("queue_reason".equals(e.getKey())) {
+                    List<String> keys = (List<String>) e.getValue();
+                    String v = pluckScoped(bag, keys, triggeringPageCode);
+                    if (v != null) cols.put(ident("queue_reason"), v);
                     continue;
                 }
                 List<String> keys = (List<String>) e.getValue();
@@ -291,6 +317,24 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
                     if (x != null) return x;
                 }
             }
+        }
+        return null;
+    }
+
+    /**
+     * Same as {@link #pluck}, but looked up ONLY from {@code pageCode}'s own
+     * bag entry — no cross-page fallback. Use for field names deliberately
+     * reused across multiple pages (e.g. queue_reason) where the generic
+     * fallback would risk returning a different page's value.
+     */
+    @SuppressWarnings("unchecked")
+    private String pluckScoped(Map<String, Object> bag, List<String> keys, String pageCode) {
+        if (bag == null || pageCode == null) return null;
+        Object v = bag.get(pageCode);
+        if (!(v instanceof Map<?, ?> m)) return null;
+        for (String k : keys) {
+            String x = scalarOf(((Map<String, Object>) m).get(k));
+            if (x != null) return x;
         }
         return null;
     }

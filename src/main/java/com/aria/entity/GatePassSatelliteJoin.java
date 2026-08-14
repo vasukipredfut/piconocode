@@ -88,6 +88,7 @@ public final class GatePassSatelliteJoin {
             "pwd.pmt_variance_reason, pwd.expected_weight_kg, pwd.loaded_weight_kg, pwd.pmt_variance_pct, pwd.pmt_within_tolerance, " +
             "pcvd.camera_photo, pcvd.issue_identified, pcvd.camera_variance_reason, " +
             "dvd.broker_name, dvd.invoice_qty, dvd.oil_rm_item, dvd.tanker_no, dvd.transport_name, " +
+            "dvd.invoice_return_count, dvd.box_weight_kg, " +
             "lpd.route_id, " +
             "gpc.seal_verified, gpc.invoice_count_verified, gpc.qc_clearance, gpc.weighment_verified, " +
             "gpc.order_recon_done, gpc.within_tolerance, gpc.closure_note, gpc.closed_at AS closure_closed_at, " +
