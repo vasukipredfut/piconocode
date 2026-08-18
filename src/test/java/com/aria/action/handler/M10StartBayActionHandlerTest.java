@@ -80,10 +80,39 @@ class M10StartBayActionHandlerTest {
     }
 
     @Test
-    void missingBayName_errors() {
+    void missingBayNameAndTankLocation_errors() {
         ActionResult r = handler.handle(baseInvocation(Map.of("order_sku_line_items", List.of(line("ROU028912", "SKU1215", 45)))));
         assertThat(r.isOk()).isFalse();
-        assertThat(r.getMessage()).contains("bay_name is required");
+        assertThat(r.getMessage()).contains("formData.bay_name or formData.loading_tank_location is required");
+        verifyNoInteractions(jdbc, engine);
+    }
+
+    @Test
+    void tankLocation_usedInPlaceOfBayName_skipsBay1To12Check() {
+        stubOpenBayCount(0);
+        stubCurrentState("BAY_ASSIGNED");
+        stubParentId(1L);
+
+        // "ROT-1" (an m10_tanker_location code, M10.TankerOutbound) would fail
+        // the Bay1..Bay12 check if it arrived as bay_name — it's accepted
+        // unchecked when it arrives as loading_tank_location instead, since
+        // bay_name itself is absent.
+        ActionResult r = handler.handle(baseInvocation(Map.of(
+                "loading_tank_location", "ROT-1", "order_sku_line_items", List.of(line("ROU028912", "SKU1215", 45)))));
+
+        assertThat(r.isOk()).isTrue();
+        assertThat(r.getData()).containsEntry("bayName", "ROT-1");
+        verify(jdbc).update(contains("INSERT INTO loading_progress_detail_bay"),
+                eq(1L), eq(1L), eq(1495L), eq("ROU028912"), eq("SKU1215"), eq("SKU1215 desc"), eq("ROT-1"), eq(new BigDecimal("45")));
+    }
+
+    @Test
+    void bayNamePresent_stillEnforcesBay1To12EvenWithTankLocationAlsoGiven() {
+        ActionResult r = handler.handle(baseInvocation(Map.of(
+                "bay_name", "ROT-1", "loading_tank_location", "ROT-1",
+                "order_sku_line_items", List.of(line("ROU028912", "SKU1215", 45)))));
+        assertThat(r.isOk()).isFalse();
+        assertThat(r.getMessage()).contains("must be one of Bay1..Bay12").contains("ROT-1");
         verifyNoInteractions(jdbc, engine);
     }
 

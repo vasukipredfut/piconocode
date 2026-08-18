@@ -71,6 +71,17 @@ import java.util.stream.IntStream;
  *       ]
  *     } }
  * </pre>
+ *
+ * <p>M10.TankerOutbound has no physical bay — the operator instead picks a
+ * tank from {@code m10_tanker_location} (V217, codes like "ROT-1", "F7",
+ * "GNP-2"), sent as {@code formData.loading_tank_location}. When
+ * {@code bay_name} is absent, that tank code is used in its place (saved
+ * into the same {@code loading_progress_detail_bay.bay_name} column) and the
+ * Bay1..Bay12 check is skipped for it — {@code bay_name}, when given, is
+ * still restricted to Bay1..Bay12 exactly as before. The DB-level CHECK
+ * constraint that used to mirror that restriction was dropped (V236): it
+ * can't express "Bay1..Bay12 OR any code in m10_tanker_location" (no
+ * subqueries in a MariaDB CHECK), so this validation now lives here alone.
  */
 @Component
 public class M10StartBayActionHandler implements ActionHandler {
@@ -94,10 +105,21 @@ public class M10StartBayActionHandler implements ActionHandler {
         if (inv.getPageCode() == null) return ActionResult.error("pageCode required");
 
         Map<String, Object> formData = inv.getFormData() == null ? Map.of() : inv.getFormData();
-        String bayName = strReq(formData, "bay_name");
-        if (bayName == null) return ActionResult.error("formData.bay_name is required");
-        if (!VALID_BAY_NAMES.contains(bayName)) {
-            return ActionResult.error("formData.bay_name must be one of Bay1..Bay12, got: " + bayName);
+        String bayNameInput = strReq(formData, "bay_name");
+        String bayName;
+        if (bayNameInput != null) {
+            if (!VALID_BAY_NAMES.contains(bayNameInput)) {
+                return ActionResult.error("formData.bay_name must be one of Bay1..Bay12, got: " + bayNameInput);
+            }
+            bayName = bayNameInput;
+        } else {
+            // No bay_name — M10.TankerOutbound: the operator-picked tank code
+            // (loading_tank_location) takes its place, unchecked against
+            // Bay1..Bay12 (see class javadoc).
+            bayName = strReq(formData, "loading_tank_location");
+            if (bayName == null) {
+                return ActionResult.error("formData.bay_name or formData.loading_tank_location is required");
+            }
         }
 
         Object linesObj = formData.get("order_sku_line_items");
