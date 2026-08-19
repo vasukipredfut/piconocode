@@ -273,6 +273,34 @@
 			<version>2.0.31</version>
 		</dependency>
 
+		<!-- OCR fallback for PDFs with no extractable text layer (e.g. the
+		     printed truck/route order sheet, whose glyphs are drawn as raw
+		     vector paths by its print driver) — see
+		     OrderDispatchDetailImportController#ocrText. Requires a system
+		     Tesseract install (not bundled); pdfbox/pdfbox-io/fontbox
+		     excluded since tess4j pulls pdfbox 3.x transitively and we
+		     already pin 2.0.31 above and only use tess4j's
+		     Tesseract#doOCR(BufferedImage), never its own PDF utilities. -->
+		<dependency>
+			<groupId>net.sourceforge.tess4j</groupId>
+			<artifactId>tess4j</artifactId>
+			<version>5.11.0</version>
+			<exclusions>
+				<exclusion>
+					<groupId>org.apache.pdfbox</groupId>
+					<artifactId>pdfbox</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>org.apache.pdfbox</groupId>
+					<artifactId>pdfbox-io</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>org.apache.pdfbox</groupId>
+					<artifactId>fontbox</artifactId>
+				</exclusion>
+			</exclusions>
+		</dependency>
+
 
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
