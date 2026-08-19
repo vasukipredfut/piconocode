@@ -8,6 +8,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
@@ -126,10 +128,34 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
                     Map<String, Object> page = pageData(bag, pageCode);
                     String reason = firstNonBlank(str(page, "variance_reason"), str(page, "varianceReason"));
                     String queueReason = queueReasonOf(page);
-                    if (reason != null || queueReason != null) {
-                        Map<String, Object> cols = new LinkedHashMap<>();
-                        if (reason != null) cols.put("pmt_variance_reason", reason);
-                        if (queueReason != null) cols.put("queue_reason", queueReason);
+                    Map<String, Object> cols = new LinkedHashMap<>();
+                    if (reason != null) cols.put("pmt_variance_reason", reason);
+                    if (queueReason != null) cols.put("queue_reason", queueReason);
+                    // TankerOutbound only: DispatchToleranceListener's own
+                    // server-side weight-tolerance computation has no basis for
+                    // this workflow (no loading_allocation_detail step, and its
+                    // tanker-oil SKUs aren't registered in m5_sku_master with a
+                    // unit_weight_kg -- see the route_id/m5_sku_master fallback
+                    // in DispatchToleranceListener.computeVerdict()), so it never
+                    // populates these 4 columns for TankerOutbound instances.
+                    // Trust aria:weight-diff-entry's own already-computed values
+                    // instead, scoped strictly to this one workflow so FGLoading/
+                    // PackLoading keep relying on the server-verified figure
+                    // DispatchToleranceListener already produces for them.
+                    if (TANKER_OUTBOUND_WORKFLOW.equals(instance.getWorkflowCode())) {
+                        BigDecimal expected = toBig(page.get("expected_weight_kg"));
+                        BigDecimal loaded = toBig(page.get("loaded_weight_kg"));
+                        String within = firstNonBlank(str(page, "within_tolerance"), str(page, "withinTolerance"));
+                        if (expected != null) cols.put("expected_weight_kg", expected);
+                        if (loaded != null) cols.put("loaded_weight_kg", loaded);
+                        if (within != null) cols.put("pmt_within_tolerance", within);
+                        if (expected != null && loaded != null && expected.signum() > 0) {
+                            cols.put("pmt_variance_pct", loaded.subtract(expected).abs()
+                                    .multiply(BigDecimal.valueOf(100))
+                                    .divide(expected, 3, RoundingMode.HALF_UP));
+                        }
+                    }
+                    if (!cols.isEmpty()) {
                         upsert("pmt_weight_diff_detail", instance, cols);
                     }
                     break;
@@ -212,6 +238,14 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
     private static Map<String, Object> pageData(Map<String, Object> bag, String pageCode) {
         Object v = bag.get(pageCode);
         return v instanceof Map ? (Map<String, Object>) v : Map.of();
+    }
+
+    /** Form-submitted numbers arrive as strings (e.g. {@code "19000"}) — parse defensively. */
+    private static BigDecimal toBig(Object o) {
+        if (o == null) return null;
+        if (o instanceof BigDecimal b) return b;
+        if (o instanceof Number n) return BigDecimal.valueOf(n.doubleValue());
+        try { return new BigDecimal(o.toString().trim()); } catch (RuntimeException e) { return null; }
     }
 
     private void upsert(String table, WorkflowInstance instance, Map<String, Object> cols) {
