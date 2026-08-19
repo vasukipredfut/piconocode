@@ -151,6 +151,7 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
             Map<String, Object> map = MAPPER.readValue(fieldMapJson, Map.class);
             boolean isGatePass = "gate_pass".equals(table);
             boolean isBillingEntry = "billing_entry".equals(table);
+            boolean isDispatchVehicleDetail = "dispatch_vehicle_detail".equals(table);
             for (Map.Entry<String, Object> e : map.entrySet()) {
                 // variance_reason is a name shared by six PMT/manager-approval pages;
                 // PmtSharedReasonListener already routes four of them into their own
@@ -200,6 +201,17 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
                     List<String> keys = (List<String>) e.getValue();
                     String v = pluckScoped(bag, keys, triggeringPageCode);
                     if (v != null) cols.put(ident("queue_reason"), v);
+                    continue;
+                }
+                // oil_rm_item on dispatch_vehicle_detail (V237): aria:dispatch-
+                // vehicle-details submits oilRmItem as a repeater/array field,
+                // same shape as billing_entry's invoice_numbers above — pluck()'s
+                // scalarOf() would silently drop every item but the first, so
+                // this keeps the whole list and JSON-serialises it instead.
+                if (isDispatchVehicleDetail && "oil_rm_item".equals(e.getKey())) {
+                    List<String> keys = (List<String>) e.getValue();
+                    List<String> items = pluckList(bag, keys);
+                    if (!items.isEmpty()) cols.put(ident("oil_rm_item"), MAPPER.writeValueAsString(items));
                     continue;
                 }
                 List<String> keys = (List<String>) e.getValue();
@@ -319,6 +331,49 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
             }
         }
         return null;
+    }
+
+    /**
+     * Same lookup order as {@link #pluck}, but for a repeater/array field:
+     * preserves every item instead of collapsing to the first one the way
+     * {@link #scalarOf} does. Falls back to comma/semicolon-splitting a plain
+     * string, since the Renderer's "repeater" widget kind isn't implemented
+     * yet (V237) and today's submission may still be free-typed text.
+     */
+    @SuppressWarnings("unchecked")
+    private List<String> pluckList(Map<String, Object> bag, List<String> keys) {
+        if (bag == null) return List.of();
+        for (String k : keys) {
+            List<String> v = listOf(bag.get(k));
+            if (v != null) return v;
+        }
+        for (Object v : bag.values()) {
+            if (v instanceof Map<?, ?> m) {
+                for (String k : keys) {
+                    List<String> x = listOf(((Map<String, Object>) m).get(k));
+                    if (x != null) return x;
+                }
+            }
+        }
+        return List.of();
+    }
+
+    private List<String> listOf(Object v) {
+        if (v == null) return null;
+        List<String> out = new ArrayList<>();
+        if (v instanceof List<?> list) {
+            for (Object item : list) {
+                if (item != null && !item.toString().isBlank()) out.add(item.toString().trim());
+            }
+        } else {
+            String s = v.toString();
+            if (s.isBlank()) return null;
+            for (String part : s.split("[,;]")) {
+                String t = part.trim();
+                if (!t.isEmpty()) out.add(t);
+            }
+        }
+        return out.isEmpty() ? null : out;
     }
 
     /**
