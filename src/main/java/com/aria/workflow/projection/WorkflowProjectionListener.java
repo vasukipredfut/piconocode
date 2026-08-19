@@ -154,11 +154,12 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
             boolean isDispatchVehicleDetail = "dispatch_vehicle_detail".equals(table);
             for (Map.Entry<String, Object> e : map.entrySet()) {
                 // variance_reason is a name shared by six PMT/manager-approval pages;
-                // PmtSharedReasonListener already routes four of them into their own
-                // satellite table, so gate_pass no longer needs (or should keep) a
-                // copy for those four — it would just be last-write-wins noise.
-                // weight-diff-entry / reconciliation aren't covered yet, so this only
-                // skips the four transitions PmtSharedReasonListener actually owns.
+                // PmtSharedReasonListener already routes five of them (including
+                // weight-diff-entry, M10.TankerOutbound's own WEIGHMENT_2 exit page)
+                // into their own satellite table, so gate_pass no longer needs (or
+                // should keep) a copy for those — it would just be last-write-wins
+                // noise. reconciliation isn't covered yet, so this only skips the
+                // transitions PmtSharedReasonListener actually owns.
                 if (isGatePass && "variance_reason".equals(e.getKey())
                         && PmtSharedReasonListener.ownsVarianceReason(instance.getWorkflowCode(), previousState)) {
                     continue;

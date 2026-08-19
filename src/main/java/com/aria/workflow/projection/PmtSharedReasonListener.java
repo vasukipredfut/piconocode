@@ -53,6 +53,26 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
 
     private static final Logger log = LoggerFactory.getLogger(PmtSharedReasonListener.class);
     private static final Set<String> PMT_WEIGHT_DIFF_WORKFLOWS = Set.of("M10.FGLoading", "M10.PackLoading");
+    private static final String TANKER_OUTBOUND_WORKFLOW = "M10.TankerOutbound";
+    // None of the three workflows have a PARKING_IN_2 hop in their
+    // definitions anymore -- aria:pmt-weight-diff-check (FGLoading/
+    // PackLoading) / aria:weight-diff-entry (TankerOutbound) can each fire
+    // directly off either WEIGHMENT_2 or SEALING_DONE:
+    //  - TankerOutbound has no sealing step at all -> always WEIGHMENT_2.
+    //  - FGLoading/PackLoading: OPEN_BODY vehicles skip sealing (fire off
+    //    WEIGHMENT_2 directly); everyone else goes through SEALING_DONE
+    //    first (fires off SEALING_DONE).
+    // Both previousState cases below resolve the right page via this method
+    // instead of being split apart, since either state can legitimately
+    // belong to either the Tanker page or the FG/Pack page depending on
+    // workflow code -- gated per-workflow so FGLoading's WEIGHMENT_2 ->
+    // aria:sealing-process (unrelated data) is never mistaken for a PMT
+    // check submission.
+    private static String pmtWeightDiffPageFor(String workflowCode) {
+        if (TANKER_OUTBOUND_WORKFLOW.equals(workflowCode)) return "aria:weight-diff-entry";
+        if (PMT_WEIGHT_DIFF_WORKFLOWS.contains(workflowCode)) return "aria:pmt-weight-diff-check";
+        return null;
+    }
     // M10.PackUnload adds 1 more precisely-gated state here (own state name,
     // not shared with PackLoading/FGLoading/TankerInbound):
     // QUANTITY_APPROVAL_PENDING -> manager_qty_approval_detail (same table,
@@ -80,7 +100,9 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
      */
     public static boolean ownsVarianceReason(String workflowCode, String previousState) {
         if (previousState == null) return false;
-        if ("PARKING_IN_2".equals(previousState)) return PMT_WEIGHT_DIFF_WORKFLOWS.contains(workflowCode);
+        if ("WEIGHMENT_2".equals(previousState) || "SEALING_DONE".equals(previousState)) {
+            return pmtWeightDiffPageFor(workflowCode) != null;
+        }
         return NO_WORKFLOW_GUARD_STATES.contains(previousState);
     }
 
@@ -94,9 +116,14 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
 
         try {
             switch (previousState) {
-                case "PARKING_IN_2": {
-                    if (!PMT_WEIGHT_DIFF_WORKFLOWS.contains(instance.getWorkflowCode())) break;
-                    Map<String, Object> page = pageData(bag, "aria:pmt-weight-diff-check");
+                case "WEIGHMENT_2":
+                case "SEALING_DONE": {
+                    // See pmtWeightDiffPageFor() javadoc above: either state can
+                    // lead here depending on workflow (and, for FGLoading/
+                    // PackLoading, whether the vehicle skipped sealing).
+                    String pageCode = pmtWeightDiffPageFor(instance.getWorkflowCode());
+                    if (pageCode == null) break;
+                    Map<String, Object> page = pageData(bag, pageCode);
                     String reason = firstNonBlank(str(page, "variance_reason"), str(page, "varianceReason"));
                     String queueReason = queueReasonOf(page);
                     if (reason != null || queueReason != null) {
@@ -137,7 +164,7 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
                     // aria:manager-weight-approval — confirmed the only
                     // transition originating from WEIGHMENT_3 in all 3
                     // workflows, so no extra workflow-code guard needed
-                    // (unlike PARKING_IN_2).
+                    // (unlike SEALING_DONE/WEIGHMENT_2 above).
                     Map<String, Object> page = pageData(bag, "aria:manager-weight-approval");
                     String reason = firstNonBlank(str(page, "variance_reason"), str(page, "varianceReason"));
                     String decision = str(page, "status");
@@ -171,9 +198,9 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
                     break;
                 }
                 default:
-                    // Not one of the four states this listener owns —
-                    // reconciliation / weight-diff-entry still only write
-                    // gate_pass.variance_reason, unchanged.
+                    // Not one of the states this listener owns —
+                    // reconciliation still only writes gate_pass.variance_reason,
+                    // unchanged.
             }
         } catch (Exception e) {
             log.warn("pmt shared-reason routing failed for instance={} previousState={}: {}",
