@@ -152,6 +152,7 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
             boolean isGatePass = "gate_pass".equals(table);
             boolean isBillingEntry = "billing_entry".equals(table);
             boolean isDispatchVehicleDetail = "dispatch_vehicle_detail".equals(table);
+            boolean isWeighmentCaptureDetail = "weighment_capture_detail".equals(table);
             for (Map.Entry<String, Object> e : map.entrySet()) {
                 // variance_reason is a name shared by six PMT/manager-approval pages;
                 // PmtSharedReasonListener already routes five of them (including
@@ -213,6 +214,27 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
                     List<String> keys = (List<String>) e.getValue();
                     List<String> items = pluckList(bag, keys);
                     if (!items.isEmpty()) cols.put(ident("oil_rm_item"), MAPPER.writeValueAsString(items));
+                    continue;
+                }
+                // wb_display_photo/vehicle_photo on weighment_capture_detail are
+                // submitted under the same field name for all 3 weighments --
+                // aria:weighment-capture's Photo Evidence section is shared
+                // across weight_seq FIRST/SECOND/THIRD (only w1_/w2_/w3_weight_kg
+                // are split per-reading). The generic fallback below would target
+                // a literal "wb_display_photo"/"vehicle_photo" column, which
+                // doesn't exist -- each reading has its own w1_/w2_/w3_ column
+                // (V244) -- so route using this same submission's weight_seq.
+                if (isWeighmentCaptureDetail
+                        && ("wb_display_photo".equals(e.getKey()) || "vehicle_photo".equals(e.getKey()))) {
+                    String seq = pluck(bag, List.of("weight_seq"));
+                    String prefix = "FIRST".equals(seq) ? "w1_"
+                            : "SECOND".equals(seq) ? "w2_"
+                            : "THIRD".equals(seq) ? "w3_" : null;
+                    if (prefix != null) {
+                        List<String> keys = (List<String>) e.getValue();
+                        String v = pluck(bag, keys);
+                        if (v != null) cols.put(ident(prefix + e.getKey()), v);
+                    }
                     continue;
                 }
                 List<String> keys = (List<String>) e.getValue();
