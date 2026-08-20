@@ -195,11 +195,22 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
                     String reason = firstNonBlank(str(page, "variance_reason"), str(page, "varianceReason"));
                     String decision = str(page, "status");
                     String queueReason = queueReasonOf(page);
-                    if (reason != null || decision != null || queueReason != null) {
-                        Map<String, Object> cols = new LinkedHashMap<>();
-                        if (reason != null) cols.put("weight_variance_reason", reason);
-                        if (decision != null) cols.put("weight_decision", decision);
-                        if (queueReason != null) cols.put("queue_reason", queueReason);
+                    Map<String, Object> cols = new LinkedHashMap<>();
+                    if (reason != null) cols.put("weight_variance_reason", reason);
+                    if (decision != null) cols.put("weight_decision", decision);
+                    if (queueReason != null) cols.put("queue_reason", queueReason);
+                    // weight_difference_display (TankerInbound: W2-W3) /
+                    // rsi_weight_difference_display (ReturnStockIn: Expected-
+                    // Second) are client-computed FormFields, not server-derived
+                    // -- same gap as TankerOutbound's expected/loaded weight on
+                    // aria:weight-diff-entry. Same fix: trust the page's own
+                    // already-computed value directly, picking whichever variant
+                    // is actually present for this flow.
+                    BigDecimal difference = firstNonNull(
+                            toBig(page.get("weight_difference_display")),
+                            toBig(page.get("rsi_weight_difference_display")));
+                    if (difference != null) cols.put("weight_difference", difference);
+                    if (!cols.isEmpty()) {
                         upsert("manager_weight_approval_detail", instance, cols);
                     }
                     break;
@@ -246,6 +257,10 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
         if (o instanceof BigDecimal b) return b;
         if (o instanceof Number n) return BigDecimal.valueOf(n.doubleValue());
         try { return new BigDecimal(o.toString().trim()); } catch (RuntimeException e) { return null; }
+    }
+
+    private static BigDecimal firstNonNull(BigDecimal a, BigDecimal b) {
+        return a != null ? a : b;
     }
 
     private void upsert(String table, WorkflowInstance instance, Map<String, Object> cols) {
