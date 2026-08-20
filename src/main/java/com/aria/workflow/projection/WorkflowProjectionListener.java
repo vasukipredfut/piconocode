@@ -216,6 +216,18 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
                     if (!items.isEmpty()) cols.put(ident("oil_rm_item"), MAPPER.writeValueAsString(items));
                     continue;
                 }
+                // po_numbers/po_attachment/party_name on dispatch_vehicle_detail
+                // (V246): same repeater/array shape as oil_rm_item above — a
+                // vehicle can carry multiple PO numbers, multiple PO scan
+                // attachments, and multiple party names.
+                if (isDispatchVehicleDetail
+                        && ("po_numbers".equals(e.getKey()) || "po_attachment".equals(e.getKey())
+                            || "party_name".equals(e.getKey()))) {
+                    List<String> keys = (List<String>) e.getValue();
+                    List<String> items = pluckList(bag, keys);
+                    if (!items.isEmpty()) cols.put(ident(e.getKey()), MAPPER.writeValueAsString(items));
+                    continue;
+                }
                 // wb_display_photo/vehicle_photo on weighment_capture_detail are
                 // submitted under the same field name for all 3 weighments --
                 // aria:weighment-capture's Photo Evidence section is shared
