@@ -20,7 +20,7 @@ import static org.mockito.Mockito.*;
  * Unit test for {@link M10BayQuantityCompletionValidator}: blocks
  * "Completed" only while a bay is still open, never on the quantity totals
  * (that gate was deliberately removed — see the class javadoc), and only
- * for the 3 M10 workflows page 428 actually serves.
+ * for FGLoading/PackLoading — TankerOutbound is explicitly exempted.
  */
 class M10BayQuantityCompletionValidatorTest {
 
@@ -78,12 +78,22 @@ class M10BayQuantityCompletionValidatorTest {
 
     @Test
     void weighment2_scopedWorkflow_openBayStillInProgress_rejects() {
-        WorkflowInstance inst = instance(4821L, "M10.TankerOutbound");
+        WorkflowInstance inst = instance(4821L, "M10.PackLoading");
         when(jdbc.queryForObject(anyString(), eq(Integer.class), any(), any())).thenReturn(2);
 
         assertThatThrownBy(() -> validator.validate(inst, "WEIGHMENT_2", Map.of()))
                 .isInstanceOf(WorkflowValidationException.class)
                 .hasMessageContaining("2 bay(s) still open");
+    }
+
+    @Test
+    void weighment2_tankerOutbound_exemptedFromBayGate_isNoOp() {
+        // TankerOutbound also uses page 428's bay tracking but is explicitly
+        // exempted from this gate per business request — see class javadoc.
+        WorkflowInstance inst = instance(4821L, "M10.TankerOutbound");
+
+        assertThatCode(() -> validator.validate(inst, "WEIGHMENT_2", Map.of())).doesNotThrowAnyException();
+        verifyNoInteractions(jdbc);
     }
 
     @Test
