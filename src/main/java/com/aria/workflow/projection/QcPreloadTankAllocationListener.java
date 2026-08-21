@@ -23,12 +23,16 @@ import java.util.Map;
  *
  * <p>No DB column backs the tank pick — the page sends its edited grid rows
  * straight through {@code POST /api/workflow/transition}'s {@code formData},
- * under {@code order_sku_line_items} (same array-of-lines convention
- * {@link com.aria.action.handler.M10StartBayActionHandler} already uses:
- * one object per line, {@code route_id}/{@code sku_code}/{@code sku_desc}
- * plus this page's own {@code tank_location} and {@code load_wgt}). That
- * lands in {@code WorkflowInstance.submittedDataJson} keyed by pageCode —
- * this listener reads it back from there, never from a table.
+ * under {@code tankAllocation} (confirmed off a live transition payload —
+ * one object per line, the underlying OrderDispatchDetail row's
+ * {@code route_id}/{@code sku_code}/{@code sku_desc}/{@code load_wgt} plus
+ * whatever tank got picked for it, expected under {@code tank_location} —
+ * {@code order_sku_line_items}, {@link com.aria.action.handler.M10StartBayActionHandler}'s
+ * own convention, is accepted as a fallback name). That lands in
+ * {@code WorkflowInstance.submittedDataJson} keyed by pageCode — this
+ * listener reads it back from there, never from a table. A line with no
+ * {@code tank_location} (or {@code bay_name}) is skipped — nothing to seed
+ * for it yet.
  *
  * <p>This workflow has no Start Bay / LOADING_IN_PROGRESS / BAY_ASSIGNED step
  * (M10StartBayActionHandler's flow) — QC_PRELOAD_APPROVED goes straight to
@@ -69,7 +73,11 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
             if (!(pageObj instanceof Map)) return;
             Map<String, Object> page = (Map<String, Object>) pageObj;
 
-            Object linesObj = page.get("order_sku_line_items");
+            // "tankAllocation" is what aria:qc-preload-approval's "Order Details —
+            // Tank Allocation" ListView actually submits (confirmed off a live
+            // transition payload); order_sku_line_items (M10StartBayActionHandler's
+            // convention) is kept as a fallback in case that naming changes again.
+            Object linesObj = firstNonNull(page.get("tankAllocation"), page.get("order_sku_line_items"));
             if (!(linesObj instanceof List) || ((List<?>) linesObj).isEmpty()) return;
 
             List<LineEntry> parsed = new ArrayList<>();
