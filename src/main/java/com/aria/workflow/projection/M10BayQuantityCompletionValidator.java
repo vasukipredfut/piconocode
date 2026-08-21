@@ -25,10 +25,12 @@ import java.util.Set;
  * closed via Bay Complete before Completed, since a bay left IN_PROGRESS
  * forever would be an orphaned row with no processed_quantity recorded.
  *
- * <p>Scoped to WEIGHMENT_2 AND the 3 M10 workflows page 428 serves —
- * WEIGHMENT_2 is a common state name reused by unrelated workflows
- * (ReturnStockIn, TankerInbound, ...; see V133) that have nothing to do with
- * bay tracking, so both checks are needed, not just the toState name.
+ * <p>Scoped to WEIGHMENT_2 AND FGLoading/PackLoading only — TankerOutbound
+ * also uses page 428's bay tracking but is explicitly exempted from this
+ * gate per business request. WEIGHMENT_2 is a common state name reused by
+ * unrelated workflows (ReturnStockIn, TankerInbound, ...; see V133) that
+ * have nothing to do with bay tracking, so both checks are needed, not just
+ * the toState name.
  * Instances that never used Start Bay (zero loading_progress_detail_bay
  * rows) are left alone entirely — this feature is opt-in per vehicle, not
  * mandatory for every gate pass.
@@ -37,7 +39,7 @@ import java.util.Set;
 public class M10BayQuantityCompletionValidator implements WorkflowTransitionValidator {
 
     private static final Set<String> SCOPED_WORKFLOWS =
-            Set.of("M10.FGLoading", "M10.PackLoading", "M10.TankerOutbound");
+            Set.of("M10.FGLoading", "M10.PackLoading");
 
     private final JdbcTemplate jdbc;
 
