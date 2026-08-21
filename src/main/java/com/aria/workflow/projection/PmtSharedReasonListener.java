@@ -186,11 +186,24 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
                     }
                     break;
                 }
-                case "WEIGHMENT_3": {
-                    // aria:manager-weight-approval — confirmed the only
-                    // transition originating from WEIGHMENT_3 in all 3
-                    // workflows, so no extra workflow-code guard needed
-                    // (unlike SEALING_DONE/WEIGHMENT_2 above).
+                case "WEIGHMENT_3":
+                case "WEIGHT_APPROVAL_PENDING": {
+                    // aria:manager-weight-approval — WEIGHMENT_3 is its
+                    // original entry state; WEIGHT_APPROVAL_PENDING is the
+                    // second round for the same page, reached from
+                    // READY_FOR_EXIT -> WEIGHT_APPROVAL_PENDING (aria:gate-
+                    // pass-closure-form, guard #submitted['report_weight_diff']
+                    // == 'true') when a weight diff is flagged after the
+                    // first approval. Both land in the same table via the
+                    // same page, so no extra workflow-code guard needed
+                    // (unlike SEALING_DONE/WEIGHMENT_2 above) — and this
+                    // case MUST stay in sync with ownsVarianceReason()'s
+                    // NO_WORKFLOW_GUARD_STATES set above, which already
+                    // lists WEIGHT_APPROVAL_PENDING as owned (so
+                    // WorkflowProjectionListener skips gate_pass for it);
+                    // leaving this case out, as before, meant that data was
+                    // skipped from gate_pass AND never captured here either
+                    // — silently dropped.
                     Map<String, Object> page = pageData(bag, "aria:manager-weight-approval");
                     String reason = firstNonBlank(str(page, "variance_reason"), str(page, "varianceReason"));
                     String decision = str(page, "status");
