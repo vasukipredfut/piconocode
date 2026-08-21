@@ -109,5 +109,10 @@ public final class GatePassSatelliteJoin {
             "COALESCE(qua.unloading_location, qpd.unloading_location) AS unloading_location, " +
             "qua.status AS qc_decision_status, qua.qc_reject_reason AS qc_approval_reject_reason, " +
             "urd.grn_status, urd.grn_number, " +
+            // Manager Weight Approval's decision + reason (aria:manager-weight-approval,
+            // written by PmtSharedReasonListener's WEIGHMENT_3 case, V91/V127) — only its
+            // queue_reason was exposed here before; a plain GatePass-by-gp_number read
+            // now also surfaces the actual approve/reject reason and computed difference.
+            "mwad.weight_decision, mwad.weight_variance_reason, mwad.weight_difference, " +
             "(dvd.invoice_qty - (gpw.w1_weight_kg - gpw.w2_weight_kg)) AS qty_difference_kg";
 }
