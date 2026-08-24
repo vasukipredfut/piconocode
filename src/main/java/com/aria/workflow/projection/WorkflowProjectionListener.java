@@ -153,6 +153,7 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
             boolean isBillingEntry = "billing_entry".equals(table);
             boolean isDispatchVehicleDetail = "dispatch_vehicle_detail".equals(table);
             boolean isWeighmentCaptureDetail = "weighment_capture_detail".equals(table);
+            boolean isQcFinalOutboundDetail = "qc_final_outbound_detail".equals(table);
             for (Map.Entry<String, Object> e : map.entrySet()) {
                 // variance_reason is a name shared by six PMT/manager-approval pages;
                 // PmtSharedReasonListener already routes five of them (including
@@ -205,6 +206,18 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
                     if (v != null) cols.put(ident("queue_reason"), v);
                     continue;
                 }
+                // qc_decision (V249): "status"/"qc_status" is submitted by
+                // aria:qc-preload-approval's Approve/Reject buttons, but that
+                // same "status" key is reused by unrelated pages too -- same
+                // cross-page-collision risk as queue_reason above, so this
+                // also needs the page-scoped lookup rather than the generic
+                // cross-page fallback.
+                if ("qc_decision".equals(e.getKey())) {
+                    List<String> keys = (List<String>) e.getValue();
+                    String v = pluckScoped(bag, keys, triggeringPageCode);
+                    if (v != null) cols.put(ident("qc_decision"), v);
+                    continue;
+                }
                 // oil_rm_item on dispatch_vehicle_detail (V237): aria:dispatch-
                 // vehicle-details submits oilRmItem as a repeater/array field,
                 // same shape as billing_entry's invoice_numbers above — pluck()'s
@@ -247,6 +260,15 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
                         String v = pluck(bag, keys);
                         if (v != null) cols.put(ident(prefix + e.getKey()), v);
                     }
+                    continue;
+                }
+                // qc_sample_test on qc_final_outbound_detail (V250): same
+                // repeater/array shape as po_attachment above -- a sample
+                // sign-off can carry more than one attached file.
+                if (isQcFinalOutboundDetail && "qc_sample_test".equals(e.getKey())) {
+                    List<String> keys = (List<String>) e.getValue();
+                    List<String> items = pluckList(bag, keys);
+                    if (!items.isEmpty()) cols.put(ident(e.getKey()), MAPPER.writeValueAsString(items));
                     continue;
                 }
                 List<String> keys = (List<String>) e.getValue();

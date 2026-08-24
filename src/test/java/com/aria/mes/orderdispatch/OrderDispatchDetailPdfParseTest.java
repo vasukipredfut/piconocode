@@ -89,6 +89,7 @@ class OrderDispatchDetailPdfParseTest {
         assertThat(r1.get(24)).isEqualTo("ROU031405");              // route_id
         assertThat(r1.get(26)).isEqualTo("200");                    // assign_qty
         assertThat(r1.get(7)).isEqualTo("200");                     // order_qty (order block's own "Qty:" total)
+        assertThat(r1.get(32)).isEqualTo("2921.60");                // load_wgt (this line's own Weight column)
         assertThat(r1.get(33)).isEqualTo("2921.60");                // dispatch_wgt (order block's own "Wgt:" total)
         assertThat(r1.get(28)).isEqualTo("ATTUR");                  // vehicle_no
         assertThat(r1.get(29)).isEqualTo("N");                      // driver_name
@@ -120,6 +121,10 @@ class OrderDispatchDetailPdfParseTest {
         assertThat(r3.get(33)).isEqualTo("2183.00");
         assertThat(rows.get(2).get(7)).isEqualTo("225");
         assertThat(rows.get(2).get(33)).isEqualTo("2183.00");
+        // load_wgt, by contrast, is per-line and genuinely differs between r2 and
+        // r3 even though they share the same order-level dispatch_wgt above.
+        assertThat(rows.get(2).get(32)).isEqualTo("152.47");
+        assertThat(r3.get(32)).isEqualTo("2014.53");
     }
 
     /**

@@ -427,7 +427,10 @@ public class OrderDispatchDetailImportController {
      * each line item's SKU Description -&gt; sku_desc, Rate -&gt;
      * order_rate, L/Qty -&gt; assign_qty (the field {@link #importCsv}
      * already requires non-null/non-zero, since it's literally the
-     * quantity to load for that line).
+     * quantity to load for that line), and its own Weight column -&gt;
+     * load_wgt (this line's individual weight — not to be confused with
+     * dispatch_wgt above, the order block's aggregate total repeated on
+     * every one of that order's lines).
      *
      * <p>The header block (Truck No/Driver Details/Total Orders row) and the
      * "No Check SKU Description..." column header repeat on every page —
@@ -511,6 +514,7 @@ public class OrderDispatchDetailImportController {
                 cols[28] = vehicleNo;
                 cols[29] = driverName;
                 cols[30] = driverPhone;
+                cols[32] = sku.group(4); // load_wgt: THIS line's own Weight column (distinct from dispatch_wgt below)
                 cols[33] = orderWgt; // dispatch_wgt: the order block's own "Wgt: NNN.NN" total, repeated per SKU line
                 lastRow = Arrays.asList(cols);
                 rows.add(lastRow);

@@ -43,7 +43,13 @@ import java.util.Map;
  *
  * <p>Marking these rows' processed_quantity and flipping status to DONE once
  * the first weighment lands (QC_PRELOAD_APPROVED -&gt; LOADING_COMPLETED) is
- * separate follow-up work, intentionally not done here.
+ * separate follow-up work, intentionally not done here — see
+ * {@code TankerWeighmentSkuCaptureActionHandler}, which also stamps
+ * {@code loading_finish_time}. This listener stamps {@code loading_start_time}
+ * on the head row at tank-allocation time (loading genuinely begins here for
+ * this flow), since {@code WorkflowProjectionListener}'s generic
+ * {@code state_ts_columns_json} config maps that column to a
+ * LOADING_IN_PROGRESS state this workflow's live FSM never reaches.
  */
 @Component
 public class QcPreloadTankAllocationListener implements WorkflowTransitionListener {
@@ -112,12 +118,13 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
             }
 
             jdbc.update(
-                    "INSERT INTO loading_progress_detail (tenant_id, workflow_instance_id, vehicle_no, gate_pass_no, total_quantity, processed_quantity) " +
-                            "VALUES (?, ?, ?, ?, ?, 0) " +
+                    "INSERT INTO loading_progress_detail (tenant_id, workflow_instance_id, vehicle_no, gate_pass_no, total_quantity, processed_quantity, loading_start_time) " +
+                            "VALUES (?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP) " +
                             "ON DUPLICATE KEY UPDATE " +
                             "vehicle_no = COALESCE(VALUES(vehicle_no), vehicle_no), " +
                             "gate_pass_no = COALESCE(VALUES(gate_pass_no), gate_pass_no), " +
-                            "total_quantity = total_quantity + VALUES(total_quantity)",
+                            "total_quantity = total_quantity + VALUES(total_quantity), " +
+                            "loading_start_time = COALESCE(loading_start_time, VALUES(loading_start_time))",
                     tenantId, instanceId, vehicleNo, gatePassNo, totalQty);
 
             Long parentId = jdbc.queryForObject(
