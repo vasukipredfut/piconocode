@@ -11,14 +11,18 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
- * billing_order_details child rows driven by aria:skipped-item-allocation's
- * "Loaded SKU Details" grid — one row per order/SKU line, capturing what
- * was actually loaded vs skipped for that loading transaction.
+ * billing_order_details child rows driven by a page's "Loaded SKU Details"
+ * grid (originally aria:skipped-item-allocation's) — one row per order/SKU
+ * line, capturing what was actually loaded vs skipped for that loading
+ * transaction.
  *
  * <p>Kept as its own listener (like {@link ParkingBayEntryTransitionListener})
  * rather than a generic {@code m0_workflow_projection} config row, because
@@ -26,11 +30,34 @@ import java.util.Map;
  * projection mechanism only ever writes one row per instance per table, it
  * has no fan-out from a list to N child rows.
  *
- * <p>Not scoped to a single workflow code — aria:skipped-item-allocation is
- * reused across M10 flow variants (its own table migration references
- * M10.PackUnload; seen live in production use on M10.FGLoading too), so this
- * only gates on a submitted {@code loaded_sku_details} list being present
- * under this page's key in the bag.
+ * <p>V253 fix: this used to look for {@code loaded_sku_details} under a
+ * hard-coded {@code bag.get("aria:skipped-item-allocation")} key — but
+ * confirmed off a live {@code workflow.transition} payload (pageCode
+ * {@code aria:billing-entry}, instance 1776), this Renderer carries one
+ * accumulated form-state object forward across pages, so the field actually
+ * rides under whatever page is CURRENTLY submitting, not a fixed literal
+ * key. The fixed key meant this almost never found data to write. Now
+ * resolves the actual triggering page per-transition — same
+ * {@code resolveTriggeringPageCode} approach {@link WorkflowProjectionListener}
+ * uses (matching previousState -&gt; instance.getCurrentState() against
+ * {@code workflow_definition.transitions[]}, each of which already declares
+ * its own pageCode) — and reads {@code loaded_sku_details} from THAT page's
+ * bag entry.
+ *
+ * <p>Not scoped to a single workflow code — this grid is reused across M10
+ * flow variants (V192's table migration references M10.PackUnload; seen
+ * live in production use on M10.FGLoading too), so this only gates on a
+ * submitted {@code loaded_sku_details} list being present under the
+ * resolved triggering page's key in the bag.
+ *
+ * <p>Because the fix above now finds real data on more transitions than
+ * before, a write-once instance-level guard would be unsafe (a genuine
+ * repeat submission — e.g. correcting one line's qty — must still land).
+ * {@code billing_order_details} has a UNIQUE key on (tenant_id,
+ * workflow_instance_id, order_id, sku_code) (V253) and this listener uses
+ * {@code INSERT .. ON DUPLICATE KEY UPDATE} instead of a plain INSERT, so a
+ * repeat submission for the same line updates it in place rather than
+ * creating a duplicate row.
  *
  * <p>V192 created {@code billing_order_details} + its entity registry rows
  * but explicitly deferred this write-side wiring ("pending confirmation of
@@ -40,7 +67,7 @@ import java.util.Map;
 public class BillingOrderDetailTransitionListener implements WorkflowTransitionListener {
 
     private static final Logger log = LoggerFactory.getLogger(BillingOrderDetailTransitionListener.class);
-    private static final String PAGE_CODE = "aria:skipped-item-allocation";
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final JdbcTemplate jdbc;
 
@@ -49,11 +76,15 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
     }
 
     @Override
+    @SuppressWarnings("unchecked")
     public void onTransition(WorkflowInstance instance, String previousState, Map<String, Object> bag) {
         if (bag == null) return;
-        Object pageDataRaw = bag.get(PAGE_CODE);
+
+        String triggeringPageCode = resolveTriggeringPageCode(instance, previousState);
+        if (triggeringPageCode == null) return;
+
+        Object pageDataRaw = bag.get(triggeringPageCode);
         if (!(pageDataRaw instanceof Map)) return;
-        @SuppressWarnings("unchecked")
         Map<String, Object> pageData = (Map<String, Object>) pageDataRaw;
         Object linesRaw = pageData.get("loaded_sku_details");
         if (!(linesRaw instanceof List<?> lines) || lines.isEmpty()) return;
@@ -71,7 +102,12 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
                 jdbc.update(
                         "INSERT INTO billing_order_details (tenant_id, workflow_instance_id, vehicle_no, "
                                 + "gate_pass_no, order_id, rd_code, rd_desc, sku_code, sku_desc, order_qty, "
-                                + "loading_qty, skipped_quantity) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                                + "loading_qty, skipped_quantity) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+                                + "ON DUPLICATE KEY UPDATE vehicle_no = VALUES(vehicle_no), "
+                                + "gate_pass_no = VALUES(gate_pass_no), rd_code = VALUES(rd_code), "
+                                + "rd_desc = VALUES(rd_desc), sku_desc = VALUES(sku_desc), "
+                                + "order_qty = VALUES(order_qty), loading_qty = VALUES(loading_qty), "
+                                + "skipped_quantity = VALUES(skipped_quantity), updated_at = CURRENT_TIMESTAMP",
                         tenantId, instance.getId(), vehicleNo, gatePassNo,
                         str(line, "order_id"), str(line, "rd_code"), str(line, "rd_desc"),
                         str(line, "sku_code"), str(line, "sku_desc"),
@@ -84,13 +120,44 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
             }
         }
 
-        writeAudit(tenantId, instance, vehicleNo, gatePassNo, written, lines.size());
-        log.info("billing_order_details: wrote {}/{} row(s) for instance {} (vehicle={})",
-                written, lines.size(), instance.getId(), vehicleNo);
+        writeAudit(tenantId, instance, vehicleNo, gatePassNo, written, lines.size(), triggeringPageCode);
+        log.info("billing_order_details: wrote {}/{} row(s) for instance {} (vehicle={}) via {}",
+                written, lines.size(), instance.getId(), vehicleNo, triggeringPageCode);
+    }
+
+    /**
+     * Which page's submission actually drove this transition — see class
+     * javadoc. Self-contained rather than sharing
+     * {@link WorkflowProjectionListener}'s private method, matching that
+     * class's own note on why it isn't widened onto the shared
+     * {@link WorkflowTransitionListener} interface for one caller's sake.
+     */
+    @SuppressWarnings("unchecked")
+    private String resolveTriggeringPageCode(WorkflowInstance instance, String previousState) {
+        try {
+            Long ownerTenantId = instance.getWorkflowOwnerTenantId() != null
+                    ? instance.getWorkflowOwnerTenantId() : instance.getTenantId();
+            String bodyJson = jdbc.queryForObject(
+                    "SELECT body_json FROM workflow_definition WHERE tenant_id=? AND code=? AND version=?",
+                    String.class, ownerTenantId, instance.getWorkflowCode(), instance.getWorkflowVersion());
+            Map<String, Object> body = MAPPER.readValue(bodyJson, Map.class);
+            List<Map<String, Object>> transitions = (List<Map<String, Object>>) body.get("transitions");
+            if (transitions == null) return null;
+            String currentState = instance.getCurrentState();
+            for (Map<String, Object> t : transitions) {
+                if (Objects.equals(previousState, t.get("from")) && Objects.equals(currentState, t.get("to"))) {
+                    Object pc = t.get("pageCode");
+                    if (pc != null) return pc.toString();
+                }
+            }
+            return null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private void writeAudit(long tenantId, WorkflowInstance instance, String vehicleNo, String gatePassNo,
-                             int written, int total) {
+                             int written, int total, String triggeringPageCode) {
         try {
             jdbc.update(
                     "INSERT INTO m0_audit_log (tenant_id, ts, actor_id, action_kind, entity_code, "
@@ -98,7 +165,7 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
                             + "VALUES (?, CURRENT_TIMESTAMP, ?, 'BILLING_ORDER_DETAIL_CAPTURED', 'BillingOrderDetail', "
                             + "?, ?, ?, ?, ?)",
                     tenantId, currentUserId(), instance.getWorkflowCode(), instance.getId(), vehicleNo, gatePassNo,
-                    "Captured " + written + "/" + total + " loaded/skipped SKU line(s) via " + PAGE_CODE);
+                    "Captured " + written + "/" + total + " loaded/skipped SKU line(s) via " + triggeringPageCode);
         } catch (Exception e) {
             // Audit-log writes must never break the mutation that triggered them.
             log.warn("billing_order_details audit-log write failed for instance {}: {}",
