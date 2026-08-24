@@ -59,15 +59,19 @@ import java.util.stream.IntStream;
  *
  * <p>Payload shape — bay_name rides inside formData (the page's current
  * form state) alongside everything else, not in args; this handler takes
- * no args at all:
+ * no args at all. {@code order_id} per line is optional (V252) — some
+ * loading steps group SKU lines by route_id, others by order_id; whichever
+ * is given here is stored on the opened {@code loading_progress_detail_bay}
+ * row and must be echoed back (or omitted, matching what was sent here) at
+ * Bay Complete for that row to be found:
  * <pre>
  *   { "instanceId": 1495, "pageCode": "aria:loading-in-progress-entry",
  *     "formData": {
  *       "vehicle_no": "TN86J8070", "route_id": "ROU028912", "gpNumber": "GP-1-1495",
  *       "bay_name": "Bay1",
  *       "order_sku_line_items": [
- *         { "route_id": "ROU028912", "sku_code": "SKU1215", "sku_desc": "GROUNDNUT RAW OIL 15 KG TIN", "order_qty": 45 },
- *         { "route_id": "ROU028912", "sku_code": "SKU1461", "sku_desc": "REF SUNFLOWER OIL 15 LTR TIN ROYAL", "order_qty": 250 }
+ *         { "route_id": "ROU028912", "order_id": "ORD1123", "sku_code": "SKU1215", "sku_desc": "GROUNDNUT RAW OIL 15 KG TIN", "order_qty": 45 },
+ *         { "route_id": "ROU028912", "order_id": "ORD1124", "sku_code": "SKU1461", "sku_desc": "REF SUNFLOWER OIL 15 LTR TIN ROYAL", "order_qty": 250 }
  *       ]
  *     } }
  * </pre>
@@ -147,7 +151,7 @@ public class M10StartBayActionHandler implements ActionHandler {
             if (qty == null || qty.signum() <= 0) {
                 return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") needs order_qty > 0");
             }
-            parsed.add(new LineEntry(routeId, skuCode, strOpt(line, "sku_desc"), qty));
+            parsed.add(new LineEntry(routeId, strOpt(line, "order_id"), skuCode, strOpt(line, "sku_desc"), qty));
             totalQty = totalQty.add(qty);
         }
 
@@ -223,9 +227,9 @@ public class M10StartBayActionHandler implements ActionHandler {
         for (LineEntry e : parsed) {
             jdbc.update(
                     "INSERT INTO loading_progress_detail_bay "
-                            + "(tenant_id, loading_progress_detail_id, workflow_instance_id, route_id, sku_code, sku_desc, bay_name, quantity, status) "
-                            + "VALUES (?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
-                    tenantId, parentId, instanceId, e.routeId, e.skuCode, e.skuDesc, bayName, e.quantity);
+                            + "(tenant_id, loading_progress_detail_id, workflow_instance_id, route_id, order_id, sku_code, sku_desc, bay_name, quantity, status) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
+                    tenantId, parentId, instanceId, e.routeId, e.orderId, e.skuCode, e.skuDesc, bayName, e.quantity);
         }
 
         Map<String, Object> data = new HashMap<>();
@@ -254,5 +258,5 @@ public class M10StartBayActionHandler implements ActionHandler {
         return v == null ? null : v.toString();
     }
 
-    private record LineEntry(String routeId, String skuCode, String skuDesc, BigDecimal quantity) {}
+    private record LineEntry(String routeId, String orderId, String skuCode, String skuDesc, BigDecimal quantity) {}
 }

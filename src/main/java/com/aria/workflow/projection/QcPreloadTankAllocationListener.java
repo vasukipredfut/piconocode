@@ -25,14 +25,18 @@ import java.util.Map;
  * straight through {@code POST /api/workflow/transition}'s {@code formData},
  * under {@code tankAllocation} (confirmed off a live transition payload —
  * one object per line, the underlying OrderDispatchDetail row's
- * {@code route_id}/{@code sku_code}/{@code sku_desc}/{@code load_wgt} plus
- * whatever tank got picked for it, expected under {@code tank_location} —
- * {@code order_sku_line_items}, {@link com.aria.action.handler.M10StartBayActionHandler}'s
- * own convention, is accepted as a fallback name). That lands in
+ * {@code route_id}/{@code order_id}/{@code sku_code}/{@code sku_desc}/
+ * {@code load_wgt} plus whatever tank got picked for it, expected under
+ * {@code tank_location} — {@code order_sku_line_items},
+ * {@link com.aria.action.handler.M10StartBayActionHandler}'s own convention,
+ * is accepted as a fallback name). That lands in
  * {@code WorkflowInstance.submittedDataJson} keyed by pageCode — this
  * listener reads it back from there, never from a table. A line with no
  * {@code tank_location} (or {@code bay_name}) is skipped — nothing to seed
- * for it yet.
+ * for it yet. {@code order_id} (V252) is stored alongside {@code route_id}
+ * on the seeded row, whichever this grid's rows carry — see
+ * {@code TankerWeighmentSkuCaptureActionHandler}, which must echo the same
+ * value back to close it.
  *
  * <p>This workflow has no Start Bay / LOADING_IN_PROGRESS / BAY_ASSIGNED step
  * (M10StartBayActionHandler's flow) — QC_PRELOAD_APPROVED goes straight to
@@ -95,7 +99,7 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
                 String tankLocation = firstNonBlank(str(line.get("tank_location")), str(line.get("bay_name")));
                 if (skuCode == null || tankLocation == null) continue; // this line wasn't allocated a tank — skip
                 BigDecimal qty = toBig(firstNonNull(line.get("load_wgt"), line.get("quantity"), line.get("order_qty")));
-                parsed.add(new LineEntry(str(line.get("route_id")), skuCode, str(line.get("sku_desc")), tankLocation, qty));
+                parsed.add(new LineEntry(str(line.get("route_id")), str(line.get("order_id")), skuCode, str(line.get("sku_desc")), tankLocation, qty));
                 totalQty = totalQty.add(qty);
             }
             if (parsed.isEmpty()) return;
@@ -134,9 +138,9 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
             for (LineEntry e : parsed) {
                 jdbc.update(
                         "INSERT INTO loading_progress_detail_bay " +
-                                "(tenant_id, loading_progress_detail_id, workflow_instance_id, route_id, sku_code, sku_desc, bay_name, quantity, status) " +
-                                "VALUES (?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
-                        tenantId, parentId, instanceId, e.routeId, e.skuCode, e.skuDesc, e.tankLocation, e.quantity);
+                                "(tenant_id, loading_progress_detail_id, workflow_instance_id, route_id, order_id, sku_code, sku_desc, bay_name, quantity, status) " +
+                                "VALUES (?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
+                        tenantId, parentId, instanceId, e.routeId, e.orderId, e.skuCode, e.skuDesc, e.tankLocation, e.quantity);
             }
         } catch (Exception e) {
             log.warn("qc-preload tank allocation seeding failed for instance={}: {}", instanceId, e.getMessage());
@@ -153,7 +157,7 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
         }
     }
 
-    private record LineEntry(String routeId, String skuCode, String skuDesc, String tankLocation, BigDecimal quantity) {}
+    private record LineEntry(String routeId, String orderId, String skuCode, String skuDesc, String tankLocation, BigDecimal quantity) {}
 
     private static String str(Object o) {
         return (o == null || o.toString().isBlank()) ? null : o.toString();

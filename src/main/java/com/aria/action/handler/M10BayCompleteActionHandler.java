@@ -30,9 +30,12 @@ import java.util.Map;
  * workflow engine is never called here — matching how this button has
  * always behaved: it saves the bay's data without advancing the page.
  *
- * <p>Matched by (route_id, sku_code) per line, the same identifying pair
- * the grid already keys rows by — the operator edits loading_qty inline per
- * SKU row, then Bay Complete submits the whole array at once.
+ * <p>Matched by (route_id, order_id, sku_code) per line — order_id (V252) is
+ * NULL-safe-matched alongside route_id since not every loading step groups
+ * by the same identifier (see {@link M10StartBayActionHandler}'s javadoc);
+ * whatever this line's row was opened with must be echoed back here
+ * unchanged for the match to find it. The operator edits loading_qty inline
+ * per SKU row, then Bay Complete submits the whole array at once.
  *
  * <p>quantity vs processed quantity (Bay 1 = 100 + Bay 2 = 200 + Bay 3 =
  * 500 assigned, vs however much actually gets processed) is tracked for
@@ -126,6 +129,7 @@ public class M10BayCompleteActionHandler implements ActionHandler {
             }
             Map<String, Object> line = (Map<String, Object>) lineObj;
             String routeId = str(line, "route_id");
+            String orderId = str(line, "order_id");
             String skuCode = str(line, "sku_code");
             if (routeId == null || skuCode == null) {
                 markRollbackOnly();
@@ -185,13 +189,14 @@ public class M10BayCompleteActionHandler implements ActionHandler {
 
             int n = jdbc.update(
                     "UPDATE loading_progress_detail_bay SET processed_quantity = ?, status = 'DONE' "
-                            + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND sku_code = ? AND status = 'IN_PROGRESS'",
-                    processedQty, tenantId, instanceId, routeId, skuCode);
+                            + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
+                            + "((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'IN_PROGRESS'",
+                    processedQty, tenantId, instanceId, routeId, orderId, orderId, skuCode);
             if (n == 0) {
                 markRollbackOnly();
-                log.warn("action.bay-complete.bay-row-missing tenantId={} instanceId={} routeId={} skuCode={}",
-                        tenantId, instanceId, routeId, skuCode);
-                return ActionResult.error("no open bay row found for route_id=" + routeId + " sku_code=" + skuCode);
+                log.warn("action.bay-complete.bay-row-missing tenantId={} instanceId={} routeId={} orderId={} skuCode={}",
+                        tenantId, instanceId, routeId, orderId, skuCode);
+                return ActionResult.error("no open bay row found for route_id=" + routeId + " order_id=" + orderId + " sku_code=" + skuCode);
             }
 
             log.info("action.bay-complete.bay-row-closed tenantId={} instanceId={} routeId={} skuCode={} processedQty={}",

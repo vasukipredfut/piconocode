@@ -61,10 +61,12 @@ import java.util.Map;
  * tank-allocation time, since TankerOutbound's live FSM never reaches the
  * LOADING_IN_PROGRESS state that config also (uselessly) maps.
  *
- * <p>Matched by (route_id, sku_code) per line — same identifying pair
- * {@link M10BayCompleteActionHandler} already uses, not the row's numeric
- * id — so this stays consistent if a SKU ever spans more than one
- * order_dispatch_detail line for the same route.
+ * <p>Matched by (route_id, order_id, sku_code) per line — same identifying
+ * key {@link M10BayCompleteActionHandler} uses, not the row's numeric id —
+ * order_id (V252) is NULL-safe-matched alongside route_id since
+ * {@code QcPreloadTankAllocationListener} may have seeded the row with
+ * either identifier depending on how that tank-allocation grid grouped its
+ * lines; whatever it stored must be echoed back here unchanged.
  *
  * <p>Payload shape (formData.tankerSkuWeights — the grid's current rows,
  * the weight already edited by the officer from the scale reading;
@@ -74,8 +76,8 @@ import java.util.Map;
  * <pre>
  *   { "instanceId": 1495,
  *     "formData": { "tankerSkuWeights": [
- *       { "route_id": "ROU028912", "sku_code": "SKU1215", "loading_qty": 2921.60 },
- *       { "route_id": "ROU028912", "sku_code": "SKU1461", "loading_qty": 1180.00 }
+ *       { "route_id": "ROU028912", "order_id": "ORD1123", "sku_code": "SKU1215", "loading_qty": 2921.60 },
+ *       { "route_id": "ROU028912", "order_id": "ORD1124", "sku_code": "SKU1461", "loading_qty": 1180.00 }
  *     ] } }
  * </pre>
  */
@@ -119,6 +121,7 @@ public class TankerWeighmentSkuCaptureActionHandler implements ActionHandler {
             }
             Map<String, Object> line = (Map<String, Object>) lineObj;
             String routeId = str(line, "route_id");
+            String orderId = str(line, "order_id");
             String skuCode = str(line, "sku_code");
             if (routeId == null || skuCode == null) {
                 markRollbackOnly();
@@ -173,13 +176,14 @@ public class TankerWeighmentSkuCaptureActionHandler implements ActionHandler {
 
             int n = jdbc.update(
                     "UPDATE loading_progress_detail_bay SET processed_quantity = ?, status = 'DONE' "
-                            + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND sku_code = ? AND status = 'IN_PROGRESS'",
-                    loadWgt, tenantId, instanceId, routeId, skuCode);
+                            + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
+                            + "((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'IN_PROGRESS'",
+                    loadWgt, tenantId, instanceId, routeId, orderId, orderId, skuCode);
             if (n == 0) {
                 markRollbackOnly();
-                log.warn("action.tanker-weighment-capture.bay-row-missing tenantId={} instanceId={} routeId={} skuCode={}",
-                        tenantId, instanceId, routeId, skuCode);
-                return ActionResult.error("no open bay row found for route_id=" + routeId + " sku_code=" + skuCode);
+                log.warn("action.tanker-weighment-capture.bay-row-missing tenantId={} instanceId={} routeId={} orderId={} skuCode={}",
+                        tenantId, instanceId, routeId, orderId, skuCode);
+                return ActionResult.error("no open bay row found for route_id=" + routeId + " order_id=" + orderId + " sku_code=" + skuCode);
             }
 
             log.info("action.tanker-weighment-capture.bay-row-closed tenantId={} instanceId={} routeId={} skuCode={} loadWgt={}",
@@ -188,6 +192,7 @@ public class TankerWeighmentSkuCaptureActionHandler implements ActionHandler {
             totalProcessed = totalProcessed.add(loadWgt);
             Map<String, Object> row = new HashMap<>();
             row.put("routeId", routeId);
+            row.put("orderId", orderId);
             row.put("skuCode", skuCode);
             row.put("loadWgt", loadWgt);
             closed.add(row);

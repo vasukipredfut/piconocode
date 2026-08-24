@@ -103,7 +103,7 @@ class M10StartBayActionHandlerTest {
         assertThat(r.isOk()).isTrue();
         assertThat(r.getData()).containsEntry("bayName", "ROT-1");
         verify(jdbc).update(contains("INSERT INTO loading_progress_detail_bay"),
-                eq(1L), eq(1L), eq(1495L), eq("ROU028912"), eq("SKU1215"), eq("SKU1215 desc"), eq("ROT-1"), eq(new BigDecimal("45")));
+                eq(1L), eq(1L), eq(1495L), eq("ROU028912"), isNull(), eq("SKU1215"), eq("SKU1215 desc"), eq("ROT-1"), eq(new BigDecimal("45")));
     }
 
     @Test
