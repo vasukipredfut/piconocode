@@ -259,8 +259,18 @@ public class OrderDispatchDetailImportController {
             try (CSVParser parser = new CSVParser(reader, format)) {
                 for (CSVRecord r : parser) {
                     List<String> cols = new ArrayList<>(r.size());
-                    for (int i = 0; i < r.size(); i++) cols.add(r.get(i));
-                    rows.add(cols);
+                    boolean anyValue = false;
+                    for (int i = 0; i < r.size(); i++) {
+                        String v = r.get(i);
+                        if (v != null && !v.isBlank()) anyValue = true;
+                        cols.add(v);
+                    }
+                    // A trailing row of bare delimiters (",,,,,...") has no zero-length
+                    // line for withIgnoreEmptyLines to catch — every field parses as an
+                    // empty string, so it survives as a "real" record and fails the
+                    // assign_qty check downstream. Drop it here instead, same as
+                    // parseExcelRows already does for blank Excel rows.
+                    if (anyValue) rows.add(cols);
                 }
             }
         }

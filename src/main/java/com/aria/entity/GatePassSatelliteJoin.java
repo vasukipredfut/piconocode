@@ -52,7 +52,12 @@ public final class GatePassSatelliteJoin {
             // generic projection) — joined here purely so a plain GatePass
             // read also surfaces their queue_reason (see SELECT below).
             " LEFT JOIN manager_qty_approval_detail mqad ON mqad.workflow_instance_id = gp.workflow_instance_id AND mqad.tenant_id = gp.tenant_id" +
-            " LEFT JOIN manager_weight_approval_detail mwad ON mwad.workflow_instance_id = gp.workflow_instance_id AND mwad.tenant_id = gp.tenant_id";
+            " LEFT JOIN manager_weight_approval_detail mwad ON mwad.workflow_instance_id = gp.workflow_instance_id AND mwad.tenant_id = gp.tenant_id" +
+            // qc_final_outbound_detail (V238/V250) was never wired into this join when
+            // it was created -- aria:qc-final-out's qc_notes/status/qc_sample_test were
+            // only ever reachable via workflow_instance.submitted_data_json or a direct
+            // read of the satellite table itself, never through a plain GatePass read.
+            " LEFT JOIN qc_final_outbound_detail qfod ON qfod.workflow_instance_id = gp.workflow_instance_id AND qfod.tenant_id = gp.tenant_id";
 
     // Each satellite's own out-of-order-selection reason (see V232/V233,
     // PmtSharedReasonListener), aliased per table — gate_pass's own bare
@@ -114,5 +119,9 @@ public final class GatePassSatelliteJoin {
             // queue_reason was exposed here before; a plain GatePass-by-gp_number read
             // now also surfaces the actual approve/reject reason and computed difference.
             "mwad.weight_decision, mwad.weight_variance_reason, mwad.weight_difference, " +
-            "(dvd.invoice_qty - (gpw.w1_weight_kg - gpw.w2_weight_kg)) AS qty_difference_kg";
+            "(dvd.invoice_qty - (gpw.w1_weight_kg - gpw.w2_weight_kg)) AS qty_difference_kg, " +
+            // Aliased distinctly from qua.qc_notes/qc_decision_status (qc_unloading_approval,
+            // a different QC step) since both satellites use the same bare column names.
+            "qfod.qc_notes AS qc_final_outbound_notes, qfod.status AS qc_final_outbound_status, " +
+            "qfod.qc_sample_test";
 }
