@@ -113,7 +113,10 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
                             tenantId, instance.getId(), vehicleNo, gatePassNo,
                             str(line, "order_id"), str(line, "rd_code"), str(line, "rd_desc"),
                             str(line, "sku_code"), str(line, "sku_desc"),
-                            num(line, "order_qty"), num(line, "loading_qty"), num(line, "skipped_quantity"),
+                            // Confirmed off a live transition payload: this grid's line items carry the order
+                            // quantity under "assign_qty" (the underlying OrderDispatchDetail column name),
+                            // never a literal "order_qty" key -- that fallback always missed, writing 0.
+                            num(line, "assign_qty", "order_qty"), num(line, "loading_qty"), num(line, "skipped_quantity"),
                             str(line, "reason", "skip_reason"));
                     written++;
                 } catch (Exception e) {
@@ -151,16 +154,17 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
         try {
             rows = jdbc.queryForList(
                     "SELECT odd.order_id, odd.sku_code, odd.rd_code, odd.rd_desc, odd.sku_desc, "
-                            + "odd.order_rate, sm.gst_rate_pct, odd.line_dispatch_qty, "
+                            + "odd.order_rate, sm.gst_rate_pct, odd.line_dispatch_qty, odd.assign_qty, "
                             + "COALESCE(SUM(lpb.processed_quantity), 0) AS processed_qty "
                             + "FROM m5_order_dispatch_detail odd "
                             + "LEFT JOIN m5_sku_master sm ON sm.tenant_id = odd.tenant_id "
                             + "AND sm.sku_code = odd.sku_code COLLATE utf8mb4_general_ci "
                             + "LEFT JOIN loading_progress_detail_bay lpb ON lpb.tenant_id = odd.tenant_id "
-                            + "AND lpb.workflow_instance_id = ? AND lpb.sku_code = odd.sku_code "
+                            + "AND lpb.workflow_instance_id = ? "
+                            + "AND lpb.sku_code = odd.sku_code COLLATE utf8mb4_general_ci "
                             + "WHERE odd.tenant_id = ? AND odd.vehicle_no = ? AND odd.assign_qty >= 1 "
                             + "GROUP BY odd.id, odd.order_id, odd.sku_code, odd.rd_code, odd.rd_desc, "
-                            + "odd.sku_desc, odd.order_rate, sm.gst_rate_pct, odd.line_dispatch_qty",
+                            + "odd.sku_desc, odd.order_rate, sm.gst_rate_pct, odd.line_dispatch_qty, odd.assign_qty",
                     instance.getId(), tenantId, vehicleNo);
         } catch (Exception e) {
             log.warn("billing_order_details: billing-table rate lookup failed for instance {} (vehicle={}): {}",
@@ -183,16 +187,22 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
 
                 jdbc.update(
                         "INSERT INTO billing_order_details (tenant_id, workflow_instance_id, vehicle_no, "
-                                + "gate_pass_no, order_id, rd_code, rd_desc, sku_code, sku_desc, order_rate, "
-                                + "gst_rate_pct, tax_amount, net_rate, billed_qty) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                                + "gate_pass_no, order_id, rd_code, rd_desc, sku_code, sku_desc, order_qty, loading_qty, order_rate, "
+                                + "gst_rate_pct, tax_amount, net_rate, billed_qty) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                                 + "ON DUPLICATE KEY UPDATE rd_code = VALUES(rd_code), rd_desc = VALUES(rd_desc), "
-                                + "sku_desc = VALUES(sku_desc), order_rate = VALUES(order_rate), "
+                                + "sku_desc = VALUES(sku_desc), order_qty = VALUES(order_qty), "
+                                // Only fills loading_qty when the skip-allocation write (above) never touched
+                                // this line (still at its table default of 0) -- a fully-loaded SKU never
+                                // appears in loaded_sku_details, so this is the only writer for it. A SKU the
+                                // skip path DID already set keeps its operator-submitted value untouched.
+                                + "loading_qty = COALESCE(NULLIF(loading_qty, 0), VALUES(loading_qty)), "
+                                + "order_rate = VALUES(order_rate), "
                                 + "gst_rate_pct = VALUES(gst_rate_pct), tax_amount = VALUES(tax_amount), "
                                 + "net_rate = VALUES(net_rate), billed_qty = VALUES(billed_qty), "
                                 + "updated_at = CURRENT_TIMESTAMP",
                         tenantId, instance.getId(), vehicleNo, gatePassNo,
                         str(row, "order_id"), str(row, "rd_code"), str(row, "rd_desc"),
-                        str(row, "sku_code"), str(row, "sku_desc"),
+                        str(row, "sku_code"), str(row, "sku_desc"), num(row, "assign_qty"), billedQty,
                         orderRate, gstRatePct, taxAmount, netRate, billedQty);
                 written++;
             } catch (Exception e) {
@@ -267,8 +277,12 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
         return null;
     }
 
-    private static BigDecimal num(Map<String, Object> m, String key) {
-        Object v = m.get(key);
+    private static BigDecimal num(Map<String, Object> m, String... keys) {
+        Object v = null;
+        for (String k : keys) {
+            v = m.get(k);
+            if (v != null) break;
+        }
         if (v == null) return BigDecimal.ZERO;
         if (v instanceof BigDecimal bd) return bd;
         if (v instanceof Number n) return BigDecimal.valueOf(n.doubleValue());

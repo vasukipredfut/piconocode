@@ -173,7 +173,7 @@ class BillingOrderDetailTransitionListenerTest {
                 .thenReturn(List.of(Map.of(
                         "order_id", "ORD1", "sku_code", "SKU1", "rd_code", "RD1", "rd_desc", "RD One",
                         "sku_desc", "SKU One", "order_rate", 100, "gst_rate_pct", 18, "line_dispatch_qty", 40,
-                        "processed_qty", 0)));
+                        "assign_qty", 120, "processed_qty", 0)));
         WorkflowInstance wi = wi(1776L, "M10.FGLoading");
         Map<String, Object> pageData = Map.of("vehicle_no", "TN86H0989", "gpNumber", "GP-1-118");
 
@@ -184,6 +184,7 @@ class BillingOrderDetailTransitionListenerTest {
                 && s.contains("net_rate") && s.contains("billed_qty"));
         verify(jdbc).update(anyString(), eq(1L), eq(1776L), eq("TN86H0989"), eq("GP-1-118"),
                 eq("ORD1"), eq("RD1"), eq("RD One"), eq("SKU1"), eq("SKU One"),
+                eq(java.math.BigDecimal.valueOf(120.0)), eq(java.math.BigDecimal.valueOf(40.0)),
                 eq(java.math.BigDecimal.valueOf(100.0)), eq(java.math.BigDecimal.valueOf(18.0)),
                 eq(new java.math.BigDecimal("18.000")), eq(new java.math.BigDecimal("82.000")),
                 eq(java.math.BigDecimal.valueOf(40.0)));
@@ -196,14 +197,14 @@ class BillingOrderDetailTransitionListenerTest {
         when(jdbc.queryForList(contains("FROM m5_order_dispatch_detail"), eq(1776L), eq(1L), eq("TN86H0989")))
                 .thenReturn(List.of(Map.of(
                         "order_id", "ORD1", "sku_code", "SKU1", "order_rate", 100, "gst_rate_pct", 18,
-                        "line_dispatch_qty", 40, "processed_qty", 30)));
+                        "line_dispatch_qty", 40, "assign_qty", 120, "processed_qty", 30)));
         WorkflowInstance wi = wi(1776L, "M10.FGLoading");
         Map<String, Object> pageData = Map.of("vehicle_no", "TN86H0989");
 
         listener.onTransition(wi, "SEALING_DONE", Map.of("aria:billing-entry", pageData));
 
         verify(jdbc).update(anyString(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
-                any(), any(), any(), any(), eq(java.math.BigDecimal.valueOf(30.0)));
+                any(), any(), any(), any(), any(), any(), eq(java.math.BigDecimal.valueOf(30.0)));
     }
 
     @Test

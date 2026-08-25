@@ -122,14 +122,16 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
             }
 
             jdbc.update(
-                    "INSERT INTO loading_progress_detail (tenant_id, workflow_instance_id, vehicle_no, gate_pass_no, total_quantity, processed_quantity, loading_start_time) " +
-                            "VALUES (?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP) " +
+                    "INSERT INTO loading_progress_detail (tenant_id, workflow_instance_id, vehicle_no, gate_pass_no, flow_variant_code, current_step, total_quantity, processed_quantity, loading_start_time) " +
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP) " +
                             "ON DUPLICATE KEY UPDATE " +
                             "vehicle_no = COALESCE(VALUES(vehicle_no), vehicle_no), " +
                             "gate_pass_no = COALESCE(VALUES(gate_pass_no), gate_pass_no), " +
+                            "flow_variant_code = COALESCE(flow_variant_code, VALUES(flow_variant_code)), " +
+                            "current_step = VALUES(current_step), " +
                             "total_quantity = total_quantity + VALUES(total_quantity), " +
                             "loading_start_time = COALESCE(loading_start_time, VALUES(loading_start_time))",
-                    tenantId, instanceId, vehicleNo, gatePassNo, totalQty);
+                    tenantId, instanceId, vehicleNo, gatePassNo, instance.getWorkflowCode(), instance.getCurrentState(), totalQty);
 
             Long parentId = jdbc.queryForObject(
                     "SELECT id FROM loading_progress_detail WHERE tenant_id = ? AND workflow_instance_id = ?",
