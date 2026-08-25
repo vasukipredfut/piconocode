@@ -70,7 +70,7 @@ class BillingOrderDetailTransitionListenerTest {
 
         verify(jdbc).update(anyString(), eq(1L), eq(1567L), eq("TN86J8079"), eq("GP-1-1567"),
                 eq("ORD1"), isNull(), isNull(), eq("SKU1"), isNull(),
-                any(java.math.BigDecimal.class), any(java.math.BigDecimal.class), any(java.math.BigDecimal.class));
+                any(java.math.BigDecimal.class), any(java.math.BigDecimal.class), any(java.math.BigDecimal.class), isNull());
     }
 
     @Test
@@ -93,7 +93,7 @@ class BillingOrderDetailTransitionListenerTest {
         assertThat(sql).filteredOn(s -> s.contains("INSERT INTO billing_order_details")).hasSize(1);
         verify(jdbc).update(anyString(), eq(1L), eq(1776L), eq("TN86H0989"), eq("GP-1-118"),
                 eq("ORD30350983"), isNull(), isNull(), eq("SKU9269"), isNull(),
-                any(java.math.BigDecimal.class), any(java.math.BigDecimal.class), any(java.math.BigDecimal.class));
+                any(java.math.BigDecimal.class), any(java.math.BigDecimal.class), any(java.math.BigDecimal.class), isNull());
     }
 
     @Test
@@ -108,6 +108,23 @@ class BillingOrderDetailTransitionListenerTest {
 
         assertThat(capturedSql()).anyMatch(s -> s.contains("INSERT INTO billing_order_details")
                 && s.contains("ON DUPLICATE KEY UPDATE") && s.contains("skipped_quantity = VALUES(skipped_quantity)"));
+    }
+
+    @Test
+    void reasonField_savedForSkippedLine() {
+        setUp();
+        stubTriggeringPage("SKIPPED_ITEM_ALLOCATION", "PMT_CHECK_OK", "aria:skipped-item-allocation");
+        WorkflowInstance wi = wi(1567L, "M10.FGLoading");
+        Map<String, Object> pageData = Map.of(
+                "loaded_sku_details", List.of(Map.of("order_id", "ORD1", "sku_code", "SKU1",
+                        "order_qty", 65, "loading_qty", 50, "skipped_quantity", 15, "reason", "Vehicle capacity full")));
+
+        listener.onTransition(wi, "SKIPPED_ITEM_ALLOCATION", Map.of("aria:skipped-item-allocation", pageData));
+
+        verify(jdbc).update(anyString(), eq(1L), eq(1567L), isNull(), isNull(),
+                eq("ORD1"), isNull(), isNull(), eq("SKU1"), isNull(),
+                any(java.math.BigDecimal.class), any(java.math.BigDecimal.class), any(java.math.BigDecimal.class),
+                eq("Vehicle capacity full"));
     }
 
     @Test
@@ -145,6 +162,59 @@ class BillingOrderDetailTransitionListenerTest {
         WorkflowInstance wi = wi(1L, "M10.FGLoading");
         listener.onTransition(wi, "SOME_STATE",
                 Map.of("aria:skipped-item-allocation", Map.of("loaded_sku_details", List.of())));
+        verify(jdbc, never()).update(anyString(), ArgumentMatchers.<Object[]>any());
+    }
+
+    @Test
+    void billingTableRateRows_writtenFromOrderDispatchDetailLookup_notFromSubmittedBag() {
+        setUp();
+        stubTriggeringPage("SEALING_DONE", "PMT_CHECK_OK", "aria:billing-entry");
+        when(jdbc.queryForList(contains("FROM m5_order_dispatch_detail"), eq(1776L), eq(1L), eq("TN86H0989")))
+                .thenReturn(List.of(Map.of(
+                        "order_id", "ORD1", "sku_code", "SKU1", "rd_code", "RD1", "rd_desc", "RD One",
+                        "sku_desc", "SKU One", "order_rate", 100, "gst_rate_pct", 18, "line_dispatch_qty", 40,
+                        "processed_qty", 0)));
+        WorkflowInstance wi = wi(1776L, "M10.FGLoading");
+        Map<String, Object> pageData = Map.of("vehicle_no", "TN86H0989", "gpNumber", "GP-1-118");
+
+        listener.onTransition(wi, "SEALING_DONE", Map.of("aria:billing-entry", pageData));
+
+        List<String> sql = capturedSql();
+        assertThat(sql).anyMatch(s -> s.contains("INSERT INTO billing_order_details")
+                && s.contains("net_rate") && s.contains("billed_qty"));
+        verify(jdbc).update(anyString(), eq(1L), eq(1776L), eq("TN86H0989"), eq("GP-1-118"),
+                eq("ORD1"), eq("RD1"), eq("RD One"), eq("SKU1"), eq("SKU One"),
+                eq(java.math.BigDecimal.valueOf(100.0)), eq(java.math.BigDecimal.valueOf(18.0)),
+                eq(new java.math.BigDecimal("18.000")), eq(new java.math.BigDecimal("82.000")),
+                eq(java.math.BigDecimal.valueOf(40.0)));
+    }
+
+    @Test
+    void billingTableRateRows_usesProcessedQtyOverLineDispatchQty_whenLoaded() {
+        setUp();
+        stubTriggeringPage("SEALING_DONE", "PMT_CHECK_OK", "aria:billing-entry");
+        when(jdbc.queryForList(contains("FROM m5_order_dispatch_detail"), eq(1776L), eq(1L), eq("TN86H0989")))
+                .thenReturn(List.of(Map.of(
+                        "order_id", "ORD1", "sku_code", "SKU1", "order_rate", 100, "gst_rate_pct", 18,
+                        "line_dispatch_qty", 40, "processed_qty", 30)));
+        WorkflowInstance wi = wi(1776L, "M10.FGLoading");
+        Map<String, Object> pageData = Map.of("vehicle_no", "TN86H0989");
+
+        listener.onTransition(wi, "SEALING_DONE", Map.of("aria:billing-entry", pageData));
+
+        verify(jdbc).update(anyString(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), eq(java.math.BigDecimal.valueOf(30.0)));
+    }
+
+    @Test
+    void billingTableRateRows_skippedWhenVehicleNoMissing() {
+        setUp();
+        stubTriggeringPage("SEALING_DONE", "PMT_CHECK_OK", "aria:billing-entry");
+        WorkflowInstance wi = wi(1776L, "M10.FGLoading");
+
+        listener.onTransition(wi, "SEALING_DONE", Map.of("aria:billing-entry", Map.of()));
+
+        verify(jdbc, never()).queryForList(anyString(), ArgumentMatchers.<Object[]>any());
         verify(jdbc, never()).update(anyString(), ArgumentMatchers.<Object[]>any());
     }
 

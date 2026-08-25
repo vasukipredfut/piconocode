@@ -14,6 +14,7 @@ import org.springframework.stereotype.Component;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -86,43 +87,121 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
         Object pageDataRaw = bag.get(triggeringPageCode);
         if (!(pageDataRaw instanceof Map)) return;
         Map<String, Object> pageData = (Map<String, Object>) pageDataRaw;
-        Object linesRaw = pageData.get("loaded_sku_details");
-        if (!(linesRaw instanceof List<?> lines) || lines.isEmpty()) return;
 
         long tenantId = TenantContext.get();
         String vehicleNo = str(pageData, "vehicle_no");
         String gatePassNo = str(pageData, "gpNumber", "gp_number");
 
-        int written = 0;
-        for (Object lineRaw : lines) {
-            if (!(lineRaw instanceof Map)) continue;
-            @SuppressWarnings("unchecked")
-            Map<String, Object> line = (Map<String, Object>) lineRaw;
-            try {
-                jdbc.update(
-                        "INSERT INTO billing_order_details (tenant_id, workflow_instance_id, vehicle_no, "
-                                + "gate_pass_no, order_id, rd_code, rd_desc, sku_code, sku_desc, order_qty, "
-                                + "loading_qty, skipped_quantity) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
-                                + "ON DUPLICATE KEY UPDATE vehicle_no = VALUES(vehicle_no), "
-                                + "gate_pass_no = VALUES(gate_pass_no), rd_code = VALUES(rd_code), "
-                                + "rd_desc = VALUES(rd_desc), sku_desc = VALUES(sku_desc), "
-                                + "order_qty = VALUES(order_qty), loading_qty = VALUES(loading_qty), "
-                                + "skipped_quantity = VALUES(skipped_quantity), updated_at = CURRENT_TIMESTAMP",
-                        tenantId, instance.getId(), vehicleNo, gatePassNo,
-                        str(line, "order_id"), str(line, "rd_code"), str(line, "rd_desc"),
-                        str(line, "sku_code"), str(line, "sku_desc"),
-                        num(line, "order_qty"), num(line, "loading_qty"), num(line, "skipped_quantity"));
-                written++;
-            } catch (Exception e) {
-                // One bad line must not sink the rest — insert what we can, log what we can't.
-                log.warn("billing_order_details insert failed for instance {} line order_id={}: {}",
-                        instance.getId(), line.get("order_id"), e.getMessage());
+        Object linesRaw = pageData.get("loaded_sku_details");
+        if (linesRaw instanceof List<?> lines && !lines.isEmpty()) {
+            int written = 0;
+            for (Object lineRaw : lines) {
+                if (!(lineRaw instanceof Map)) continue;
+                @SuppressWarnings("unchecked")
+                Map<String, Object> line = (Map<String, Object>) lineRaw;
+                try {
+                    jdbc.update(
+                            "INSERT INTO billing_order_details (tenant_id, workflow_instance_id, vehicle_no, "
+                                    + "gate_pass_no, order_id, rd_code, rd_desc, sku_code, sku_desc, order_qty, "
+                                    + "loading_qty, skipped_quantity, reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                                    + "ON DUPLICATE KEY UPDATE vehicle_no = VALUES(vehicle_no), "
+                                    + "gate_pass_no = VALUES(gate_pass_no), rd_code = VALUES(rd_code), "
+                                    + "rd_desc = VALUES(rd_desc), sku_desc = VALUES(sku_desc), "
+                                    + "order_qty = VALUES(order_qty), loading_qty = VALUES(loading_qty), "
+                                    + "skipped_quantity = VALUES(skipped_quantity), reason = VALUES(reason), "
+                                    + "updated_at = CURRENT_TIMESTAMP",
+                            tenantId, instance.getId(), vehicleNo, gatePassNo,
+                            str(line, "order_id"), str(line, "rd_code"), str(line, "rd_desc"),
+                            str(line, "sku_code"), str(line, "sku_desc"),
+                            num(line, "order_qty"), num(line, "loading_qty"), num(line, "skipped_quantity"),
+                            str(line, "reason", "skip_reason"));
+                    written++;
+                } catch (Exception e) {
+                    // One bad line must not sink the rest — insert what we can, log what we can't.
+                    log.warn("billing_order_details insert failed for instance {} line order_id={}: {}",
+                            instance.getId(), line.get("order_id"), e.getMessage());
+                }
             }
+
+            writeAudit(tenantId, instance, vehicleNo, gatePassNo, written, lines.size(), triggeringPageCode);
+            log.info("billing_order_details: wrote {}/{} row(s) for instance {} (vehicle={}) via {}",
+                    written, lines.size(), instance.getId(), vehicleNo, triggeringPageCode);
         }
 
-        writeAudit(tenantId, instance, vehicleNo, gatePassNo, written, lines.size(), triggeringPageCode);
-        log.info("billing_order_details: wrote {}/{} row(s) for instance {} (vehicle={}) via {}",
-                written, lines.size(), instance.getId(), vehicleNo, triggeringPageCode);
+        writeBillingTableRateRows(tenantId, instance, vehicleNo, gatePassNo);
+    }
+
+    /**
+     * The page's read-only "Billing Table" section (rate / GST tax / net
+     * rate / billed qty per order-SKU line) is never submitted by the
+     * frontend — it's a computed display grid, not a form field — so unlike
+     * {@code loaded_sku_details} above there is nothing in the submitted
+     * bag to read. Instead this recomputes the same rows server-side from
+     * the same source tables the page's grid itself reads
+     * (OrderDispatchDetail joined to SkuMaster for the GST rate, summed
+     * against LoadingProgressDetailBay for the actually-loaded quantity),
+     * so the persisted figures come from authoritative data rather than a
+     * client-submitted (and therefore spoofable/stale) value.
+     */
+    private void writeBillingTableRateRows(long tenantId, WorkflowInstance instance, String vehicleNo,
+                                            String gatePassNo) {
+        if (vehicleNo == null) return;
+
+        List<Map<String, Object>> rows;
+        try {
+            rows = jdbc.queryForList(
+                    "SELECT odd.order_id, odd.sku_code, odd.rd_code, odd.rd_desc, odd.sku_desc, "
+                            + "odd.order_rate, sm.gst_rate_pct, odd.line_dispatch_qty, "
+                            + "COALESCE(SUM(lpb.processed_quantity), 0) AS processed_qty "
+                            + "FROM m5_order_dispatch_detail odd "
+                            + "LEFT JOIN m5_sku_master sm ON sm.tenant_id = odd.tenant_id "
+                            + "AND sm.sku_code = odd.sku_code COLLATE utf8mb4_general_ci "
+                            + "LEFT JOIN loading_progress_detail_bay lpb ON lpb.tenant_id = odd.tenant_id "
+                            + "AND lpb.workflow_instance_id = ? AND lpb.sku_code = odd.sku_code "
+                            + "WHERE odd.tenant_id = ? AND odd.vehicle_no = ? AND odd.assign_qty >= 1 "
+                            + "GROUP BY odd.id, odd.order_id, odd.sku_code, odd.rd_code, odd.rd_desc, "
+                            + "odd.sku_desc, odd.order_rate, sm.gst_rate_pct, odd.line_dispatch_qty",
+                    instance.getId(), tenantId, vehicleNo);
+        } catch (Exception e) {
+            log.warn("billing_order_details: billing-table rate lookup failed for instance {} (vehicle={}): {}",
+                    instance.getId(), vehicleNo, e.getMessage());
+            return;
+        }
+        if (rows.isEmpty()) return;
+
+        int written = 0;
+        for (Map<String, Object> row : rows) {
+            try {
+                BigDecimal orderRate = num(row, "order_rate");
+                BigDecimal gstRatePct = num(row, "gst_rate_pct");
+                BigDecimal taxAmount = orderRate.multiply(gstRatePct)
+                        .divide(BigDecimal.valueOf(100), 3, RoundingMode.HALF_UP);
+                BigDecimal netRate = orderRate.subtract(taxAmount);
+                BigDecimal processedQty = num(row, "processed_qty");
+                BigDecimal billedQty = processedQty.compareTo(BigDecimal.ZERO) > 0
+                        ? processedQty : num(row, "line_dispatch_qty");
+
+                jdbc.update(
+                        "INSERT INTO billing_order_details (tenant_id, workflow_instance_id, vehicle_no, "
+                                + "gate_pass_no, order_id, rd_code, rd_desc, sku_code, sku_desc, order_rate, "
+                                + "gst_rate_pct, tax_amount, net_rate, billed_qty) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                                + "ON DUPLICATE KEY UPDATE rd_code = VALUES(rd_code), rd_desc = VALUES(rd_desc), "
+                                + "sku_desc = VALUES(sku_desc), order_rate = VALUES(order_rate), "
+                                + "gst_rate_pct = VALUES(gst_rate_pct), tax_amount = VALUES(tax_amount), "
+                                + "net_rate = VALUES(net_rate), billed_qty = VALUES(billed_qty), "
+                                + "updated_at = CURRENT_TIMESTAMP",
+                        tenantId, instance.getId(), vehicleNo, gatePassNo,
+                        str(row, "order_id"), str(row, "rd_code"), str(row, "rd_desc"),
+                        str(row, "sku_code"), str(row, "sku_desc"),
+                        orderRate, gstRatePct, taxAmount, netRate, billedQty);
+                written++;
+            } catch (Exception e) {
+                log.warn("billing_order_details rate/tax upsert failed for instance {} order_id={}: {}",
+                        instance.getId(), row.get("order_id"), e.getMessage());
+            }
+        }
+        log.info("billing_order_details: wrote {}/{} billing-table rate/tax row(s) for instance {} (vehicle={})",
+                written, rows.size(), instance.getId(), vehicleNo);
     }
 
     /**
