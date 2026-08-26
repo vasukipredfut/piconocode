@@ -254,6 +254,25 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
                     if (!items.isEmpty()) cols.put(ident(e.getKey()), MAPPER.writeValueAsString(items));
                     continue;
                 }
+                // w1_weight_kg/w2_weight_kg/w3_weight_kg on weighment_capture_detail
+                // (V81): same cross-page-collision risk as queue_reason/qc_decision
+                // above -- aria:pmt-weight-diff-check, aria:pmt-camera-verification,
+                // aria:manager-weight-approval and aria:gate-pass-closure-form all
+                // echo these same field names back in their OWN submitted formData
+                // (onChangeFill display/reference bindings, see V81's class doc), so
+                // pluck()'s generic cross-page fallback can resolve to one of THOSE
+                // pages' stale reading instead of this transition's actual
+                // aria:weighment-capture submission -- confirmed live: a reload's
+                // fresh w2 got silently dropped, leaving the PMT step's older w2 in
+                // place. Scoped strictly to the triggering page's own bag entry.
+                if (isWeighmentCaptureDetail
+                        && ("w1_weight_kg".equals(e.getKey()) || "w2_weight_kg".equals(e.getKey())
+                            || "w3_weight_kg".equals(e.getKey()))) {
+                    List<String> keys = (List<String>) e.getValue();
+                    String v = pluckScoped(bag, keys, triggeringPageCode);
+                    if (v != null) cols.put(ident(e.getKey()), v);
+                    continue;
+                }
                 // wb_display_photo/vehicle_photo on weighment_capture_detail are
                 // submitted under the same field name for all 3 weighments --
                 // aria:weighment-capture's Photo Evidence section is shared
