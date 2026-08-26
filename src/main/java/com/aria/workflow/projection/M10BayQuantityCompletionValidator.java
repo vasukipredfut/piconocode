@@ -25,12 +25,15 @@ import java.util.Set;
  * closed via Bay Complete before Completed, since a bay left IN_PROGRESS
  * forever would be an orphaned row with no processed_quantity recorded.
  *
- * <p>Scoped to WEIGHMENT_2 AND FGLoading/PackLoading only — TankerOutbound
- * also uses page 428's bay tracking but is explicitly exempted from this
- * gate per business request. WEIGHMENT_2 is a common state name reused by
- * unrelated workflows (ReturnStockIn, TankerInbound, ...; see V133) that
- * have nothing to do with bay tracking, so both checks are needed, not just
- * the toState name.
+ * <p>Scoped to WEIGHMENT_2/RELOAD_WEIGHMENT_2 AND FGLoading/PackLoading only
+ * — TankerOutbound also uses page 428's bay tracking but is explicitly
+ * exempted from this gate per business request. WEIGHMENT_2 is a common
+ * state name reused by unrelated workflows (ReturnStockIn, TankerInbound,
+ * ...; see V133) that have nothing to do with bay tracking, so both checks
+ * are needed, not just the toState name. RELOAD_WEIGHMENT_2 is the
+ * RELOAD_LOADING_PLANNING sub-cycle's counterpart to WEIGHMENT_2 (reached via
+ * LOADING_COMPLETED_R, not LOADING_COMPLETED) — without it a reload's
+ * "Completed" could proceed to re-weighing with a bay still open.
  * Instances that never used Start Bay (zero loading_progress_detail_bay
  * rows) are left alone entirely — this feature is opt-in per vehicle, not
  * mandatory for every gate pass.
@@ -40,6 +43,8 @@ public class M10BayQuantityCompletionValidator implements WorkflowTransitionVali
 
     private static final Set<String> SCOPED_WORKFLOWS =
             Set.of("M10.FGLoading", "M10.PackLoading");
+    private static final Set<String> GATED_TO_STATES =
+            Set.of("WEIGHMENT_2", "RELOAD_WEIGHMENT_2");
 
     private final JdbcTemplate jdbc;
 
@@ -49,7 +54,7 @@ public class M10BayQuantityCompletionValidator implements WorkflowTransitionVali
 
     @Override
     public void validate(WorkflowInstance instance, String toState, Map<String, Object> formData) {
-        if (!"WEIGHMENT_2".equals(toState)) return;
+        if (!GATED_TO_STATES.contains(toState)) return;
         if (!SCOPED_WORKFLOWS.contains(instance.getWorkflowCode())) return;
 
         long tenantId = TenantContext.get();

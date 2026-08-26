@@ -5,6 +5,8 @@ import com.aria.workflow.engine.WorkflowTransitionListener;
 import com.aria.workflow.model.WorkflowInstance;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -48,8 +50,17 @@ import java.util.Map;
  * V92 moved the satellite columns off gate_pass itself). Exceptions never
  * propagate — the engine catches listener failures, so a bad config or
  * missing column can't fail a transition.
+ *
+ * <p>{@code @Order(LOWEST_PRECEDENCE)} so this runs AFTER {@link
+ * WorkflowProjectionListener} in WorkflowEngineService's {@code
+ * List<WorkflowTransitionListener>} autowiring — this listener reads
+ * w1_weight_kg/w2_weight_kg back off weighment_capture_detail, the row
+ * WorkflowProjectionListener writes on the same transition; running first
+ * would compute expected/loaded weight off the previous transition's stale
+ * reading instead of the one just submitted.
  */
 @Component
+@Order(Ordered.LOWEST_PRECEDENCE)
 public class DispatchToleranceListener implements WorkflowTransitionListener {
 
     private static final Logger log = LoggerFactory.getLogger(DispatchToleranceListener.class);

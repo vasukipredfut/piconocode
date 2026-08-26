@@ -12,8 +12,11 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * dispatch_invoice_item child rows driven by aria:dispatch-vehicle-details'
@@ -64,12 +67,17 @@ public class DispatchInvoiceItemTransitionListener implements WorkflowTransition
         jdbc.update("DELETE FROM dispatch_invoice_item WHERE tenant_id = ? AND workflow_instance_id = ?",
                 tenantId, instance.getId());
 
+        Map<String, String> skuNameBySkuCode = lookupSkuNames(tenantId, lines);
+
         int written = 0;
         for (Object lineRaw : lines) {
             if (!(lineRaw instanceof Map)) continue;
             @SuppressWarnings("unchecked")
             Map<String, Object> line = (Map<String, Object>) lineRaw;
             try {
+                String skuCode = str(line, "sku_code", "skuCode");
+                String skuName = str(line, "sku_name", "skuName");
+                if (skuName == null && skuCode != null) skuName = skuNameBySkuCode.get(skuCode);
                 jdbc.update(
                         "INSERT INTO dispatch_invoice_item (tenant_id, workflow_instance_id, vehicle_no, "
                                 + "gate_pass_no, invoice_no, order_id, vendor_name, rd_code, sku_code, sku_name, qty) "
@@ -77,7 +85,7 @@ public class DispatchInvoiceItemTransitionListener implements WorkflowTransition
                         tenantId, instance.getId(), vehicleNo, gatePassNo,
                         str(line, "invoice_no", "invoiceNo"), str(line, "order_id", "orderId"),
                         str(line, "vendor_name", "vendorName"), str(line, "rd_code", "rdCode"),
-                        str(line, "sku_code", "skuCode"), str(line, "sku_name", "skuName"), num(line, "qty"));
+                        skuCode, skuName, num(line, "qty"));
                 written++;
             } catch (Exception e) {
                 // One bad line must not sink the rest — insert what we can, log what we can't.
@@ -89,6 +97,36 @@ public class DispatchInvoiceItemTransitionListener implements WorkflowTransition
         writeAudit(tenantId, instance, vehicleNo, gatePassNo, written, lines.size());
         log.info("dispatch_invoice_item: wrote {}/{} row(s) for instance {} (vehicle={})",
                 written, lines.size(), instance.getId(), vehicleNo);
+    }
+
+    /**
+     * The invoice-items grid on aria:dispatch-vehicle-details only captures
+     * sku_code — it never asks the operator to type a SKU name, and the
+     * frontend doesn't populate sku_name/skuName either. Resolve it here
+     * from m5_sku_master (uq_sku_code: tenant_id + sku_code) so the child
+     * row isn't left with a NULL name for every submission.
+     */
+    private Map<String, String> lookupSkuNames(long tenantId, List<?> lines) {
+        Set<String> skuCodes = new HashSet<>();
+        for (Object lineRaw : lines) {
+            if (!(lineRaw instanceof Map)) continue;
+            @SuppressWarnings("unchecked")
+            Map<String, Object> line = (Map<String, Object>) lineRaw;
+            String skuCode = str(line, "sku_code", "skuCode");
+            if (skuCode != null) skuCodes.add(skuCode);
+        }
+        Map<String, String> result = new HashMap<>();
+        if (skuCodes.isEmpty()) return result;
+        String placeholders = String.join(",", skuCodes.stream().map(c -> "?").toArray(String[]::new));
+        List<Object> args = new java.util.ArrayList<>();
+        args.add(tenantId);
+        args.addAll(skuCodes);
+        jdbc.query(
+                "SELECT sku_code, sku_name FROM m5_sku_master WHERE tenant_id = ? AND sku_code IN (" + placeholders + ")",
+                rs -> {
+                    result.put(rs.getString("sku_code"), rs.getString("sku_name"));
+                }, args.toArray());
+        return result;
     }
 
     private void writeAudit(long tenantId, WorkflowInstance instance, String vehicleNo, String gatePassNo,

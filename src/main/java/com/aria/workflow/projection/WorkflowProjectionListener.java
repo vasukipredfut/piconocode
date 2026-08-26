@@ -6,6 +6,8 @@ import com.aria.workflow.model.WorkflowInstance;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -26,8 +28,19 @@ import java.util.regex.Pattern;
  *
  * <p>Exceptions never propagate (the engine catches listener failures); a bad
  * projection config can't fail a transition.
+ *
+ * <p>{@code @Order(HIGHEST_PRECEDENCE + 1)} (right after {@link
+ * GatePassDispatchLinkListener}'s HIGHEST_PRECEDENCE) so this runs BEFORE
+ * {@link DispatchToleranceListener} in WorkflowEngineService's
+ * {@code List<WorkflowTransitionListener>} autowiring. DispatchToleranceListener
+ * reads w1_weight_kg/w2_weight_kg back off the very row this listener writes
+ * (weighment_capture_detail) on the SAME transition — with no explicit order
+ * between the two, Spring's default (unordered, effectively component-scan
+ * order) let the tolerance calc run first and compute expected/loaded weight
+ * off the PREVIOUS transition's stale reading.
  */
 @Component
+@Order(Ordered.HIGHEST_PRECEDENCE + 1)
 public class WorkflowProjectionListener implements WorkflowTransitionListener {
 
     private static final Logger log = LoggerFactory.getLogger(WorkflowProjectionListener.class);

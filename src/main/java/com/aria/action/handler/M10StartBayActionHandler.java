@@ -175,7 +175,15 @@ public class M10StartBayActionHandler implements ActionHandler {
 
         String newState = currentState;
         boolean transitioned = false;
-        if ("LOADING_IN_PROGRESS".equals(currentState)) {
+        // LOADING_IN_PROGRESS_R / BAY_ASSIGNED_R are the RELOAD_LOADING_PLANNING
+        // sub-cycle's counterparts to LOADING_IN_PROGRESS / BAY_ASSIGNED (see
+        // workflow_definition transitions LOADING_IN_PROGRESS_R->BAY_ASSIGNED_R
+        // and BAY_ASSIGNED_R->BAY_ASSIGNED_R) -- a vehicle sent back for a
+        // reload reaches Start Bay through those states instead, and this
+        // handler must accept them the same way or every reload's first Start
+        // Bay click fails with "cannot start a bay from workflow state
+        // LOADING_IN_PROGRESS_R" before a single bay row is ever opened.
+        if ("LOADING_IN_PROGRESS".equals(currentState) || "LOADING_IN_PROGRESS_R".equals(currentState)) {
             Map<String, Object> engineFormData = new HashMap<>(formData);
             engineFormData.put("bayAction", "start");
 
@@ -198,10 +206,10 @@ public class M10StartBayActionHandler implements ActionHandler {
                 TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
                 return ActionResult.error("bay not started, workflow transition failed: " + e.getMessage());
             }
-        } else if (!"BAY_ASSIGNED".equals(currentState)) {
+        } else if (!"BAY_ASSIGNED".equals(currentState) && !"BAY_ASSIGNED_R".equals(currentState)) {
             return ActionResult.error("cannot start a bay from workflow state " + currentState);
         }
-        // else: already BAY_ASSIGNED (a later bay in the same transaction) — no FSM call needed.
+        // else: already BAY_ASSIGNED/BAY_ASSIGNED_R (a later bay in the same transaction) — no FSM call needed.
 
         String vehicleNo = strOpt(formData, "vehicle_no");
         String gatePassNo = strOpt(formData, "gpNumber");
