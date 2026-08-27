@@ -41,13 +41,17 @@ import java.util.Map;
  * 500 assigned, vs however much actually gets processed) is tracked for
  * visibility on loading_progress_detail (V177) — it does not gate
  * "Completed"; see {@code M10BayQuantityCompletionValidator}, which only
- * requires every bay to be closed, not the totals to match. The leftover
- * (quantity - processed_quantity) is stored on the row itself as
- * {@code balance_qty} (V257) in the same UPDATE that closes it — a plain
- * column, not computed on read, so a datasource query can filter directly
- * on it (e.g. balance_qty &gt; 10) with an ordinary literal-value
- * comparison. Stays NULL while the row is IN_PROGRESS, same lifecycle as
- * processed_quantity.
+ * requires every bay to be closed, not the totals to match. {@code
+ * balance_qty} (V257) is saved alongside processed_quantity in the same
+ * UPDATE that closes the row, but — per business call — this handler does
+ * NOT compute it; the UI sends it as {@code balance_qty} on the line
+ * (already knows quantity and the loading_qty it's about to submit) and
+ * this handler just persists whatever value arrives, same trust level as
+ * loading_qty itself. Omitted on the line → stored NULL. Stays untouched
+ * (NULL) while the row is IN_PROGRESS, only written at Bay Complete, same
+ * lifecycle as processed_quantity. A plain stored column, not computed on
+ * read, so a datasource query can filter directly on it (e.g. balance_qty
+ * &gt; 10) with an ordinary literal-value comparison.
  *
  * <p>Each closed line also deducts {@code loading_qty} from stock: picked
  * FEFO (oldest-first, across bins — {@code route_id} is a delivery-route
@@ -85,12 +89,13 @@ import java.util.Map;
  * this button already implies.
  *
  * <p>Payload shape (formData.order_sku_line_items — the grid's current rows
- * with loading_qty already edited by the operator):
+ * with loading_qty already edited by the operator; balance_qty is optional,
+ * UI-computed, saved as-is — see balance_qty note above):
  * <pre>
  *   { "instanceId": 1495,
  *     "formData": { "order_sku_line_items": [
- *       { "route_id": "ROU028912", "sku_code": "SKU1215", "loading_qty": 45 },
- *       { "route_id": "ROU028912", "sku_code": "SKU1461", "loading_qty": 250 }
+ *       { "route_id": "ROU028912", "sku_code": "SKU1215", "loading_qty": 45, "balance_qty": 0 },
+ *       { "route_id": "ROU028912", "sku_code": "SKU1461", "loading_qty": 250, "balance_qty": 30 }
  *     ] } }
  * </pre>
  */
@@ -160,6 +165,17 @@ public class M10BayCompleteActionHandler implements ActionHandler {
                 return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") needs loading_qty >= 0");
             }
 
+            BigDecimal balanceQty;
+            try {
+                Object balObj = line.get("balance_qty");
+                balanceQty = balObj == null ? null : new BigDecimal(balObj.toString());
+            } catch (NumberFormatException e) {
+                markRollbackOnly();
+                log.warn("action.bay-complete.bad-line tenantId={} instanceId={} routeId={} skuCode={} reason=non-numeric-balance",
+                        tenantId, instanceId, routeId, skuCode);
+                return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") balance_qty must be a number");
+            }
+
             List<FefoStockPickerService.FefoPick> picks = fefoPicker.pick(tenantId, skuCode, null, processedQty);
             BigDecimal residual = fefoPicker.residualQty(processedQty, picks);
             if (residual.signum() > 0) {
@@ -194,10 +210,10 @@ public class M10BayCompleteActionHandler implements ActionHandler {
             }
 
             int n = jdbc.update(
-                    "UPDATE loading_progress_detail_bay SET processed_quantity = ?, balance_qty = quantity - ?, status = 'DONE' "
+                    "UPDATE loading_progress_detail_bay SET processed_quantity = ?, balance_qty = ?, status = 'DONE' "
                             + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
                             + "((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'IN_PROGRESS'",
-                    processedQty, processedQty, tenantId, instanceId, routeId, orderId, orderId, skuCode);
+                    processedQty, balanceQty, tenantId, instanceId, routeId, orderId, orderId, skuCode);
             if (n == 0) {
                 markRollbackOnly();
                 log.warn("action.bay-complete.bay-row-missing tenantId={} instanceId={} routeId={} orderId={} skuCode={}",

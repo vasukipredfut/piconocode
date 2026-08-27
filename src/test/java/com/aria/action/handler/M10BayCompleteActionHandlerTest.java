@@ -138,10 +138,10 @@ class M10BayCompleteActionHandlerTest {
         assertThat(r.getData()).containsEntry("totalProcessed", new BigDecimal("45"));
 
         verify(jdbc).update(
-                eq("UPDATE loading_progress_detail_bay SET processed_quantity = ?, balance_qty = quantity - ?, status = 'DONE' "
+                eq("UPDATE loading_progress_detail_bay SET processed_quantity = ?, balance_qty = ?, status = 'DONE' "
                         + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
                         + "((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'IN_PROGRESS'"),
-                eq(new BigDecimal("45")), eq(new BigDecimal("45")), eq(1L), eq(1495L), eq("ROU028912"), isNull(), isNull(), eq("SKU1215"));
+                eq(new BigDecimal("45")), isNull(), eq(1L), eq(1495L), eq("ROU028912"), isNull(), isNull(), eq("SKU1215"));
         verify(jdbc).update(startsWith("UPDATE loading_progress_detail SET processed_quantity"),
                 eq(new BigDecimal("45")), eq(1L), eq(1495L));
     }
@@ -160,10 +160,45 @@ class M10BayCompleteActionHandlerTest {
 
         assertThat(r.isOk()).isTrue();
         verify(jdbc).update(
-                eq("UPDATE loading_progress_detail_bay SET processed_quantity = ?, balance_qty = quantity - ?, status = 'DONE' "
+                eq("UPDATE loading_progress_detail_bay SET processed_quantity = ?, balance_qty = ?, status = 'DONE' "
                         + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
                         + "((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'IN_PROGRESS'"),
-                eq(new BigDecimal("45")), eq(new BigDecimal("45")), eq(1L), eq(1495L), eq("ROU028912"), eq("ORD1123"), eq("ORD1123"), eq("SKU1215"));
+                eq(new BigDecimal("45")), isNull(), eq(1L), eq(1495L), eq("ROU028912"), eq("ORD1123"), eq("ORD1123"), eq("SKU1215"));
+    }
+
+    @Test
+    void lineWithBalanceQty_savedAsGivenByUi_notComputed() {
+        when(jdbc.update(startsWith("UPDATE loading_progress_detail_bay"), any(Object[].class))).thenReturn(1);
+
+        Map<String, Object> l = new LinkedHashMap<>();
+        l.put("route_id", "ROU028912");
+        l.put("sku_code", "SKU1215");
+        l.put("loading_qty", 45);
+        l.put("balance_qty", 30);
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(l)));
+
+        assertThat(r.isOk()).isTrue();
+        verify(jdbc).update(
+                eq("UPDATE loading_progress_detail_bay SET processed_quantity = ?, balance_qty = ?, status = 'DONE' "
+                        + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
+                        + "((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'IN_PROGRESS'"),
+                eq(new BigDecimal("45")), eq(new BigDecimal("30")), eq(1L), eq(1495L), eq("ROU028912"), isNull(), isNull(), eq("SKU1215"));
+    }
+
+    @Test
+    void lineWithNonNumericBalanceQty_errors() {
+        Map<String, Object> l = new LinkedHashMap<>();
+        l.put("route_id", "ROU028912");
+        l.put("sku_code", "SKU1215");
+        l.put("loading_qty", 45);
+        l.put("balance_qty", "oops");
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(l)));
+
+        assertThat(r.isOk()).isFalse();
+        assertThat(r.getMessage()).contains("balance_qty must be a number");
+        verify(jdbc, never()).update(startsWith("UPDATE loading_progress_detail_bay"), any(Object[].class));
     }
 
     @Test
