@@ -41,7 +41,13 @@ import java.util.Map;
  * 500 assigned, vs however much actually gets processed) is tracked for
  * visibility on loading_progress_detail (V177) — it does not gate
  * "Completed"; see {@code M10BayQuantityCompletionValidator}, which only
- * requires every bay to be closed, not the totals to match.
+ * requires every bay to be closed, not the totals to match. The leftover
+ * (quantity - processed_quantity) is stored on the row itself as
+ * {@code balance_qty} (V257) in the same UPDATE that closes it — a plain
+ * column, not computed on read, so a datasource query can filter directly
+ * on it (e.g. balance_qty &gt; 10) with an ordinary literal-value
+ * comparison. Stays NULL while the row is IN_PROGRESS, same lifecycle as
+ * processed_quantity.
  *
  * <p>Each closed line also deducts {@code loading_qty} from stock: picked
  * FEFO (oldest-first, across bins — {@code route_id} is a delivery-route
@@ -188,10 +194,10 @@ public class M10BayCompleteActionHandler implements ActionHandler {
             }
 
             int n = jdbc.update(
-                    "UPDATE loading_progress_detail_bay SET processed_quantity = ?, status = 'DONE' "
+                    "UPDATE loading_progress_detail_bay SET processed_quantity = ?, balance_qty = quantity - ?, status = 'DONE' "
                             + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
                             + "((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'IN_PROGRESS'",
-                    processedQty, tenantId, instanceId, routeId, orderId, orderId, skuCode);
+                    processedQty, processedQty, tenantId, instanceId, routeId, orderId, orderId, skuCode);
             if (n == 0) {
                 markRollbackOnly();
                 log.warn("action.bay-complete.bay-row-missing tenantId={} instanceId={} routeId={} orderId={} skuCode={}",

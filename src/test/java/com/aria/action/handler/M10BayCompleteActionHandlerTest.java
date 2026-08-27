@@ -138,10 +138,10 @@ class M10BayCompleteActionHandlerTest {
         assertThat(r.getData()).containsEntry("totalProcessed", new BigDecimal("45"));
 
         verify(jdbc).update(
-                eq("UPDATE loading_progress_detail_bay SET processed_quantity = ?, status = 'DONE' "
+                eq("UPDATE loading_progress_detail_bay SET processed_quantity = ?, balance_qty = quantity - ?, status = 'DONE' "
                         + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
                         + "((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'IN_PROGRESS'"),
-                eq(new BigDecimal("45")), eq(1L), eq(1495L), eq("ROU028912"), isNull(), isNull(), eq("SKU1215"));
+                eq(new BigDecimal("45")), eq(new BigDecimal("45")), eq(1L), eq(1495L), eq("ROU028912"), isNull(), isNull(), eq("SKU1215"));
         verify(jdbc).update(startsWith("UPDATE loading_progress_detail SET processed_quantity"),
                 eq(new BigDecimal("45")), eq(1L), eq(1495L));
     }
@@ -160,10 +160,10 @@ class M10BayCompleteActionHandlerTest {
 
         assertThat(r.isOk()).isTrue();
         verify(jdbc).update(
-                eq("UPDATE loading_progress_detail_bay SET processed_quantity = ?, status = 'DONE' "
+                eq("UPDATE loading_progress_detail_bay SET processed_quantity = ?, balance_qty = quantity - ?, status = 'DONE' "
                         + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
                         + "((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'IN_PROGRESS'"),
-                eq(new BigDecimal("45")), eq(1L), eq(1495L), eq("ROU028912"), eq("ORD1123"), eq("ORD1123"), eq("SKU1215"));
+                eq(new BigDecimal("45")), eq(new BigDecimal("45")), eq(1L), eq(1495L), eq("ROU028912"), eq("ORD1123"), eq("ORD1123"), eq("SKU1215"));
     }
 
     @Test
