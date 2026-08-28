@@ -101,8 +101,8 @@ public class M10StartUnloadBayActionHandler implements ActionHandler {
             } catch (NumberFormatException e) {
                 return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") unloading_qty must be a number");
             }
-            if (qty == null || qty.signum() <= 0) {
-                return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") needs unloading_qty > 0");
+            if (qty == null || qty.signum() < 0) {
+                return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") needs unloading_qty >= 0");
             }
             String orderId = strOpt(line, "order_id");
 

@@ -42,6 +42,18 @@ import java.util.Map;
  * <p>Movement kind is {@code RETURN} (not {@code RECEIPT} — this is a
  * reversal of a specific prior CONSUME, not a fresh goods receipt).
  *
+ * <p><b>Partial unload across multiple bays:</b> a vehicle can come back for
+ * a second (or third...) Start Bay / Bay Complete cycle against the SAME
+ * originally-loaded (route_id, order_id, sku_code) to take off the rest of
+ * it later. The original {@code loading_progress_detail_bay} row is only
+ * flipped to {@code REVERSED} once everything unloaded so far — summed
+ * across every {@code unloading_progress_detail_bay} session on record for
+ * that SKU/route, not just this call's line — reaches its original
+ * {@code quantity}; otherwise it's put back to {@code DONE} so the next
+ * Start Bay can find and re-open it. {@code quantity} itself is never
+ * touched (same "never touch the original loaded numbers" rule as the class
+ * doc on {@code loading_progress_detail_bay} — see V256/docs/m10/REJECT-FLOW-UNLOAD.md).
+ *
  * <p>Whole-request atomicity and the rollback-only note on every error
  * return mirror {@link M10BayCompleteActionHandler} exactly — a plain
  * {@code ActionResult.error(...)} does not itself roll back a Spring
@@ -138,11 +150,34 @@ public class M10UnloadBayCompleteActionHandler implements ActionHandler {
                 return ActionResult.error("no open unload bay row found for route_id=" + routeId + " order_id=" + orderId + " sku_code=" + skuCode);
             }
 
-            jdbc.update(
-                    "UPDATE loading_progress_detail_bay SET status = 'REVERSED' "
-                            + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
+            // Partial unload support: this vehicle may come back for a SECOND
+            // (or third...) bay against the same originally-loaded SKU/route
+            // to take off the rest of it. Only mark the original row fully
+            // REVERSED once everything unloaded so far (summed across every
+            // unloading_progress_detail_bay session for this SKU/route, not
+            // just this one) reaches what was originally loaded -- otherwise
+            // put it back to DONE so the next Start Bay can find it again
+            // (mirrors the very first load: DONE == "available to act on").
+            List<Map<String, Object>> loadedRow = jdbc.queryForList(
+                    "SELECT quantity FROM loading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
                             + "((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'UNLOAD_IN_PROGRESS'",
                     tenantId, instanceId, routeId, orderId, orderId, skuCode);
+            if (!loadedRow.isEmpty()) {
+                BigDecimal originalQty = (BigDecimal) loadedRow.get(0).get("quantity");
+                BigDecimal unloadedSoFar = jdbc.queryForObject(
+                        "SELECT COALESCE(SUM(processed_quantity), 0) FROM unloading_progress_detail_bay "
+                                + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
+                                + "((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'DONE'",
+                        BigDecimal.class, tenantId, instanceId, routeId, orderId, orderId, skuCode);
+                String nextStatus = unloadedSoFar.compareTo(originalQty) >= 0 ? "REVERSED" : "DONE";
+                jdbc.update(
+                        "UPDATE loading_progress_detail_bay SET status = ? "
+                                + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
+                                + "((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'UNLOAD_IN_PROGRESS'",
+                        nextStatus, tenantId, instanceId, routeId, orderId, orderId, skuCode);
+                log.info("action.unload-bay-complete.loading-row-status tenantId={} instanceId={} routeId={} skuCode={} originalQty={} unloadedSoFar={} nextStatus={}",
+                        tenantId, instanceId, routeId, skuCode, originalQty, unloadedSoFar, nextStatus);
+            }
 
             totalProcessed = totalProcessed.add(unloadQty);
             Map<String, Object> row = new HashMap<>();

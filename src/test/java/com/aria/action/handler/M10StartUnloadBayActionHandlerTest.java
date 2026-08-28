@@ -94,11 +94,29 @@ class M10StartUnloadBayActionHandlerTest {
     }
 
     @Test
-    void lineItemZeroQty_errors() {
+    void lineItemZeroQty_isAllowed() {
+        stubLoadedDoneCount(1);
+        stubOpenUnloadBayCount(0);
+        stubParentId(777L);
+
         ActionResult r = handler.handle(baseInvocation(Map.of(
                 "bay_name", "Bay1", "order_sku_line_items", List.of(line("ROU028912", "SKU1215", 0)))));
+
+        assertThat(r.isOk()).isTrue();
+        assertThat(r.getData()).containsEntry("totalQuantity", new BigDecimal("0"));
+    }
+
+    @Test
+    void lineItemNegativeQty_errors() {
+        Map<String, Object> badLine = new LinkedHashMap<>();
+        badLine.put("route_id", "ROU028912");
+        badLine.put("sku_code", "SKU1215");
+        badLine.put("unloading_qty", -5);
+
+        ActionResult r = handler.handle(baseInvocation(Map.of("bay_name", "Bay1", "order_sku_line_items", List.of(badLine))));
+
         assertThat(r.isOk()).isFalse();
-        assertThat(r.getMessage()).contains("SKU1215").contains("unloading_qty > 0");
+        assertThat(r.getMessage()).contains("SKU1215").contains("unloading_qty >= 0");
     }
 
     @Test
