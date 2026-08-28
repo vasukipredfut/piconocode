@@ -21,7 +21,10 @@ import java.util.Map;
  * starts directly at aria:dispatch-vehicle-details, so there is no
  * GATE_PASS_CREATED transition left to create the gate_pass row the way
  * WorkflowProjectionListener normally would (insert-on-first-transition,
- * keyed by workflow_instance_id).
+ * keyed by workflow_instance_id). M10.OtherVehicles (V259) skips that page
+ * entirely and starts at aria:weighment-capture instead — same gap, so
+ * {@link #DRAFT_EXIT_PAGES} is checked in order rather than a single
+ * hardcoded page code.
  *
  * <p>Without this, WorkflowProjectionListener's own gate_pass projection
  * would find no row keyed by this brand-new instance id and INSERT a second,
@@ -60,6 +63,7 @@ public class GatePassDispatchLinkListener implements WorkflowTransitionListener 
 
     private static final Logger log = LoggerFactory.getLogger(GatePassDispatchLinkListener.class);
     private static final long LINKED_TENANT_ID = 1L;
+    private static final String[] DRAFT_EXIT_PAGES = {"aria:dispatch-vehicle-details", "aria:weighment-capture"};
 
     private final JdbcTemplate jdbc;
 
@@ -76,7 +80,6 @@ public class GatePassDispatchLinkListener implements WorkflowTransitionListener 
             return;
         }
         try {
-            Map<String, Object> page = pageData(bag, "aria:dispatch-vehicle-details");
             // The actual submitted key is snake_case ("vehicle_no") for at
             // least M10.FGLoading — checking camelCase only meant this
             // lookup always came back null and the row never linked,
@@ -84,10 +87,16 @@ public class GatePassDispatchLinkListener implements WorkflowTransitionListener 
             // duplicate every single time (confirmed live: ~10+ vehicles
             // with an unlinked GATE_PASS_CREATED row alongside a second,
             // fully-linked row a few minutes later).
-            String vehicleNo = firstNonBlank(str(page, "vehicleNo"), str(page, "vehicle_no"));
+            String vehicleNo = null;
+            Map<String, Object> page = Map.of();
+            for (String pageCode : DRAFT_EXIT_PAGES) {
+                page = pageData(bag, pageCode);
+                vehicleNo = firstNonBlank(str(page, "vehicleNo"), str(page, "vehicle_no"));
+                if (vehicleNo != null) break;
+            }
             if (vehicleNo == null) {
-                log.warn("gate pass link failed for instance={}: no vehicleNo in bag[aria:dispatch-vehicle-details]={}",
-                        instance.getId(), page);
+                log.warn("gate pass link failed for instance={}: no vehicleNo in bag for any of {}",
+                        instance.getId(), (Object) DRAFT_EXIT_PAGES);
                 return;
             }
 
