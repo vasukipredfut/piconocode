@@ -45,6 +45,13 @@ class TankerWeighmentSkuCaptureActionHandlerTest {
     void setUp() {
         jdbc = mock(JdbcTemplate.class);
         when(jdbc.update(anyString(), any(Object[].class))).thenReturn(1);
+        // The tank this SKU was allocated to (bay_name), looked up before the
+        // FEFO pick so it can be constrained to that one bin -- see handler
+        // javadoc. FakeFefoStockPickerService ignores the bin argument
+        // entirely, so the exact tank code here doesn't affect any of the
+        // stock-picking assertions below.
+        when(jdbc.queryForList(contains("SELECT bay_name FROM loading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(Map.of("bay_name", "DOT8")));
         fefoPicker = new FakeFefoStockPickerService();
         handler = new TankerWeighmentSkuCaptureActionHandler();
         ReflectionTestUtils.setField(handler, "jdbc", jdbc);
@@ -326,6 +333,32 @@ class TankerWeighmentSkuCaptureActionHandlerTest {
         assertThat(r.isOk()).isFalse();
         assertThat(r.getMessage()).contains("insufficient stock").contains("requested 45").contains("available 10");
         verify(jdbc, never()).update(startsWith("UPDATE loading_progress_detail_bay"), any(Object[].class));
+        verify(jdbc, never()).update(startsWith("INSERT INTO m5_stock_movement"), any(Object[].class));
+    }
+
+    @Test
+    void noTankAllocationRowFound_errorsBeforeFefoPick() {
+        when(jdbc.queryForList(contains("SELECT bay_name FROM loading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of());
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(line("ROU028912", "SKU1215", 45))));
+
+        assertThat(r.isOk()).isFalse();
+        assertThat(r.getMessage()).contains("no open bay row found for route_id=ROU028912 order_id=null sku_code=SKU1215");
+        verify(jdbc, never()).update(startsWith("INSERT INTO m5_stock_movement"), any(Object[].class));
+    }
+
+    @Test
+    void tankAllocationRowHasNoBayName_errors() {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("bay_name", null);
+        when(jdbc.queryForList(contains("SELECT bay_name FROM loading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(row));
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(line("ROU028912", "SKU1215", 45))));
+
+        assertThat(r.isOk()).isFalse();
+        assertThat(r.getMessage()).contains("SKU1215").contains("has no tank location recorded");
         verify(jdbc, never()).update(startsWith("INSERT INTO m5_stock_movement"), any(Object[].class));
     }
 

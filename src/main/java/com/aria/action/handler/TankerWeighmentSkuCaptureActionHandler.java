@@ -38,13 +38,19 @@ import java.util.Map;
  * rows once the tanker's actual per-SKU weight is known.
  *
  * <p>Per line, exactly four tables move — {@code m5_order_dispatch_detail}
- * itself is deliberately left untouched: FEFO-deduct stock for that SKU
- * (same picker as Bay Complete), insert one {@code m5_stock_movement} row
- * per lot picked (kind {@code CONSUME}, same as Bay Complete;
- * {@code ref_type TANKER}), decrement {@code m5_stock_balance.qty_on_hand}
- * for each lot picked, then close the matching
- * {@code loading_progress_detail_bay} row (route_id + sku_code, status
- * IN_PROGRESS -&gt; DONE) and roll the total into
+ * itself is deliberately left untouched: FEFO-deduct stock for that SKU, but
+ * constrained to the specific tank this SKU was allocated to at tank-
+ * allocation time ({@code loading_progress_detail_bay.bay_name}, read fresh
+ * here before picking) — not an anonymous FEFO pick across every bin. A
+ * truck can only physically draw from the tank it's connected to, so if that
+ * one tank alone doesn't have enough, the line fails rather than silently
+ * pulling the shortfall from some other bin (same picker as Bay Complete,
+ * just bin-scoped via its existing {@code binCode} parameter). Insert one
+ * {@code m5_stock_movement} row per lot picked within that tank (kind
+ * {@code CONSUME}, same as Bay Complete; {@code ref_type TANKER}), decrement
+ * {@code m5_stock_balance.qty_on_hand} for each lot picked, then close the
+ * matching {@code loading_progress_detail_bay} row (route_id + sku_code,
+ * status IN_PROGRESS -&gt; DONE) and roll the total into
  * {@code loading_progress_detail.processed_quantity}. Whole-request
  * atomicity and the stock-race guard mirror {@link M10BayCompleteActionHandler}
  * exactly — see its javadoc for the reasoning.
@@ -141,13 +147,34 @@ public class TankerWeighmentSkuCaptureActionHandler implements ActionHandler {
                 return ActionResult.error("tankerSkuWeights[" + i + "] (" + skuCode + ") needs loading_qty > 0");
             }
 
-            List<FefoStockPickerService.FefoPick> picks = fefoPicker.pick(tenantId, skuCode, null, loadWgt);
+            // Deduct specifically from the tank this SKU was allocated to at
+            // tank-allocation time (QcPreloadTankAllocationListener stamps
+            // bay_name onto this same row) -- not an anonymous FEFO pick
+            // across every bin. You can't physically pump oil out of a tank
+            // the truck isn't connected to, so if THIS tank alone doesn't
+            // have enough, the line fails rather than silently pulling from
+            // some other bin.
+            List<Map<String, Object>> bayRows = jdbc.queryForList(
+                    "SELECT bay_name FROM loading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? "
+                            + "AND route_id = ? AND ((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'IN_PROGRESS'",
+                    tenantId, instanceId, routeId, orderId, orderId, skuCode);
+            if (bayRows.isEmpty()) {
+                markRollbackOnly();
+                return ActionResult.error("no open bay row found for route_id=" + routeId + " order_id=" + orderId + " sku_code=" + skuCode);
+            }
+            String tankLocation = (String) bayRows.get(0).get("bay_name");
+            if (tankLocation == null || tankLocation.isBlank()) {
+                markRollbackOnly();
+                return ActionResult.error("tankerSkuWeights[" + i + "] (" + skuCode + ") has no tank location recorded — allocate one before weighing");
+            }
+
+            List<FefoStockPickerService.FefoPick> picks = fefoPicker.pick(tenantId, skuCode, tankLocation, loadWgt);
             BigDecimal residual = fefoPicker.residualQty(loadWgt, picks);
             if (residual.signum() > 0) {
                 markRollbackOnly();
-                log.warn("action.tanker-weighment-capture.insufficient-stock tenantId={} instanceId={} routeId={} skuCode={} requestedQty={} availableQty={}",
-                        tenantId, instanceId, routeId, skuCode, loadWgt, loadWgt.subtract(residual));
-                return ActionResult.error("tankerSkuWeights[" + i + "] (" + skuCode + ") insufficient stock: "
+                log.warn("action.tanker-weighment-capture.insufficient-stock tenantId={} instanceId={} routeId={} skuCode={} tankLocation={} requestedQty={} availableQty={}",
+                        tenantId, instanceId, routeId, skuCode, tankLocation, loadWgt, loadWgt.subtract(residual));
+                return ActionResult.error("tankerSkuWeights[" + i + "] (" + skuCode + ") insufficient stock in tank " + tankLocation + ": "
                         + "requested " + loadWgt + ", available " + loadWgt.subtract(residual));
             }
 
