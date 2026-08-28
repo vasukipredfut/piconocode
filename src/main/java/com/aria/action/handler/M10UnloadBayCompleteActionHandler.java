@@ -152,10 +152,14 @@ public class M10UnloadBayCompleteActionHandler implements ActionHandler {
             closed.add(row);
         }
 
+        String currentStep = jdbc.queryForObject(
+                "SELECT current_state FROM workflow_instance WHERE id = ? AND tenant_id = ?",
+                String.class, instanceId, tenantId);
+
         jdbc.update(
-                "UPDATE unloading_progress_detail SET processed_quantity = processed_quantity + ? "
+                "UPDATE unloading_progress_detail SET processed_quantity = processed_quantity + ?, current_step = ? "
                         + "WHERE tenant_id = ? AND workflow_instance_id = ?",
-                totalProcessed, tenantId, instanceId);
+                totalProcessed, currentStep, tenantId, instanceId);
 
         // Once every loading_progress_detail_bay row for this vehicle has been
         // reversed (or was never DONE to begin with), flip the parent rollup too

@@ -129,14 +129,25 @@ public class M10StartUnloadBayActionHandler implements ActionHandler {
         String vehicleNo = strOpt(formData, "vehicle_no");
         String gatePassNo = strOpt(formData, "gpNumber");
 
+        // flow_variant_code/current_step aren't projected here automatically
+        // (this table has no m0_workflow_projection row -- see V261), so read
+        // them straight off workflow_instance and stamp them ourselves.
+        Map<String, Object> instanceRow = jdbc.queryForMap(
+                "SELECT workflow_code, current_state FROM workflow_instance WHERE id = ? AND tenant_id = ?",
+                instanceId, tenantId);
+        String flowVariantCode = (String) instanceRow.get("workflow_code");
+        String currentStep = (String) instanceRow.get("current_state");
+
         jdbc.update(
-                "INSERT INTO unloading_progress_detail (tenant_id, workflow_instance_id, vehicle_no, gate_pass_no, total_quantity, processed_quantity) "
-                        + "VALUES (?, ?, ?, ?, ?, 0) "
+                "INSERT INTO unloading_progress_detail (tenant_id, workflow_instance_id, flow_variant_code, current_step, vehicle_no, gate_pass_no, total_quantity, processed_quantity) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, 0) "
                         + "ON DUPLICATE KEY UPDATE "
+                        + "flow_variant_code = COALESCE(unloading_progress_detail.flow_variant_code, VALUES(flow_variant_code)), "
+                        + "current_step = VALUES(current_step), "
                         + "vehicle_no = COALESCE(VALUES(vehicle_no), vehicle_no), "
                         + "gate_pass_no = COALESCE(VALUES(gate_pass_no), gate_pass_no), "
                         + "total_quantity = total_quantity + VALUES(total_quantity)",
-                tenantId, instanceId, vehicleNo, gatePassNo, totalQty);
+                tenantId, instanceId, flowVariantCode, currentStep, vehicleNo, gatePassNo, totalQty);
 
         Long parentId = jdbc.queryForObject(
                 "SELECT id FROM unloading_progress_detail WHERE tenant_id = ? AND workflow_instance_id = ?",
