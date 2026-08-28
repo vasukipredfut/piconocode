@@ -144,6 +144,8 @@ class M10UnloadBayCompleteActionHandlerTest {
     void closesRowAndReversesLoadingRow_rollsUpParent() {
         when(jdbc.update(startsWith("UPDATE unloading_progress_detail_bay"), any(Object[].class))).thenReturn(1);
         when(jdbc.queryForObject(contains("loading_progress_detail_bay"), eq(Integer.class), any(Object[].class))).thenReturn(0);
+        when(jdbc.queryForObject(eq("SELECT current_state FROM workflow_instance WHERE id = ? AND tenant_id = ?"),
+                eq(String.class), eq(1495L), eq(1L))).thenReturn("REJECT_FLOW_UNLOADING");
 
         ActionResult r = handler.handle(invocationWithLines(List.of(line("ROU028912", "SKU1215", 20))));
 
@@ -159,8 +161,10 @@ class M10UnloadBayCompleteActionHandlerTest {
         verify(jdbc).update(
                 eq("UPDATE loading_progress_detail SET status = 'REVERSED' WHERE tenant_id = ? AND workflow_instance_id = ?"),
                 eq(1L), eq(1495L));
-        verify(jdbc).update(startsWith("UPDATE unloading_progress_detail SET processed_quantity"),
-                eq(new BigDecimal("20")), eq(1L), eq(1495L));
+        verify(jdbc).update(
+                eq("UPDATE unloading_progress_detail SET processed_quantity = processed_quantity + ?, current_step = ? "
+                        + "WHERE tenant_id = ? AND workflow_instance_id = ?"),
+                eq(new BigDecimal("20")), eq("REJECT_FLOW_UNLOADING"), eq(1L), eq(1495L));
     }
 
     @Test

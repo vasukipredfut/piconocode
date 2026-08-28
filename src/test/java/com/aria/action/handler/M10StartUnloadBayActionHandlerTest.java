@@ -34,6 +34,8 @@ class M10StartUnloadBayActionHandlerTest {
     void setUp() {
         jdbc = mock(JdbcTemplate.class);
         when(jdbc.update(anyString(), any(Object[].class))).thenReturn(1);
+        when(jdbc.queryForMap(contains("FROM workflow_instance"), any(Object[].class)))
+                .thenReturn(Map.of("workflow_code", "M10.FGLoading", "current_state", "RELOAD_REQUIRED"));
         handler = new M10StartUnloadBayActionHandler();
         ReflectionTestUtils.setField(handler, "jdbc", jdbc);
         TenantContext.set(1L);
