@@ -95,6 +95,12 @@ public final class GatePassSatelliteJoin {
             // in V263 -- see DispatchToleranceListener/PmtSharedReasonListener. pwd itself
             // is unchanged and keeps its own operator-entered pmt_variance_reason.
             "pwd.pmt_variance_reason, mqad.expected_weight_kg, mqad.loaded_weight_kg, mqad.pmt_variance_pct, mqad.pmt_within_tolerance, " +
+            // Manager Qty Approval's own decision + reason (aria:manager-qty-approval,
+            // written by PmtSharedReasonListener) -- only its queue_reason was exposed
+            // here before (see QUEUE_REASON_SELECT above); a plain GatePass-by-gp_number
+            // read now also surfaces the actual approve/reject/skip decision and reason,
+            // same treatment mwad already got below.
+            "mqad.manager_decision, mqad.manager_qty_reason, " +
             "pcvd.camera_photo, pcvd.issue_identified, pcvd.camera_variance_reason, " +
             "dvd.broker_name, dvd.broker_number, dvd.invoice_qty, dvd.oil_rm_item, dvd.transport_name, " +
             "dvd.po_numbers, dvd.po_attachment, dvd.party_name, " +

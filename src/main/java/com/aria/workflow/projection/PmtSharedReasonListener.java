@@ -118,6 +118,24 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
                     }
                     break;
                 }
+                // WEIGHMENT_2/SEALING_DONE: aria:manager-qty-approval's OWN
+                // tolerance-routing pass (withinTolerance YES/NO/MANAGER_DIRECT)
+                // -- previously only captured the 4 client-computed tolerance
+                // columns (TankerOutbound branch below); manager_decision/
+                // manager_qty_reason/queue_reason/time_taken from THIS same
+                // submission were silently dropped because neither state was
+                // in this switch at all. Safe to key on previousState alone
+                // here despite WEIGHMENT_2 also being aria:sealing-process's
+                // own previousState (a DIFFERENT page): each instance passes
+                // through WEIGHMENT_2 at most once in this workflow's FSM
+                // (no transition ever re-enters it), and aria:sealing-process
+                // never submits any of the fields read below, so its bag
+                // entry for "aria:manager-qty-approval" is empty whenever
+                // sealing-process is the one actually firing -- cols stays
+                // empty and the upsert is skipped, same as before this case
+                // existed.
+                case "WEIGHMENT_2":
+                case "SEALING_DONE":
                 case "PMT_CHECK_PENDING_MANAGER":
                 case "WEIGHT_DIFF_PENDING_MANAGER": {
                     Map<String, Object> page = pageData(bag, "aria:manager-qty-approval");
