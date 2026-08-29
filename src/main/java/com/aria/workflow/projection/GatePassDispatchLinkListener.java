@@ -21,8 +21,9 @@ import java.util.Map;
  * starts directly at aria:dispatch-vehicle-details, so there is no
  * GATE_PASS_CREATED transition left to create the gate_pass row the way
  * WorkflowProjectionListener normally would (insert-on-first-transition,
- * keyed by workflow_instance_id). M10.OtherVehicles (V259) skips that page
- * entirely and starts at aria:weighment-capture instead — same gap, so
+ * keyed by workflow_instance_id). M10.OtherVehicles (V259/V268) skips that
+ * page entirely and starts at its own dedicated
+ * aria:weighment-capture-other-vehicle instead — same gap, so
  * {@link #DRAFT_EXIT_PAGES} is checked in order rather than a single
  * hardcoded page code.
  *
@@ -63,7 +64,8 @@ public class GatePassDispatchLinkListener implements WorkflowTransitionListener 
 
     private static final Logger log = LoggerFactory.getLogger(GatePassDispatchLinkListener.class);
     private static final long LINKED_TENANT_ID = 1L;
-    private static final String[] DRAFT_EXIT_PAGES = {"aria:dispatch-vehicle-details", "aria:weighment-capture"};
+    private static final String[] DRAFT_EXIT_PAGES =
+            {"aria:dispatch-vehicle-details", "aria:weighment-capture", "aria:weighment-capture-other-vehicle"};
 
     private final JdbcTemplate jdbc;
 
