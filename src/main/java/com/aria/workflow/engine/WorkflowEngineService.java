@@ -433,11 +433,18 @@ public class WorkflowEngineService {
      * the {@code gate_pass.id}, not a workflow instance id — {@code
      * workflowCode}/{@code currentState} are null, the caller distinguishes
      * these "not started yet" rows from real instance rows on that basis.
+     *
+     * <p>Excludes {@code loading_type='OTHERS'} — those gate passes are
+     * destined for M10.OtherVehicles (V259), whose workflow_definition starts
+     * straight at aria:weighment-capture and never has a transition through
+     * {@link #DISPATCH_VEHICLE_DETAILS_PAGE} at all, so they'd otherwise leak
+     * into this queue even though the operator will never act on them here.
      */
     private List<WorkflowQueueItem> plainGatePassQueueItems(Long tenantId) {
         return jdbc.queryForList(
                 "SELECT id, gp_number, vehicle_no, status, updated_at, queue_reason FROM gate_pass " +
                 "WHERE tenant_id=? AND workflow_instance_id IS NULL AND status='GATE_PASS_CREATED' " +
+                "AND (loading_type IS NULL OR loading_type <> 'OTHERS') " +
                 "ORDER BY updated_at ASC",
                 tenantId).stream()
             .map(row -> WorkflowQueueItem.builder()

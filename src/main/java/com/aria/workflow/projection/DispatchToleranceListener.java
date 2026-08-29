@@ -44,11 +44,15 @@ import java.util.Map;
  * {@code pmt_variance_pct}, and {@code pmt_within_tolerance} ∈ {@code {YES, NO}}
  * (YES also means "not applicable / not yet computable" so legacy flows
  * without SKU weights are never spuriously blocked) into {@code
- * pmt_weight_diff_detail} (V88/V92) — keyed on (tenant_id, workflow_instance_id),
+ * manager_qty_approval_detail} (V90/V263) — keyed on (tenant_id, workflow_instance_id),
  * not the {@code target_table} the config row names (still {@code gate_pass};
  * that row only supplies {@code tolerance_pct}, the enable/threshold switch —
- * V92 moved the satellite columns off gate_pass itself). Exceptions never
- * propagate — the engine catches listener failures, so a bad config or
+ * V92 originally moved these 4 columns off gate_pass onto pmt_weight_diff_detail;
+ * V263 moved them again onto manager_qty_approval_detail, since this data is
+ * fully server-computed and doesn't need its own dedicated satellite table —
+ * pmt_weight_diff_detail keeps only its own operator-entered
+ * pmt_variance_reason/queue_reason, untouched by this listener). Exceptions
+ * never propagate — the engine catches listener failures, so a bad config or
  * missing column can't fail a transition.
  *
  * <p>{@code @Order(LOWEST_PRECEDENCE)} so this runs AFTER {@link
@@ -152,7 +156,7 @@ public class DispatchToleranceListener implements WorkflowTransitionListener {
         BigDecimal variancePct = variancePct(loaded, expected);
 
         jdbc.update(
-                "INSERT INTO pmt_weight_diff_detail " +
+                "INSERT INTO manager_qty_approval_detail " +
                         "(tenant_id, workflow_instance_id, expected_weight_kg, loaded_weight_kg, pmt_variance_pct, pmt_within_tolerance) " +
                         "VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE " +
                         "expected_weight_kg=VALUES(expected_weight_kg), loaded_weight_kg=VALUES(loaded_weight_kg), " +

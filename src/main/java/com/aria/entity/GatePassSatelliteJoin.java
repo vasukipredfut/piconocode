@@ -90,7 +90,11 @@ public final class GatePassSatelliteJoin {
             "COALESCE(ladeemp.employeename, qpdemp.employeename) AS loading_supervisor_name, " +
             "gpw.w1_weight_kg, gpw.w2_weight_kg, gpw.w3_weight_kg, gpw.weight_officer, gpw.weight_entry_at, " +
             "spd.sealing_no, spd.sealing_supervisor, spd.seal_lock_status, spd.sealing_status, spd.sealing_started_at, spd.sealing_finished_at, " +
-            "pwd.pmt_variance_reason, pwd.expected_weight_kg, pwd.loaded_weight_kg, pwd.pmt_variance_pct, pwd.pmt_within_tolerance, " +
+            // expected_weight_kg/loaded_weight_kg/pmt_variance_pct/pmt_within_tolerance
+            // moved off pwd (pmt_weight_diff_detail) onto mqad (manager_qty_approval_detail)
+            // in V263 -- see DispatchToleranceListener/PmtSharedReasonListener. pwd itself
+            // is unchanged and keeps its own operator-entered pmt_variance_reason.
+            "pwd.pmt_variance_reason, mqad.expected_weight_kg, mqad.loaded_weight_kg, mqad.pmt_variance_pct, mqad.pmt_within_tolerance, " +
             "pcvd.camera_photo, pcvd.issue_identified, pcvd.camera_variance_reason, " +
             "dvd.broker_name, dvd.broker_number, dvd.invoice_qty, dvd.oil_rm_item, dvd.transport_name, " +
             "dvd.po_numbers, dvd.po_attachment, dvd.party_name, " +

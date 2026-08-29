@@ -16,8 +16,9 @@ import java.util.Map;
  * manager_qty_approval_detail (V90 — pre-existing, already used by
  * FGLoading/PackLoading/TankerOutbound via {@link PmtSharedReasonListener}),
  * for M10.TankerInbound: manager_decision/manager_qty_reason (columns that
- * already existed) plus invoice_qty/unloading_qty/grn_status (new,
- * TankerInbound-only).
+ * already existed) plus invoice_qty/unloading_qty/grn_status (TankerInbound-
+ * only) and time_taken (V266 — shared with every other workflow via {@link
+ * PmtSharedReasonListener}'s own manager-qty-approval cases).
  *
  * <p>Kept OUT of WorkflowProjectionListener's generic field_map_json on
  * purpose, same reasoning as {@link ReconciliationDecisionListener} and
@@ -65,6 +66,7 @@ public class ManagerQtyApprovalDecisionListener implements WorkflowTransitionLis
             putIfPresent(cols, "manager_qty_reason", page, "variance_reason");
             putIfPresent(cols, "manager_decision", page, "status");
             putIfPresent(cols, "grn_status", page, "grn_status");
+            putIfPresent(cols, "time_taken", page, "time_taken");
             if (cols.isEmpty()) return;
 
             Long tenantId = TenantContext.get();

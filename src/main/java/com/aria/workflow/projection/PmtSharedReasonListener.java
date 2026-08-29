@@ -16,11 +16,23 @@ import java.util.Set;
 
 /**
  * Routes submitted 'variance_reason' (and, for manager-qty-approval /
- * manager-weight-approval, 'status') into whichever of four satellite
- * tables actually owns this step (V88 pmt_weight_diff_detail, V89
- * pmt_camera_verification_detail, V90 manager_qty_approval_detail, V91
- * manager_weight_approval_detail) — kept OUT of WorkflowProjectionListener's
- * generic field_map on purpose.
+ * manager-weight-approval, 'status') into whichever of three satellite
+ * tables actually owns this step (V89 pmt_camera_verification_detail, V90
+ * manager_qty_approval_detail, V91 manager_weight_approval_detail) — kept
+ * OUT of WorkflowProjectionListener's generic field_map on purpose.
+ *
+ * <p>Used to also own a WEIGHMENT_2/SEALING_DONE case routing
+ * aria:pmt-weight-diff-check (FGLoading/PackLoading) and
+ * aria:weight-diff-entry (TankerOutbound)'s variance_reason into
+ * pmt_weight_diff_detail (V88). Both pages were retired from the UI (V264),
+ * so that case — and pmt_weight_diff_detail's write path entirely — was
+ * removed; the table itself is untouched (historical rows only, nothing
+ * writes to it anymore). TankerOutbound's client-computed tolerance columns
+ * (expected_weight_kg/loaded_weight_kg/pmt_variance_pct/pmt_within_tolerance)
+ * moved WITH it — now read off aria:manager-qty-approval's own submission
+ * instead (its PMT_CHECK_PENDING_MANAGER/WEIGHT_DIFF_PENDING_MANAGER case
+ * below), since that's the only page left that still supplies them for this
+ * one workflow (DispatchToleranceListener has no server-side basis for it).
  *
  * <p>'variance_reason' is reused, by field name only, across at least six
  * different pages (pmt-weight-diff-check, pmt-camera-verification,
@@ -54,27 +66,7 @@ import java.util.Set;
 public class PmtSharedReasonListener implements WorkflowTransitionListener {
 
     private static final Logger log = LoggerFactory.getLogger(PmtSharedReasonListener.class);
-    private static final Set<String> PMT_WEIGHT_DIFF_WORKFLOWS = Set.of("M10.FGLoading", "M10.PackLoading");
     private static final String TANKER_OUTBOUND_WORKFLOW = "M10.TankerOutbound";
-    // None of the three workflows have a PARKING_IN_2 hop in their
-    // definitions anymore -- aria:pmt-weight-diff-check (FGLoading/
-    // PackLoading) / aria:weight-diff-entry (TankerOutbound) can each fire
-    // directly off either WEIGHMENT_2 or SEALING_DONE:
-    //  - TankerOutbound has no sealing step at all -> always WEIGHMENT_2.
-    //  - FGLoading/PackLoading: OPEN_BODY vehicles skip sealing (fire off
-    //    WEIGHMENT_2 directly); everyone else goes through SEALING_DONE
-    //    first (fires off SEALING_DONE).
-    // Both previousState cases below resolve the right page via this method
-    // instead of being split apart, since either state can legitimately
-    // belong to either the Tanker page or the FG/Pack page depending on
-    // workflow code -- gated per-workflow so FGLoading's WEIGHMENT_2 ->
-    // aria:sealing-process (unrelated data) is never mistaken for a PMT
-    // check submission.
-    private static String pmtWeightDiffPageFor(String workflowCode) {
-        if (TANKER_OUTBOUND_WORKFLOW.equals(workflowCode)) return "aria:weight-diff-entry";
-        if (PMT_WEIGHT_DIFF_WORKFLOWS.contains(workflowCode)) return "aria:pmt-weight-diff-check";
-        return null;
-    }
     // M10.PackUnload adds 1 more precisely-gated state here (own state name,
     // not shared with PackLoading/FGLoading/TankerInbound):
     // QUANTITY_APPROVAL_PENDING -> manager_qty_approval_detail (same table,
@@ -94,7 +86,7 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
 
     /**
      * True when this listener already captures {@code variance_reason} for this exact
-     * (workflowCode, previousState) pair into one of the four satellite tables above.
+     * (workflowCode, previousState) pair into one of the three satellite tables above.
      * Used by {@link WorkflowProjectionListener} to skip the same key so it stops
      * duplicating into gate_pass.variance_reason for these four steps specifically —
      * kept in sync with the switch in {@link #onTransition} on purpose (single source
@@ -102,9 +94,6 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
      */
     public static boolean ownsVarianceReason(String workflowCode, String previousState) {
         if (previousState == null) return false;
-        if ("WEIGHMENT_2".equals(previousState) || "SEALING_DONE".equals(previousState)) {
-            return pmtWeightDiffPageFor(workflowCode) != null;
-        }
         return NO_WORKFLOW_GUARD_STATES.contains(previousState);
     }
 
@@ -118,48 +107,6 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
 
         try {
             switch (previousState) {
-                case "WEIGHMENT_2":
-                case "SEALING_DONE": {
-                    // See pmtWeightDiffPageFor() javadoc above: either state can
-                    // lead here depending on workflow (and, for FGLoading/
-                    // PackLoading, whether the vehicle skipped sealing).
-                    String pageCode = pmtWeightDiffPageFor(instance.getWorkflowCode());
-                    if (pageCode == null) break;
-                    Map<String, Object> page = pageData(bag, pageCode);
-                    String reason = firstNonBlank(str(page, "variance_reason"), str(page, "varianceReason"));
-                    String queueReason = queueReasonOf(page);
-                    Map<String, Object> cols = new LinkedHashMap<>();
-                    if (reason != null) cols.put("pmt_variance_reason", reason);
-                    if (queueReason != null) cols.put("queue_reason", queueReason);
-                    // TankerOutbound only: DispatchToleranceListener's own
-                    // server-side weight-tolerance computation has no basis for
-                    // this workflow (no loading_allocation_detail step, and its
-                    // tanker-oil SKUs aren't registered in m5_sku_master with a
-                    // unit_weight_kg -- see the route_id/m5_sku_master fallback
-                    // in DispatchToleranceListener.computeVerdict()), so it never
-                    // populates these 4 columns for TankerOutbound instances.
-                    // Trust aria:weight-diff-entry's own already-computed values
-                    // instead, scoped strictly to this one workflow so FGLoading/
-                    // PackLoading keep relying on the server-verified figure
-                    // DispatchToleranceListener already produces for them.
-                    if (TANKER_OUTBOUND_WORKFLOW.equals(instance.getWorkflowCode())) {
-                        BigDecimal expected = toBig(page.get("expected_weight_kg"));
-                        BigDecimal loaded = toBig(page.get("loaded_weight_kg"));
-                        String within = firstNonBlank(str(page, "within_tolerance"), str(page, "withinTolerance"));
-                        if (expected != null) cols.put("expected_weight_kg", expected);
-                        if (loaded != null) cols.put("loaded_weight_kg", loaded);
-                        if (within != null) cols.put("pmt_within_tolerance", within);
-                        if (expected != null && loaded != null && expected.signum() > 0) {
-                            cols.put("pmt_variance_pct", loaded.subtract(expected).abs()
-                                    .multiply(BigDecimal.valueOf(100))
-                                    .divide(expected, 3, RoundingMode.HALF_UP));
-                        }
-                    }
-                    if (!cols.isEmpty()) {
-                        upsert("pmt_weight_diff_detail", instance, cols);
-                    }
-                    break;
-                }
                 case "PMT_CAMERA_VERIFICATION": {
                     // No 'status' here — aria:pmt-camera-verification's single
                     // button carries no submitValues; its decision field is
@@ -177,11 +124,40 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
                     String reason = firstNonBlank(str(page, "variance_reason"), str(page, "varianceReason"));
                     String decision = str(page, "status");
                     String queueReason = queueReasonOf(page);
-                    if (reason != null || decision != null || queueReason != null) {
-                        Map<String, Object> cols = new LinkedHashMap<>();
-                        if (reason != null) cols.put("manager_qty_reason", reason);
-                        if (decision != null) cols.put("manager_decision", decision);
-                        if (queueReason != null) cols.put("queue_reason", queueReason);
+                    // time_taken (V266): UI-computed elapsed minutes for this step,
+                    // read directly off this page's own bag entry -- no cross-page
+                    // ambiguity risk here (unlike WorkflowProjectionListener's generic
+                    // pluck()) since pageData() already scopes to aria:manager-qty-approval.
+                    BigDecimal timeTaken = firstNonNull(toBig(page.get("time_taken")), toBig(page.get("timeTaken")));
+                    Map<String, Object> cols = new LinkedHashMap<>();
+                    if (reason != null) cols.put("manager_qty_reason", reason);
+                    if (decision != null) cols.put("manager_decision", decision);
+                    if (queueReason != null) cols.put("queue_reason", queueReason);
+                    if (timeTaken != null) cols.put("time_taken", timeTaken);
+                    // TankerOutbound only: since aria:weight-diff-entry was retired
+                    // from the UI (V264), aria:manager-qty-approval is now the ONLY
+                    // place these 4 tolerance columns get submitted for this workflow
+                    // -- DispatchToleranceListener has no server-side basis for
+                    // TankerOutbound (no loading_allocation_detail step, and its
+                    // tanker-oil SKUs aren't registered in m5_sku_master with a
+                    // unit_weight_kg), so it never populates them here either.
+                    // FGLoading/PackLoading keep relying on DispatchToleranceListener's
+                    // own server-verified figure -- this branch is scoped strictly to
+                    // TankerOutbound so it never overwrites that with a client value.
+                    if (TANKER_OUTBOUND_WORKFLOW.equals(instance.getWorkflowCode())) {
+                        BigDecimal expected = toBig(page.get("expected_weight_kg"));
+                        BigDecimal loaded = toBig(page.get("loaded_weight_kg"));
+                        String within = firstNonBlank(str(page, "within_tolerance"), str(page, "withinTolerance"));
+                        if (expected != null) cols.put("expected_weight_kg", expected);
+                        if (loaded != null) cols.put("loaded_weight_kg", loaded);
+                        if (within != null) cols.put("pmt_within_tolerance", within);
+                        if (expected != null && loaded != null && expected.signum() > 0) {
+                            cols.put("pmt_variance_pct", loaded.subtract(expected).abs()
+                                    .multiply(BigDecimal.valueOf(100))
+                                    .divide(expected, 3, RoundingMode.HALF_UP));
+                        }
+                    }
+                    if (!cols.isEmpty()) {
                         upsert("manager_qty_approval_detail", instance, cols);
                     }
                     break;
@@ -195,9 +171,8 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
                     // pass-closure-form, guard #submitted['report_weight_diff']
                     // == 'true') when a weight diff is flagged after the
                     // first approval. Both land in the same table via the
-                    // same page, so no extra workflow-code guard needed
-                    // (unlike SEALING_DONE/WEIGHMENT_2 above) — and this
-                    // case MUST stay in sync with ownsVarianceReason()'s
+                    // same page, so no extra workflow-code guard needed —
+                    // and this case MUST stay in sync with ownsVarianceReason()'s
                     // NO_WORKFLOW_GUARD_STATES set above, which already
                     // lists WEIGHT_APPROVAL_PENDING as owned (so
                     // WorkflowProjectionListener skips gate_pass for it);
@@ -238,11 +213,13 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
                     String reason = firstNonBlank(str(page, "variance_reason"), str(page, "varianceReason"));
                     String decision = str(page, "status");
                     String queueReason = queueReasonOf(page);
-                    if (reason != null || decision != null || queueReason != null) {
+                    BigDecimal timeTaken = firstNonNull(toBig(page.get("time_taken")), toBig(page.get("timeTaken")));
+                    if (reason != null || decision != null || queueReason != null || timeTaken != null) {
                         Map<String, Object> cols = new LinkedHashMap<>();
                         if (reason != null) cols.put("manager_qty_reason", reason);
                         if (decision != null) cols.put("manager_decision", decision);
                         if (queueReason != null) cols.put("queue_reason", queueReason);
+                        if (timeTaken != null) cols.put("time_taken", timeTaken);
                         upsert("manager_qty_approval_detail", instance, cols);
                     }
                     break;

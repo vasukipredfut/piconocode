@@ -11,6 +11,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
+import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.*;
@@ -81,8 +82,10 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
         boolean triggeringPageCodeResolved = false;
         for (Map<String, Object> cfg : configs) {
             String pageCodeScope = (String) cfg.get("page_code");
+            String fieldMapJsonForCfg = (String) cfg.get("field_map_json");
             boolean needsTriggeringPage = (pageCodeScope != null && !pageCodeScope.isBlank())
-                    || mapsQueueReason((String) cfg.get("field_map_json"));
+                    || mapsQueueReason(fieldMapJsonForCfg)
+                    || mapsTimeTaken(fieldMapJsonForCfg);
             if (needsTriggeringPage && !triggeringPageCodeResolved) {
                 triggeringPageCode = resolveTriggeringPageCode(instance, tenantId, previousState);
                 triggeringPageCodeResolved = true;
@@ -110,6 +113,11 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
     /** Cheap pre-check so resolveTriggeringPageCode's extra query only runs when actually needed. */
     private static boolean mapsQueueReason(String fieldMapJson) {
         return fieldMapJson != null && fieldMapJson.contains("queue_reason");
+    }
+
+    /** Same purpose as {@link #mapsQueueReason} for the time_taken (V265) page-scoped field. */
+    private static boolean mapsTimeTaken(String fieldMapJson) {
+        return fieldMapJson != null && fieldMapJson.contains("time_taken");
     }
 
     /**
@@ -229,6 +237,27 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
                     List<String> keys = (List<String>) e.getValue();
                     String v = pluckScoped(bag, keys, triggeringPageCode);
                     if (v != null) cols.put(ident("qc_decision"), v);
+                    continue;
+                }
+                // time_taken (V265): the UI computes elapsed minutes for a step
+                // client-side and submits it under this exact literal name on
+                // EVERY page that projects through this listener -- same
+                // cross-page-collision risk as queue_reason/qc_decision above,
+                // so this needs the page-scoped lookup too, not the generic
+                // cross-page fallback. Parsed to BigDecimal explicitly (rather
+                // than left as the pluck()/pluckScoped() String) since the
+                // target column is DECIMAL(10,2) -- a non-numeric submission
+                // is silently skipped rather than failing the whole transition.
+                if ("time_taken".equals(e.getKey())) {
+                    List<String> keys = (List<String>) e.getValue();
+                    String v = pluckScoped(bag, keys, triggeringPageCode);
+                    if (v != null) {
+                        try {
+                            cols.put(ident("time_taken"), new BigDecimal(v.trim()));
+                        } catch (NumberFormatException ignored) {
+                            // non-numeric time_taken -- skip this column, don't fail the transition
+                        }
+                    }
                     continue;
                 }
                 // oil_rm_item on dispatch_vehicle_detail (V237): aria:dispatch-
