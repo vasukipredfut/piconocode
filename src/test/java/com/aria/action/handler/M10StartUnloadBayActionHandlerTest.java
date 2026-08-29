@@ -87,7 +87,7 @@ class M10StartUnloadBayActionHandlerTest {
     void lineItemMissingSkuCode_errors() {
         Map<String, Object> badLine = new LinkedHashMap<>();
         badLine.put("route_id", "ROU028912");
-        badLine.put("unloading_qty", 20);
+        badLine.put("quantity", 20);
         ActionResult r = handler.handle(baseInvocation(Map.of("bay_name", "Bay1", "order_sku_line_items", List.of(badLine))));
         assertThat(r.isOk()).isFalse();
         assertThat(r.getMessage()).contains("missing route_id or sku_code");
@@ -111,6 +111,20 @@ class M10StartUnloadBayActionHandlerTest {
         Map<String, Object> badLine = new LinkedHashMap<>();
         badLine.put("route_id", "ROU028912");
         badLine.put("sku_code", "SKU1215");
+        badLine.put("quantity", -5);
+
+        ActionResult r = handler.handle(baseInvocation(Map.of("bay_name", "Bay1", "order_sku_line_items", List.of(badLine))));
+
+        assertThat(r.isOk()).isFalse();
+        assertThat(r.getMessage()).contains("SKU1215").contains("quantity >= 0");
+    }
+
+    @Test
+    void lineItemNegativeUnloadingQty_errors() {
+        Map<String, Object> badLine = new LinkedHashMap<>();
+        badLine.put("route_id", "ROU028912");
+        badLine.put("sku_code", "SKU1215");
+        badLine.put("quantity", 20);
         badLine.put("unloading_qty", -5);
 
         ActionResult r = handler.handle(baseInvocation(Map.of("bay_name", "Bay1", "order_sku_line_items", List.of(badLine))));
@@ -157,8 +171,10 @@ class M10StartUnloadBayActionHandlerTest {
         assertThat(r.getData()).containsEntry("bayName", "Bay1");
         assertThat(r.getData()).containsEntry("totalQuantity", new BigDecimal("20"));
 
+        // quantity (col 11) comes from the "quantity" key; processed_quantity (col 12)
+        // stays NULL here since the line doesn't send a separate "unloading_qty".
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
-                eq(1L), eq(777L), eq(1495L), eq("ROU028912"), isNull(), eq("SKU1215"), eq("SKU1215 desc"), eq("Bay1"), eq(new BigDecimal("20")));
+                eq(1L), eq(777L), eq(1495L), eq("ROU028912"), isNull(), isNull(), isNull(), eq("SKU1215"), eq("SKU1215 desc"), eq("Bay1"), eq(new BigDecimal("20")), isNull());
         verify(jdbc).update(
                 eq("UPDATE loading_progress_detail_bay SET status = 'UNLOAD_IN_PROGRESS' "
                         + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
@@ -166,17 +182,96 @@ class M10StartUnloadBayActionHandlerTest {
                 eq(1L), eq(1495L), eq("ROU028912"), isNull(), isNull(), eq("SKU1215"));
     }
 
+    @Test
+    void unloadingQtyOnLine_isStoredOnProcessedQuantityImmediately() {
+        stubLoadedDoneCount(1);
+        stubOpenUnloadBayCount(0);
+        stubParentId(777L);
+
+        Map<String, Object> line = line("ROU028912", "SKU1215", 20);
+        line.put("unloading_qty", 15);
+
+        ActionResult r = handler.handle(baseInvocation(Map.of(
+                "bay_name", "Bay1", "order_sku_line_items", List.of(line))));
+
+        assertThat(r.isOk()).isTrue();
+        verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
+                eq(1L), eq(777L), eq(1495L), eq("ROU028912"), isNull(), isNull(), isNull(), eq("SKU1215"), eq("SKU1215 desc"), eq("Bay1"), eq(new BigDecimal("20")), eq(new BigDecimal("15")));
+    }
+
+    @Test
+    void multipleSkuLines_eachGetsOwnRowAndParentGetsSummedTotal() {
+        stubLoadedDoneCount(1);
+        stubOpenUnloadBayCount(0);
+        stubParentId(777L);
+
+        Map<String, Object> line1 = line("ROU028912", "SKU1215", 20);
+        Map<String, Object> line2 = line("ROU028912", "SKU1461", 30);
+
+        ActionResult r = handler.handle(baseInvocation(Map.of(
+                "bay_name", "Bay1", "order_sku_line_items", List.of(line1, line2))));
+
+        assertThat(r.isOk()).isTrue();
+        assertThat(r.getData()).containsEntry("lineCount", 2);
+        assertThat(r.getData()).containsEntry("totalQuantity", new BigDecimal("50"));
+
+        // one INSERT per SKU line, each carrying its own quantity
+        verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
+                eq(1L), eq(777L), eq(1495L), eq("ROU028912"), isNull(), isNull(), isNull(), eq("SKU1215"), eq("SKU1215 desc"), eq("Bay1"), eq(new BigDecimal("20")), isNull());
+        verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
+                eq(1L), eq(777L), eq(1495L), eq("ROU028912"), isNull(), isNull(), isNull(), eq("SKU1461"), eq("SKU1461 desc"), eq("Bay1"), eq(new BigDecimal("30")), isNull());
+
+        // parent row upsert receives the SUMMED total (50), not either line alone
+        verify(jdbc).update(contains("INSERT INTO unloading_progress_detail"),
+                eq(1L), eq(1495L), any(), any(), any(), any(), eq(new BigDecimal("50")));
+    }
+
+    @Test
+    void lineWithRdCodeAndVendorName_areStoredOnUnloadBayRow() {
+        stubLoadedDoneCount(1);
+        stubOpenUnloadBayCount(0);
+        stubParentId(777L);
+
+        Map<String, Object> line = line("ROU028912", "SKU1215", 20);
+        line.put("rd_code", "RD1");
+        line.put("vendor_name", "RD One");
+
+        ActionResult r = handler.handle(baseInvocation(Map.of(
+                "bay_name", "Bay1", "order_sku_line_items", List.of(line))));
+
+        assertThat(r.isOk()).isTrue();
+        verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
+                eq(1L), eq(777L), eq(1495L), eq("ROU028912"), isNull(), eq("RD One"), eq("RD1"), eq("SKU1215"), eq("SKU1215 desc"), eq("Bay1"), eq(new BigDecimal("20")), isNull());
+    }
+
+    @Test
+    void lineWithRdDescAlias_fallsBackToVendorNameColumn() {
+        stubLoadedDoneCount(1);
+        stubOpenUnloadBayCount(0);
+        stubParentId(777L);
+
+        Map<String, Object> line = line("ROU028912", "SKU1215", 20);
+        line.put("rd_desc", "RD One");
+
+        ActionResult r = handler.handle(baseInvocation(Map.of(
+                "bay_name", "Bay1", "order_sku_line_items", List.of(line))));
+
+        assertThat(r.isOk()).isTrue();
+        verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
+                eq(1L), eq(777L), eq(1495L), eq("ROU028912"), isNull(), eq("RD One"), isNull(), eq("SKU1215"), eq("SKU1215 desc"), eq("Bay1"), eq(new BigDecimal("20")), isNull());
+    }
+
     private ActionInvocation baseInvocation(Map<String, Object> extraFormData) {
         Map<String, Object> formData = new LinkedHashMap<>(extraFormData);
         return ActionInvocation.builder().instanceId(1495L).formData(formData).build();
     }
 
-    private Map<String, Object> line(String routeId, String skuCode, int unloadingQty) {
+    private Map<String, Object> line(String routeId, String skuCode, int quantity) {
         Map<String, Object> line = new LinkedHashMap<>();
         line.put("route_id", routeId);
         line.put("sku_code", skuCode);
         line.put("sku_desc", skuCode + " desc");
-        line.put("unloading_qty", unloadingQty);
+        line.put("quantity", quantity);
         return line;
     }
 

@@ -35,13 +35,26 @@ import java.util.stream.IntStream;
  * line can only be unloaded if it was actually loaded (status DONE) first;
  * there is nothing to take off a vehicle for a SKU that was never loaded.
  *
- * <p>Payload shape mirrors {@link M10StartBayActionHandler} exactly, with
- * {@code unloading_qty} in place of {@code order_qty}:
+ * <p>Payload shape mirrors {@link M10StartBayActionHandler}, with two
+ * distinct quantity keys per line (unlike the loading side, which has only
+ * one): {@code quantity} (required, &gt;= 0) is the planned amount, stored on
+ * {@code unloading_progress_detail_bay.quantity} and rolled into
+ * {@code unloading_progress_detail.total_quantity}; {@code unloading_qty}
+ * (optional, &gt;= 0 if given) is stored directly onto that same row's
+ * {@code processed_quantity} column right away, at Start Bay time — it does
+ * NOT wait for Unload Bay Complete, which still overwrites it with whatever
+ * it's given when the row closes (status {@code DONE}), same as before.
+ * Lines may also carry {@code rd_code} and an "RD name" (accepted as
+ * {@code vendor_name}, or {@code rd_desc}/{@code rd_name} as aliases) — both
+ * optional, stored straight onto the row (columns added in V258 for the
+ * M10.TankerInbound side that shares this table; this handler previously
+ * ignored all four of these fields):
  * <pre>
  *   { "instanceId": 1495, "formData": {
  *       "vehicle_no": "TN86J8070", "gpNumber": "GP-1-1495", "bay_name": "Bay1",
  *       "order_sku_line_items": [
- *         { "route_id": "ROU028912", "order_id": "ORD1123", "sku_code": "SKU1215", "sku_desc": "GROUNDNUT RAW OIL 15 KG TIN", "unloading_qty": 20 }
+ *         { "route_id": "ROU028912", "order_id": "ORD1123", "sku_code": "SKU1215", "sku_desc": "GROUNDNUT RAW OIL 15 KG TIN",
+ *           "rd_code": "RD1", "vendor_name": "RD One", "quantity": 20, "unloading_qty": 20 }
  *       ] } }
  * </pre>
  */
@@ -96,12 +109,26 @@ public class M10StartUnloadBayActionHandler implements ActionHandler {
             }
             BigDecimal qty;
             try {
-                Object qtyObj = line.get("unloading_qty") != null ? line.get("unloading_qty") : line.get("quantity");
+                Object qtyObj = line.get("quantity");
                 qty = qtyObj == null ? null : new BigDecimal(qtyObj.toString());
+            } catch (NumberFormatException e) {
+                return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") quantity must be a number");
+            }
+            if (qty == null || qty.signum() < 0) {
+                return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") needs quantity >= 0");
+            }
+
+            // Distinct from `quantity` above -- optional, stored straight onto
+            // processed_quantity at Start Bay time (see class javadoc); Unload
+            // Bay Complete still overwrites it with whatever it's given then.
+            BigDecimal unloadingQty;
+            try {
+                Object unloadingQtyObj = line.get("unloading_qty");
+                unloadingQty = unloadingQtyObj == null ? null : new BigDecimal(unloadingQtyObj.toString());
             } catch (NumberFormatException e) {
                 return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") unloading_qty must be a number");
             }
-            if (qty == null || qty.signum() < 0) {
+            if (unloadingQty != null && unloadingQty.signum() < 0) {
                 return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") needs unloading_qty >= 0");
             }
             String orderId = strOpt(line, "order_id");
@@ -115,7 +142,12 @@ public class M10StartUnloadBayActionHandler implements ActionHandler {
                         + "(route_id=" + routeId + " order_id=" + orderId + ")");
             }
 
-            parsed.add(new LineEntry(routeId, orderId, skuCode, strOpt(line, "sku_desc"), qty));
+            String rdCode = strOpt(line, "rd_code", "rdCode");
+            // "RD name" reuses the existing vendor_name column (V258) rather than
+            // a new one -- the payload may send it under vendor_name or rd_desc/rd_name.
+            String vendorName = strOpt(line, "vendor_name", "vendorName", "rd_desc", "rdDesc", "rd_name", "rdName");
+
+            parsed.add(new LineEntry(routeId, orderId, skuCode, strOpt(line, "sku_desc"), rdCode, vendorName, qty, unloadingQty));
             totalQty = totalQty.add(qty);
         }
 
@@ -156,9 +188,9 @@ public class M10StartUnloadBayActionHandler implements ActionHandler {
         for (LineEntry e : parsed) {
             jdbc.update(
                     "INSERT INTO unloading_progress_detail_bay "
-                            + "(tenant_id, unloading_progress_detail_id, workflow_instance_id, route_id, order_id, sku_code, sku_desc, bay_name, quantity, status) "
-                            + "VALUES (?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
-                    tenantId, parentId, instanceId, e.routeId, e.orderId, e.skuCode, e.skuDesc, bayName, e.quantity);
+                            + "(tenant_id, unloading_progress_detail_id, workflow_instance_id, route_id, order_id, vendor_name, rd_code, sku_code, sku_desc, bay_name, quantity, processed_quantity, status) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
+                    tenantId, parentId, instanceId, e.routeId, e.orderId, e.vendorName, e.rdCode, e.skuCode, e.skuDesc, bayName, e.quantity, e.unloadingQty);
 
             int flagged = jdbc.update(
                     "UPDATE loading_progress_detail_bay SET status = 'UNLOAD_IN_PROGRESS' "
@@ -200,10 +232,13 @@ public class M10StartUnloadBayActionHandler implements ActionHandler {
         return v.toString();
     }
 
-    private static String strOpt(Map<String, Object> bag, String key) {
-        Object v = bag.get(key);
-        return v == null ? null : v.toString();
+    private static String strOpt(Map<String, Object> bag, String... keys) {
+        for (String key : keys) {
+            Object v = bag.get(key);
+            if (v != null && !v.toString().isBlank()) return v.toString();
+        }
+        return null;
     }
 
-    private record LineEntry(String routeId, String orderId, String skuCode, String skuDesc, BigDecimal quantity) {}
+    private record LineEntry(String routeId, String orderId, String skuCode, String skuDesc, String rdCode, String vendorName, BigDecimal quantity, BigDecimal unloadingQty) {}
 }
