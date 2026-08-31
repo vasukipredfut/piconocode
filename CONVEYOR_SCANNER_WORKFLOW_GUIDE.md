@@ -96,7 +96,7 @@ Optional query param **`?bayCode=BAY1`** scopes `integrations`, `plcIntegrations
     {"id": 1, "workflow_code": "M12.ConveyorTest", "bay_code": "BAY1", "task_code": "TASK-TEST-1",
      "order_ref": "ORDER-1", "sku_code": "SKU-1", "vehicle_no": "TN01AB1234", "gp_number": "GP-2026-0042",
      "target_qty": 3.000, "processed_qty": 0.000,
-     "rejected_qty": 0.000, "status": "IN_PROGRESS", "rule_set_id": 1, "started_at": "...", "completed_at": null}
+     "rejected_qty": 0.000, "status": "Open", "rule_set_id": 1, "started_at": "...", "completed_at": null}
   ]
 }
 ```
@@ -104,7 +104,7 @@ Optional query param **`?bayCode=BAY1`** scopes `integrations`, `plcIntegrations
 **Field notes:**
 - `integrations` — every `workflow_integration_binding` row for this workflow. `integration_id` is an `IntegrationInstance.id` — fetch its connector-specific config separately if the device needs it (e.g. barcode scanner serial config), or via `config_overrides_json` on the binding itself.
 - `ruleBuilder` — rule set **metadata only** (code/name/status), never the rule expressions. Rules run exclusively on the backend.
-- `dispatchTasks` — every task for the workflow, any status. Filter client-side for `status = "IN_PROGRESS"` to find what's currently active.
+- `dispatchTasks` — every task for the workflow, any status. Filter client-side for `status = "Open"` to find what's currently active.
 
 `404` if the workflow code doesn't resolve to a PUBLISHED definition.
 
@@ -143,7 +143,7 @@ Optional query param **`?bayCode=BAY1`** scopes `integrations`, `plcIntegrations
   "reason": null,
   "dispatchTask": {
     "id": 1, "target_qty": 3.000, "processed_qty": 1.000, "rejected_qty": 0.000,
-    "status": "IN_PROGRESS", "completed_at": null, "...": "..."
+    "status": "Open", "completed_at": null, "...": "..."
   },
   "plcSignalOk": true
 }
@@ -188,7 +188,7 @@ Send roughly every 5 seconds. `(workflowCode, deviceId)` is the upsert key. A de
 
 Before the Pi ever calls `POST /api/conveyor/scan`, `ConveyorClient` (in `raspberry-pi-client/conveyor_client.py`) runs a local check:
 
-1. After fetching workflow config (and any re-sync), `track_tasks_from_workflow()` looks for exactly one `IN_PROGRESS` `dispatch_task` on the device's `bayCode` and caches its `target_qty`/`processed_qty`. If a bay has zero or several concurrently-active tasks, nothing is tracked — the pre-check is skipped entirely and every scan for that bay goes straight to the backend (the backend is the only authority in that case, since the device can't know in advance which task an ambiguous scan will resolve to).
+1. After fetching workflow config (and any re-sync), `track_tasks_from_workflow()` looks for exactly one `Open` `dispatch_task` on the device's `bayCode` and caches its `target_qty`/`processed_qty`. If a bay has zero or several concurrently-active tasks, nothing is tracked — the pre-check is skipped entirely and every scan for that bay goes straight to the backend (the backend is the only authority in that case, since the device can't know in advance which task an ambiguous scan will resolve to).
 2. On every scan, `check_qty_limit(qty)` compares the scan's quantity (default `1`) against the tracked task's remaining quantity (`target_qty - processed_qty`).
 3. If the scan would exceed it, `submit_scan()` returns immediately **without making any HTTP call**:
    ```json
@@ -205,23 +205,65 @@ Each `dispatch_task` row tracks:
 
 | Column | Meaning |
 |---|---|
-| `task_code` | Synthetic per-task identifier. **`UNIQUE (tenant_id, task_code)`, forever — not scoped by status, bay, or date.** A `COMPLETED` task's `task_code` can never be reused, so it must not be a plain business value that legitimately repeats over time (e.g. a raw vehicle number, which comes back on every future trip) — use `vehicle_no`/`gp_number` below for that instead, and keep `task_code` synthetic (e.g. `TASK-{timestamp}` as in the E2E log, or `{vehicle_no}-{order_ref}`). |
+| `task_code` | Synthetic per-task identifier. **`UNIQUE (tenant_id, task_code)`, forever — not scoped by status, bay, or date.** A `Completed` task's `task_code` can never be reused, so it must not be a plain business value that legitimately repeats over time (e.g. a raw vehicle number, which comes back on every future trip) — use `vehicle_no`/`gp_number` below for that instead, and keep `task_code` synthetic (e.g. `TASK-{timestamp}` as in the E2E log, or `{vehicle_no}-{order_ref}`). |
 | `target_qty` | Goal quantity for this order/SKU. |
 | `processed_qty` | Running total of ACCEPTED scans. |
 | `rejected_qty` | Running total of REJECTED scans against this task. |
-| `status` | `PENDING` → `IN_PROGRESS` → `COMPLETED` (or `CANCELLED`). |
+| `status` | `PENDING` → `Open` → `Completed` (or `CANCELLED`). Renamed from `IN_PROGRESS`/`COMPLETED` in V270 — `PENDING`/`CANCELLED` are unchanged (`PENDING` is only ever the DB default before `DispatchTaskService.start()` moves a task on; `CANCELLED` is a reserved value nothing in application code currently sets or checks). |
 | `vehicle_no`, `gp_number` | Optional descriptive fields (added V210) — which physical vehicle/gate pass this task is loading. Not read or matched on anywhere in the scan/rule-evaluation flow (§3.2, §5) — purely for admin visibility/filtering (`entity_field_registry`, marked `filterable`/`sortable`/`searchable`, and shown as columns on `aria:conveyor-dispatch-tasks`, added V211). Naming matches the existing `GatePass.vehicle_no`/`GatePass.gp_number` convention used elsewhere in M10. |
+| `route_id`, `order_id` | Optional descriptive fields (added V269) — the M10 route/order identifiers this task's SKU line came from, when created by `m10.start-bay` (§4.1). Distinct from `order_ref`, which stays the generic field fed into Rule Builder context as `taskOrderRef` (§5) — `order_ref` is set to the same `order_id` value when created this way, but the two columns can diverge for tasks created any other way (e.g. the manual/API examples throughout this guide, which only ever set `order_ref`). |
+| `type` | `Loading` or `UnLoading` (added V271, `NOT NULL DEFAULT 'Loading'`). Every task created so far is `Loading` — `m10.start-bay` explicitly sets it, and it's the only creator that exists today. Not read or matched on anywhere in the scan/rule-evaluation flow (§3.2, §5) — purely descriptive/filterable, same tier as `vehicle_no`/`gp_number`/`route_id`/`order_id` above. M10's unload-bay handlers (`m10.start-unload-bay`, `m10.unload-bay-complete`) don't create `dispatch_task` rows at all yet — `type = 'UnLoading'` is reserved for when that gets wired up. |
+
+### 4.1 Auto-creation from M10 "Start Bay" (`m10.start-bay`)
+
+`M10StartBayActionHandler` (the `m10.start-bay` action behind the "Start Bay" button on
+`aria:loading-in-progress-entry`) opens one `dispatch_task` row per SKU line item in the
+**same transaction** as its `loading_progress_detail_bay` counterpart — not gated on
+whether the workflow's FSM transition actually fires (a bay opened later in the same
+multi-bay Start Bay transaction still gets its own `dispatch_task`, even though only the
+*first* bay in that transaction drives an FSM transition; see that handler's own javadoc).
+
+This is what lets a real barcode scanner physically covering a Bay1..Bay12 bay
+track/enforce the exact route/order/SKU/qty an operator just assigned to it, without any
+separate manual `dispatch_task` setup call. Fields set:
+
+| dispatch_task column | Source |
+|---|---|
+| `tenant_id`, `workflow_instance_id` | From the invoking `ActionInvocation` / `TenantContext`. |
+| `workflow_code` | Fixed constant `M10StartBayActionHandler.CONVEYOR_WORKFLOW_CODE` = `"M12.ConveyorTest"` — the conveyor line's own workflow (what a device polls via `GET /api/scanner/workflows/M12.ConveyorTest?bayCode=...`), **not** looked up from `workflow_instance.workflow_code` for this `instanceId`. A task stamped with the M10 business workflow code (e.g. `M10.FGLoading`) would never be found by a device querying the M12 one. |
+| `type` | Always `'Loading'` — this handler is the loading side only (see the `type` row above). |
+| `bay_code` | The Start Bay call's `bay_name` (or `loading_tank_location` for `M10.TankerOutbound` — see that handler's javadoc). |
+| `route_id`, `order_id`, `sku_code` | From the SKU line item. `order_ref` is also set to `order_id` for Rule Builder compatibility (§5). |
+| `gp_number` | From `formData.gpNumber`. |
+| `target_qty` | The line's `order_qty`. `processed_qty` starts at `0`, `status` starts `Open`. |
+| `task_code` | Synthetic: `DT-{instanceId}-{bayName}-{skuCode}-{epochMillis}` — never repeats even across a reload cycle re-opening the same instance/bay/SKU (see the `task_code` row above). |
+| `rule_set_id` | Left `NULL` — no Rule Builder enforcement is wired up for these auto-created tasks yet; every scan against one auto-passes exactly like the un-enforced examples in §2.2/§2.3 until a real rule set is attached. |
+| `vehicle_no` | **Not set** by this path (only `vehicle_no`'s M10 sibling data lives on `loading_progress_detail`, not threaded through here). |
+
+`M10BayCompleteActionHandler` (the "Bay Complete" counterpart) force-closes the matching
+`dispatch_task` row(s) — `status = 'Completed'` — for every line it closes, regardless of
+whether the conveyor scanner ever independently drove `processed_qty` up to `target_qty`.
+Matched the same NULL-safe way by `(workflow_instance_id, route_id, order_id, sku_code)`,
+not `bay_code` (Bay Complete doesn't match on bay name either). Zero matching rows is not
+an error — nothing to close is a normal outcome for bays opened before this reconciliation
+existed. `processed_qty` itself is left untouched (still reflects the real scan count, not
+the operator's `loading_qty`) — only `status`/`completed_at` are force-set.
+
+**Known gap, not yet addressed:**
+- No `workflow_integration_binding` rows exist for real M10 workflow codes/bays, so
+  `plcSignalOk` resolves to `null` for these tasks until scanner/PLC integrations are
+  actually configured for them (§8 of this guide covers how).
 
 On every **accepted** scan:
 ```
 processed_qty += qty
 if processed_qty >= target_qty:
-    status = 'COMPLETED'
+    status = 'Completed'
     completed_at = now()   # only set once
 ```
 This is computed under a row lock (`SELECT ... FOR UPDATE`) so concurrent scans against the same task can't race each other or double-count — see `DispatchTaskService.recordAcceptedScan`.
 
-Once `status = 'COMPLETED'`, the task no longer accepts scans — a further scan against it returns `NO_ACTIVE_TASK` (the resolver only considers `IN_PROGRESS` tasks active).
+Once `status = 'Completed'`, the task no longer accepts scans — a further scan against it returns `NO_ACTIVE_TASK` (the resolver only considers `Open` tasks active).
 
 **Multiple concurrent tasks per bay** are supported natively — just multiple `dispatch_task` rows with the same `bay_code`. When more than one is active, `/api/conveyor/scan` picks the one whose `sku`/`orderRef` matches the scan; pass an explicit `taskId` to disambiguate directly.
 
@@ -372,7 +414,7 @@ TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/signin \
   -H 'content-type: application/json' \
   -d '{"username":"2033","password":"Test@1234"}' | jq -r .accessToken)
 
-# 2. Create a DispatchTask, then flip it to IN_PROGRESS (PUT, not PATCH — PATCH returns 405)
+# 2. Create a DispatchTask, then flip it to Open (PUT, not PATCH — PATCH returns 405)
 curl -s -X POST http://localhost:8080/api/m0/entities/DispatchTask \
   -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"workflow_code":"M12.ConveyorTest","bay_code":"BAY1","task_code":"TASK-MANUAL-1","order_ref":"ORDER-1","sku_code":"SKU-1","target_qty":3,"vehicle_no":"TN01AB1234","gp_number":"GP-2026-0042"}'
@@ -380,13 +422,13 @@ curl -s -X POST http://localhost:8080/api/m0/entities/DispatchTask \
 
 curl -s -X PUT http://localhost:8080/api/m0/entities/DispatchTask/{id} \
   -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"status":"IN_PROGRESS"}'
+  -d '{"status":"Open"}'
 
 # 3. Confirm config resolves (no auth needed — permit-all)
 curl -s "http://localhost:8080/api/scanner/workflows/M12.ConveyorTest?bayCode=BAY1"
 
 # 4. Fake a scan — repeat with different "barcode" values (qty defaults to 1) until
-#    processed_qty hits target_qty -> status flips to COMPLETED
+#    processed_qty hits target_qty -> status flips to Completed
 curl -s -X POST http://localhost:8080/api/conveyor/scan \
   -H 'content-type: application/json' \
   -d '{"workflowCode":"M12.ConveyorTest","stepCode":"SCANNING","bayCode":"BAY1","barcode":"BC-TEST-1","sku":"SKU-1","orderRef":"ORDER-1"}'

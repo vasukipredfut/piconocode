@@ -144,14 +144,14 @@ class ConveyorClient:
         Call once after fetch_workflow_config (and again after any re-sync) to
         seed the local view of this bay's active dispatch task, so scans can be
         qty-checked before ever hitting the network. Only tracks when exactly
-        one IN_PROGRESS task exists for this bay — with several concurrent
+        one Open task exists for this bay — with several concurrent
         tasks on one bay, which task a scan belongs to isn't known until the
         backend resolves it, so the local pre-check is skipped (deferred to
         the backend) rather than guessed at.
         """
         candidates = [
             t for t in workflow.get("dispatchTasks", [])
-            if t.get("bay_code") == self.bay_code and t.get("status") == "IN_PROGRESS"
+            if t.get("bay_code") == self.bay_code and t.get("status") == "Open"
         ]
         self._active_task = self._to_local_task(candidates[0]) if len(candidates) == 1 else None
 
@@ -391,7 +391,7 @@ def run(config):
     client.track_tasks_from_workflow(workflow)
     if not client.has_tracked_task():
         log.warning(
-            "no single IN_PROGRESS task tracked for bay '%s' — local qty pre-check is disabled "
+            "no single Open task tracked for bay '%s' — local qty pre-check is disabled "
             "until exactly one active task exists for this bay", client.bay_code,
         )
 

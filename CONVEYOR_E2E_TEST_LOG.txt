@@ -21,6 +21,15 @@ response shape already captured in this log, they're just extra fields you
 can now include when creating a DispatchTask (section 1.2) and see on the
 admin list page. See CONVEYOR_SCANNER_WORKFLOW_GUIDE.md section 4 for details.
 
+UPDATE (post-dates this capture): V270 renamed dispatch_task.status values
+IN_PROGRESS -> Open and COMPLETED -> Completed (PENDING/CANCELLED unchanged).
+Every "status":"IN_PROGRESS" / "status":"COMPLETED" / "status":"IN_PROGRESS"
+literal below, and the "status":"IN_PROGRESS" PUT body in section 1.3, are
+from before that rename - substitute Open/Completed if replaying these calls
+against current code. See CONVEYOR_SCANNER_WORKFLOW_GUIDE.md section 4 for
+details, and section 4.1 for the new m10.start-bay auto-creation path (which
+only ever writes Open/Completed, never the old values).
+
 
 ================================================================================
 1. SETUP — one-time admin calls (require a JWT)
