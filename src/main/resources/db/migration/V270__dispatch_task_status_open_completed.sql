@@ -5,17 +5,23 @@
 -- is a reserved value nothing in application code currently sets or checks;
 -- neither needed renaming for this change.
 --
--- Two-step ALTER (widen, migrate data, narrow) because MariaDB rejects
--- existing rows whose ENUM value isn't in the new allowed set -- a
--- single-step swap from IN_PROGRESS/COMPLETED straight to Open/Completed
--- would either error or silently blank out every existing row's status.
-ALTER TABLE dispatch_task
-  MODIFY COLUMN status ENUM('PENDING','IN_PROGRESS','COMPLETED','CANCELLED','Open','Completed')
-  NOT NULL DEFAULT 'PENDING';
+-- dispatch_task uses COLLATE=utf8mb4_uca1400_ai_ci (accent+CASE-insensitive).
+-- A single ENUM definition can't declare both 'COMPLETED' and 'Completed' at
+-- once -- MariaDB rejects it with "Column 'status' has duplicated value
+-- 'COMPLETED' in ENUM", since the two are the same value under this
+-- collation. The widen/narrow approach that works for a case-sensitive
+-- collation (see V210/V269 for other columns) does NOT work here for the
+-- COMPLETED/Completed pair specifically. Route the rename through a plain
+-- VARCHAR shadow column instead -- reading/writing string values never hits
+-- the enum-definition-uniqueness check, only DEFINING an enum does.
+ALTER TABLE dispatch_task ADD COLUMN status_new VARCHAR(16) DEFAULT NULL AFTER status;
 
-UPDATE dispatch_task SET status = 'Open' WHERE status = 'IN_PROGRESS';
-UPDATE dispatch_task SET status = 'Completed' WHERE status = 'COMPLETED';
+UPDATE dispatch_task SET status_new = CASE status
+  WHEN 'IN_PROGRESS' THEN 'Open'
+  WHEN 'COMPLETED' THEN 'Completed'
+  ELSE status
+END;
 
-ALTER TABLE dispatch_task
-  MODIFY COLUMN status ENUM('PENDING','Open','Completed','CANCELLED')
-  NOT NULL DEFAULT 'PENDING';
+ALTER TABLE dispatch_task DROP COLUMN status;
+ALTER TABLE dispatch_task CHANGE COLUMN status_new status
+  ENUM('PENDING','Open','Completed','CANCELLED') NOT NULL DEFAULT 'PENDING';
