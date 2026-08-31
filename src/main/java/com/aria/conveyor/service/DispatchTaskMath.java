@@ -19,15 +19,15 @@ public final class DispatchTaskMath {
      * @param processedQty current processed quantity (before this scan)
      * @param incrementQty quantity this scan adds (normally 1, but not assumed)
      * @param targetQty    the task's target quantity
-     * @param currentStatus the task's status before this scan (only IN_PROGRESS tasks accept scans;
+     * @param currentStatus the task's status before this scan (only Open tasks accept scans;
      *                      callers are expected to have already checked this, but the math itself is
      *                      status-agnostic — it just says what the resulting status WOULD be)
-     * @return the new processed quantity and status ({@code COMPLETED} once processed >= target,
+     * @return the new processed quantity and status ({@code Completed} once processed >= target,
      *         otherwise unchanged)
      */
     public static Result apply(BigDecimal processedQty, BigDecimal incrementQty, BigDecimal targetQty, String currentStatus) {
         BigDecimal newQty = processedQty.add(incrementQty);
-        String newStatus = newQty.compareTo(targetQty) >= 0 ? "COMPLETED" : currentStatus;
+        String newStatus = newQty.compareTo(targetQty) >= 0 ? "Completed" : currentStatus;
         return new Result(newQty, newStatus);
     }
 }

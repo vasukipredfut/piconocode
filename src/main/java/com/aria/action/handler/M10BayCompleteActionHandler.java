@@ -37,6 +37,17 @@ import java.util.Map;
  * unchanged for the match to find it. The operator edits loading_qty inline
  * per SKU row, then Bay Complete submits the whole array at once.
  *
+ * <p>Also force-closes the conveyor {@code dispatch_task} row(s) {@link
+ * M10StartBayActionHandler} opened for this same (route_id, order_id,
+ * sku_code) — {@code status='Completed'} — regardless of whether the
+ * physical conveyor scanner ever drove {@code processed_qty} up to {@code
+ * target_qty} on its own (V270; see {@code CONVEYOR_SCANNER_WORKFLOW_GUIDE.md}
+ * §4.1). Matched the same NULL-safe way, scoped by {@code workflow_instance_id}
+ * rather than {@code bay_code} (this handler doesn't match on bay_name
+ * either — see above). Zero matching rows is not an error — a bay opened
+ * before this reconciliation existed, or without going through {@code
+ * m10.start-bay} at all, simply has no {@code dispatch_task} to close.
+ *
  * <p>quantity vs processed quantity (Bay 1 = 100 + Bay 2 = 200 + Bay 3 =
  * 500 assigned, vs however much actually gets processed) is tracked for
  * visibility on loading_progress_detail (V177) — it does not gate
@@ -223,6 +234,29 @@ public class M10BayCompleteActionHandler implements ActionHandler {
 
             log.info("action.bay-complete.bay-row-closed tenantId={} instanceId={} routeId={} skuCode={} processedQty={}",
                     tenantId, instanceId, routeId, skuCode, processedQty);
+
+            // Reconcile the conveyor dispatch_task M10StartBayActionHandler opened
+            // for this same route/order/SKU (see that handler's javadoc + §4.1 of
+            // CONVEYOR_SCANNER_WORKFLOW_GUIDE.md) -- Bay Complete is the operator
+            // closing the bay, independent of whether the conveyor scanner ever
+            // drove processed_qty up to target_qty on its own, so it force-closes
+            // the task rather than waiting for DispatchTaskService's scan-driven
+            // auto-complete. Matched the same NULL-safe way as the bay row above,
+            // by (workflow_instance_id, route_id, order_id, sku_code) -- not
+            // bay_code, matching this handler's own no-bay-name-matching convention
+            // (see class javadoc). A count of 0 is not an error: bays opened before
+            // this reconciliation existed, or a task closed/cancelled by another
+            // path, simply have nothing to close here.
+            int dispatchTasksClosed = jdbc.update(
+                    "UPDATE dispatch_task SET status = 'Completed', "
+                            + "completed_at = CASE WHEN completed_at IS NULL THEN CURRENT_TIMESTAMP ELSE completed_at END "
+                            + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
+                            + "((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'Open'",
+                    tenantId, instanceId, routeId, orderId, orderId, skuCode);
+            if (dispatchTasksClosed > 0) {
+                log.info("action.bay-complete.dispatch-task-closed tenantId={} instanceId={} routeId={} skuCode={} count={}",
+                        tenantId, instanceId, routeId, skuCode, dispatchTasksClosed);
+            }
 
             totalProcessed = totalProcessed.add(processedQty);
             Map<String, Object> row = new HashMap<>();

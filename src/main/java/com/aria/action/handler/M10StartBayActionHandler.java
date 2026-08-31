@@ -47,6 +47,23 @@ import java.util.stream.IntStream;
  * workflow_instance itself — the engine stays the sole state mutator
  * (ArchUnit Rule G).
  *
+ * <p>Also opens one conveyor {@code dispatch_task} row (V102/V269) per line
+ * item alongside its {@code loading_progress_detail_bay} row — this is what
+ * lets the barcode scanner covering this physical bay (see
+ * {@code CONVEYOR_SCANNER_WORKFLOW_GUIDE.md}) track/enforce this exact
+ * route/order/SKU target as scans come in. Written in the same loop and the
+ * same transaction as its {@code loading_progress_detail_bay} counterpart —
+ * NOT gated on whether the FSM actually transitioned below, since a
+ * second/third Start Bay in one multi-bay transaction still needs its own
+ * dispatch task even though no new transition fires for it (see the
+ * multi-bay-session note above). Stamped with {@link #CONVEYOR_WORKFLOW_CODE}
+ * (the conveyor line's own fixed workflow, not this instance's M10 business
+ * workflow code — see that constant's javadoc for why), and {@code type =
+ * 'Loading'} (V271) — this handler is the loading side only; M10's unload-bay
+ * handlers don't create dispatch_task rows at all yet. {@code rule_set_id}
+ * is left {@code NULL} here — attaching a real Rule Builder rule set for
+ * enforcement is a separate, not-yet-wired concern.
+ *
  * <p>A single transaction can span several bay sessions (Bay 1 with 2 SKUs
  * = 100, Bay 2 with 1 SKU = 200, ...). Only the FIRST bay needs an FSM
  * transition — by the second/third Start Bay the instance is already
@@ -89,6 +106,19 @@ import java.util.stream.IntStream;
  */
 @Component
 public class M10StartBayActionHandler implements ActionHandler {
+
+    /**
+     * The conveyor-line workflow code stamped onto every {@code dispatch_task}
+     * row this handler opens (see class javadoc) -- the physical conveyor
+     * scanner/PLC infrastructure's own workflow (a device polls
+     * {@code GET /api/scanner/workflows/M12.ConveyorTest?bayCode=...}), which
+     * is a fixed, separate thing from whichever M10 business workflow
+     * (M10.FGLoading, M10.TankerOutbound, ...) this instanceId belongs to.
+     * Not derived from workflow_instance.workflow_code -- a task stamped with
+     * the M10 workflow code would never be found by a device querying the
+     * M12 one.
+     */
+    private static final String CONVEYOR_WORKFLOW_CODE = "M12.ConveyorTest";
 
     /** Fixed set of 12 physical bays -- "Bay1".."Bay12" -- mirrored as a DB-level
      *  CHECK constraint on loading_progress_detail_bay.bay_name (V180). */
@@ -238,6 +268,22 @@ public class M10StartBayActionHandler implements ActionHandler {
                             + "(tenant_id, loading_progress_detail_id, workflow_instance_id, route_id, order_id, sku_code, sku_desc, bay_name, quantity, status) "
                             + "VALUES (?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
                     tenantId, parentId, instanceId, e.routeId, e.orderId, e.skuCode, e.skuDesc, bayName, e.quantity);
+
+            // One conveyor dispatch_task per SKU line, so the barcode scanner
+            // covering this physical bay (see CONVEYOR_SCANNER_WORKFLOW_GUIDE.md)
+            // can track/enforce this exact route/order/SKU target as scans come
+            // in. task_code is synthetic and must never repeat for this tenant
+            // (UNIQUE(tenant_id, task_code) forever, V102) -- instanceId never
+            // repeats, so instanceId+bay+sku+submit-time is enough even across a
+            // reload cycle re-opening the same bay/SKU for the same instance.
+            String taskCode = "DT-" + instanceId + "-" + bayName + "-" + e.skuCode + "-" + System.currentTimeMillis();
+            jdbc.update(
+                    "INSERT INTO dispatch_task "
+                            + "(tenant_id, workflow_code, type, workflow_instance_id, bay_code, route_id, order_id, task_code, "
+                            + "order_ref, sku_code, gp_number, target_qty, processed_qty, status) "
+                            + "VALUES (?,?,'Loading',?,?,?,?,?,?,?,?,?, 0, 'Open')",
+                    tenantId, CONVEYOR_WORKFLOW_CODE, instanceId, bayName, e.routeId, e.orderId, taskCode,
+                    e.orderId, e.skuCode, gatePassNo, e.quantity);
         }
 
         Map<String, Object> data = new HashMap<>();

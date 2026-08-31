@@ -250,6 +250,12 @@ class M10StartBayActionHandlerTest {
 
         // One loading_progress_detail_bay row per line item.
         verify(jdbc, times(2)).update(contains("INSERT INTO loading_progress_detail_bay"), any(Object[].class));
+        // ...and one conveyor dispatch_task row per line item too, carrying the
+        // same workflow_code/bay/route/order/sku/target_qty/gp_number.
+        verify(jdbc, times(2)).update(contains("INSERT INTO dispatch_task"), any(Object[].class));
+        verify(jdbc).update(contains("INSERT INTO dispatch_task"),
+                eq(1L), eq("M12.ConveyorTest"), eq(1495L), eq("Bay1"), eq("ROU028912"), isNull(),
+                anyString(), isNull(), eq("SKU1215"), eq("GP-1-1495"), eq(new BigDecimal("45")));
         // Parent rollup upserted once with the combined total (295). Matcher
         // is anchored with the opening "(" so it can't also match the
         // "_bay" child-table INSERT (which starts with the same prefix).

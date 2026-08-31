@@ -41,12 +41,12 @@ public class DispatchTaskService {
         return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
     }
 
-    /** Active (IN_PROGRESS) tasks for a bay — there can be several at once. */
+    /** Active (Open) tasks for a bay — there can be several at once. */
     public List<Map<String, Object>> listActiveForBay(String workflowCode, String bayCode) {
         long tenantId = TenantContext.get();
         return jdbc.queryForList(
                 "SELECT * FROM dispatch_task WHERE tenant_id = ? AND workflow_code = ? AND bay_code = ? "
-                        + "AND status = 'IN_PROGRESS' ORDER BY created_at",
+                        + "AND status = 'Open' ORDER BY created_at",
                 tenantId, workflowCode, bayCode);
     }
 
@@ -73,7 +73,7 @@ public class DispatchTaskService {
      * Row-locks the task, computes the new processed_qty/status (auto-completing
      * at target) via {@link DispatchTaskMath}, writes it, and logs an ACCEPTED
      * scan. Returns the updated task row, or empty if the task doesn't exist /
-     * isn't IN_PROGRESS for this tenant (no-op — the caller should treat that
+     * isn't Open for this tenant (no-op — the caller should treat that
      * as a scan against a task that can no longer accept).
      */
     @Transactional("psqlTransactionManager")
@@ -83,16 +83,16 @@ public class DispatchTaskService {
         long tenantId = TenantContext.get();
         List<Map<String, Object>> locked = jdbc.queryForList(
                 "SELECT processed_qty, target_qty FROM dispatch_task WHERE id = ? AND tenant_id = ? "
-                        + "AND status = 'IN_PROGRESS' FOR UPDATE",
+                        + "AND status = 'Open' FOR UPDATE",
                 taskId, tenantId);
         if (locked.isEmpty()) return Optional.empty();
         BigDecimal processedQty = (BigDecimal) locked.get(0).get("processed_qty");
         BigDecimal targetQty = (BigDecimal) locked.get(0).get("target_qty");
-        DispatchTaskMath.Result result = DispatchTaskMath.apply(processedQty, incrementQty, targetQty, "IN_PROGRESS");
+        DispatchTaskMath.Result result = DispatchTaskMath.apply(processedQty, incrementQty, targetQty, "Open");
 
-        if ("COMPLETED".equals(result.newStatus())) {
+        if ("Completed".equals(result.newStatus())) {
             jdbc.update(
-                    "UPDATE dispatch_task SET processed_qty = ?, status = 'COMPLETED', "
+                    "UPDATE dispatch_task SET processed_qty = ?, status = 'Completed', "
                             + "completed_at = CASE WHEN completed_at IS NULL THEN CURRENT_TIMESTAMP ELSE completed_at END "
                             + "WHERE id = ? AND tenant_id = ?",
                     result.newProcessedQty(), taskId, tenantId);
@@ -120,11 +120,11 @@ public class DispatchTaskService {
                 tenantId, taskId, barcode, rejectReason, integrationId);
     }
 
-    /** Moves a PENDING task to IN_PROGRESS. No-op if it's already past PENDING. */
+    /** Moves a PENDING task to Open. No-op if it's already past PENDING. */
     public void start(Long taskId) {
         long tenantId = TenantContext.get();
         jdbc.update(
-                "UPDATE dispatch_task SET status = 'IN_PROGRESS', started_at = CURRENT_TIMESTAMP "
+                "UPDATE dispatch_task SET status = 'Open', started_at = CURRENT_TIMESTAMP "
                         + "WHERE id = ? AND tenant_id = ? AND status = 'PENDING'",
                 taskId, tenantId);
     }

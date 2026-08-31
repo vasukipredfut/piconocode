@@ -142,6 +142,28 @@ class M10BayCompleteActionHandlerTest {
                         + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
                         + "((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'IN_PROGRESS'"),
                 eq(new BigDecimal("45")), isNull(), eq(1L), eq(1495L), eq("ROU028912"), isNull(), isNull(), eq("SKU1215"));
+        // Also force-closes the matching conveyor dispatch_task, if one exists.
+        verify(jdbc).update(
+                eq("UPDATE dispatch_task SET status = 'Completed', "
+                        + "completed_at = CASE WHEN completed_at IS NULL THEN CURRENT_TIMESTAMP ELSE completed_at END "
+                        + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
+                        + "((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'Open'"),
+                eq(1L), eq(1495L), eq("ROU028912"), isNull(), isNull(), eq("SKU1215"));
+        verify(jdbc).update(startsWith("UPDATE loading_progress_detail SET processed_quantity"),
+                eq(new BigDecimal("45")), eq(1L), eq(1495L));
+    }
+
+    @Test
+    void noMatchingDispatchTask_stillSucceeds() {
+        // Bay opened before dispatch_task reconciliation existed, or never went
+        // through m10.start-bay at all -- zero matching dispatch_task rows is
+        // not an error, the bay row itself still closes fine.
+        when(jdbc.update(startsWith("UPDATE loading_progress_detail_bay"), any(Object[].class))).thenReturn(1);
+        when(jdbc.update(startsWith("UPDATE dispatch_task"), any(Object[].class))).thenReturn(0);
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(line("ROU028912", "SKU1215", 45))));
+
+        assertThat(r.isOk()).isTrue();
         verify(jdbc).update(startsWith("UPDATE loading_progress_detail SET processed_quantity"),
                 eq(new BigDecimal("45")), eq(1L), eq(1495L));
     }
