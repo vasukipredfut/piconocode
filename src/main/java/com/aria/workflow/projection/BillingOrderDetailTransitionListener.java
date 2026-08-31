@@ -162,6 +162,12 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
                             + "LEFT JOIN loading_progress_detail_bay lpb ON lpb.tenant_id = odd.tenant_id "
                             + "AND lpb.workflow_instance_id = ? "
                             + "AND lpb.sku_code = odd.sku_code COLLATE utf8mb4_general_ci "
+                            // order_id (V252) scopes the match to THIS order line -- without it, a vehicle
+                            // carrying two orders that share a SKU would double-count: every bay row for
+                            // that SKU on this instance would sum into BOTH orders' lines. NULL-safe (same
+                            // idiom as M10BayCompleteActionHandler:215) so bay rows opened before V252
+                            // (order_id NULL) still match a line whose order_id is also NULL.
+                            + "AND ((lpb.order_id IS NULL AND odd.order_id IS NULL) OR lpb.order_id = odd.order_id) "
                             + "WHERE odd.tenant_id = ? AND odd.vehicle_no = ? AND odd.assign_qty >= 1 "
                             + "GROUP BY odd.id, odd.order_id, odd.sku_code, odd.rd_code, odd.rd_desc, "
                             + "odd.sku_desc, odd.order_rate, sm.gst_rate_pct, odd.line_dispatch_qty, odd.assign_qty",
@@ -191,11 +197,16 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
                                 + "gst_rate_pct, tax_amount, net_rate, billed_qty) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                                 + "ON DUPLICATE KEY UPDATE rd_code = VALUES(rd_code), rd_desc = VALUES(rd_desc), "
                                 + "sku_desc = VALUES(sku_desc), order_qty = VALUES(order_qty), "
-                                // Only fills loading_qty when the skip-allocation write (above) never touched
-                                // this line (still at its table default of 0) -- a fully-loaded SKU never
-                                // appears in loaded_sku_details, so this is the only writer for it. A SKU the
-                                // skip path DID already set keeps its operator-submitted value untouched.
-                                + "loading_qty = COALESCE(NULLIF(loading_qty, 0), VALUES(loading_qty)), "
+                                // Takes the larger of the stored value and this recompute rather than only
+                                // filling in when still at the table default of 0 (V192/V253's original
+                                // guard) -- that froze loading_qty at whatever the skip-allocation write set
+                                // on the FIRST loading pass, so a LOAD_AGAIN reload (a second, cumulative
+                                // loading_progress_detail_bay session on the same instance/SKU) never grew it
+                                // past that first-pass figure even though the SUM(processed_quantity) behind
+                                // billed_qty on this very row correctly recomputed to the true, larger total.
+                                // GREATEST keeps that same accumulation for loading_qty instead of leaving it
+                                // stale, while still never overwriting it with something smaller.
+                                + "loading_qty = GREATEST(loading_qty, VALUES(loading_qty)), "
                                 + "order_rate = VALUES(order_rate), "
                                 + "gst_rate_pct = VALUES(gst_rate_pct), tax_amount = VALUES(tax_amount), "
                                 + "net_rate = VALUES(net_rate), billed_qty = VALUES(billed_qty), "

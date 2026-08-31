@@ -18,8 +18,11 @@ import java.util.Map;
  * silently there) or, worse, no rejection at all.
  *
  * <p>Not scoped to a specific workflow_code or state — it only activates
- * when the submitted page actually carries a non-blank sealing_no, which
- * today is only aria:sealing-process.
+ * when the submitted page actually carries a non-blank sealing_no. That's
+ * aria:sealing-process (sealing_process_detail) and, since V248,
+ * aria:weighment-capture's "Reading" section (weighment_capture_detail) —
+ * both tables are checked so a seal recorded on one page can't be reused on
+ * the other.
  */
 @Component
 public class SealingNoUniquenessValidator implements WorkflowTransitionValidator {
@@ -38,9 +41,12 @@ public class SealingNoUniquenessValidator implements WorkflowTransitionValidator
 
         Long tenantId = TenantContext.get();
         Integer count = jdbc.queryForObject(
-                "SELECT COUNT(*) FROM sealing_process_detail " +
-                        "WHERE tenant_id=? AND sealing_no=? AND workflow_instance_id<>?",
-                Integer.class, tenantId, sealingNo, instance.getId());
+                "SELECT " +
+                        "(SELECT COUNT(*) FROM sealing_process_detail WHERE tenant_id=? AND sealing_no=? AND workflow_instance_id<>?) + " +
+                        "(SELECT COUNT(*) FROM weighment_capture_detail WHERE tenant_id=? AND sealing_no=? AND workflow_instance_id<>?)",
+                Integer.class,
+                tenantId, sealingNo, instance.getId(),
+                tenantId, sealingNo, instance.getId());
         if (count != null && count > 0) {
             throw new WorkflowValidationException(
                     "Seal number '" + sealingNo + "' is already recorded against another gate pass");
