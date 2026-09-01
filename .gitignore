@@ -45,3 +45,7 @@ bin/
 *.iml
 RemoteSystemsTempFiles/
 app.log
+
+# DB dumps -- contain real server/production data, never commit
+src/main/resources/db/bootstrap/backups/
+dump_err*.log
