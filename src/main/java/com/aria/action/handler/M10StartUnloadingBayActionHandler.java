@@ -32,13 +32,20 @@ import java.util.stream.IntStream;
  * convention as the loading side. {@code m10.unloading-bay-complete} closes
  * these rows and posts the RECEIPT stock movement.
  *
- * <p>Payload shape mirrors {@link M10StartBayActionHandler}, with
- * {@code unloading_qty} (falls back to {@code quantity}) per line:
+ * <p>Payload shape mirrors {@link M10StartUnloadBayActionHandler}, with two
+ * distinct quantity keys per line: {@code quantity} (required, &gt;= 0) is the
+ * planned amount, stored on {@code unloading_progress_detail_bay.quantity} and
+ * rolled into {@code unloading_progress_detail.total_quantity}; {@code unloading_qty}
+ * (optional, &gt;= 0 if given) is stored directly onto that same row's
+ * {@code processed_quantity} column right away, at Start Bay time — it does
+ * NOT roll into the parent's {@code processed_quantity} yet (that happens at
+ * Bay Complete) and Unload Bay Complete still overwrites the row's
+ * {@code processed_quantity} with whatever it's given when the row closes.
  * <pre>
  *   { "instanceId": 1495, "formData": {
  *       "vehicle_no": "TN86J8070", "gpNumber": "GP-1-1495", "bay_name": "Bay1",
  *       "order_sku_line_items": [
- *         { "route_id": "ROU028912", "order_id": "ORD1123", "sku_code": "SKU1215", "sku_desc": "GROUNDNUT RAW OIL 15 KG TIN", "unloading_qty": 20 }
+ *         { "route_id": "ROU028912", "order_id": "ORD1123", "sku_code": "SKU1215", "sku_desc": "GROUNDNUT RAW OIL 15 KG TIN", "quantity": 20, "unloading_qty": 0 }
  *       ] } }
  * </pre>
  */
@@ -93,15 +100,30 @@ public class M10StartUnloadingBayActionHandler implements ActionHandler {
             }
             BigDecimal qty;
             try {
-                Object qtyObj = line.get("unloading_qty") != null ? line.get("unloading_qty") : line.get("quantity");
+                Object qtyObj = line.get("quantity");
                 qty = qtyObj == null ? null : new BigDecimal(qtyObj.toString());
+            } catch (NumberFormatException e) {
+                return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") quantity must be a number");
+            }
+            if (qty == null || qty.signum() < 0) {
+                return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") needs quantity >= 0");
+            }
+
+            // Distinct from `quantity` above -- optional, stored straight onto
+            // processed_quantity at Start Bay time (see class javadoc); Unload
+            // Bay Complete still overwrites it with whatever it's given then.
+            BigDecimal unloadingQty;
+            try {
+                Object unloadingQtyObj = line.get("unloading_qty");
+                unloadingQty = unloadingQtyObj == null ? null : new BigDecimal(unloadingQtyObj.toString());
             } catch (NumberFormatException e) {
                 return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") unloading_qty must be a number");
             }
-            if (qty == null || qty.signum() <= 0) {
-                return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") needs unloading_qty > 0");
+            if (unloadingQty != null && unloadingQty.signum() < 0) {
+                return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") needs unloading_qty >= 0");
             }
-            parsed.add(new LineEntry(routeId, strOpt(line, "order_id"), skuCode, strOpt(line, "sku_desc"), qty));
+
+            parsed.add(new LineEntry(routeId, strOpt(line, "order_id"), skuCode, strOpt(line, "sku_desc"), qty, unloadingQty));
             totalQty = totalQty.add(qty);
         }
 
@@ -142,9 +164,9 @@ public class M10StartUnloadingBayActionHandler implements ActionHandler {
         for (LineEntry e : parsed) {
             jdbc.update(
                     "INSERT INTO unloading_progress_detail_bay "
-                            + "(tenant_id, unloading_progress_detail_id, workflow_instance_id, route_id, order_id, sku_code, sku_desc, bay_name, quantity, status) "
-                            + "VALUES (?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
-                    tenantId, parentId, instanceId, e.routeId, e.orderId, e.skuCode, e.skuDesc, bayName, e.quantity);
+                            + "(tenant_id, unloading_progress_detail_id, workflow_instance_id, route_id, order_id, sku_code, sku_desc, bay_name, quantity, processed_quantity, status) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
+                    tenantId, parentId, instanceId, e.routeId, e.orderId, e.skuCode, e.skuDesc, bayName, e.quantity, e.unloadingQty);
         }
 
         Map<String, Object> data = new HashMap<>();
@@ -170,5 +192,5 @@ public class M10StartUnloadingBayActionHandler implements ActionHandler {
         return v == null ? null : v.toString();
     }
 
-    private record LineEntry(String routeId, String orderId, String skuCode, String skuDesc, BigDecimal quantity) {}
+    private record LineEntry(String routeId, String orderId, String skuCode, String skuDesc, BigDecimal quantity, BigDecimal unloadingQty) {}
 }
