@@ -11,7 +11,6 @@ import org.springframework.core.annotation.Order;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
-import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.*;
@@ -239,25 +238,20 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
                     if (v != null) cols.put(ident("qc_decision"), v);
                     continue;
                 }
-                // time_taken (V265): the UI computes elapsed minutes for a step
-                // client-side and submits it under this exact literal name on
-                // EVERY page that projects through this listener -- same
-                // cross-page-collision risk as queue_reason/qc_decision above,
-                // so this needs the page-scoped lookup too, not the generic
-                // cross-page fallback. Parsed to BigDecimal explicitly (rather
-                // than left as the pluck()/pluckScoped() String) since the
-                // target column is DECIMAL(10,2) -- a non-numeric submission
-                // is silently skipped rather than failing the whole transition.
+                // time_taken (V265, column type fixed in V270): the UI submits an
+                // HH:MM:SS elapsed-duration string (e.g. "00:01:12") under this
+                // exact literal name on EVERY page that projects through this
+                // listener -- same cross-page-collision risk as queue_reason/
+                // qc_decision above, so this needs the page-scoped lookup too,
+                // not the generic cross-page fallback. Saved verbatim (column is
+                // TIME, which stores/round-trips "HH:MM:SS" as given) rather than
+                // reinterpreted into a decimal minute count -- V265's original
+                // new BigDecimal(v) parse threw on this exact string and silently
+                // dropped the column.
                 if ("time_taken".equals(e.getKey())) {
                     List<String> keys = (List<String>) e.getValue();
                     String v = pluckScoped(bag, keys, triggeringPageCode);
-                    if (v != null) {
-                        try {
-                            cols.put(ident("time_taken"), new BigDecimal(v.trim()));
-                        } catch (NumberFormatException ignored) {
-                            // non-numeric time_taken -- skip this column, don't fail the transition
-                        }
-                    }
+                    if (v != null) cols.put(ident("time_taken"), v);
                     continue;
                 }
                 // oil_rm_item on dispatch_vehicle_detail (V237): aria:dispatch-
