@@ -13,7 +13,10 @@ WebSecurityConfig's "/api/scanner/workflows/**" / "/api/conveyor/**" entries.
 Flow:
   1. GET  /api/scanner/workflows/{workflowId}      -> integration bindings, rule sets, dispatch tasks
   2. loop: read barcode (network scanner over TCP, or stdin if unconfigured)
-           -> local qty pre-check -> POST /api/conveyor/scan -> ACCEPT/REJECT
+           -> GET /api/conveyor/skumaster?barcode=       -> resolve SKU (local reject if unknown/inactive)
+           -> GET /api/conveyor/dispatchdetails?...      -> fetch the live Open task for this SKU/bay
+           -> local qty pre-check against that live task
+           -> POST /api/conveyor/scan -> ACCEPT/REJECT
   3. background thread: POST /api/conveyor/heartbeat every HEARTBEAT_INTERVAL_S
 
 Barcode transport: set config.json's "scannerIp"/"scannerPort" to read from a
@@ -34,12 +37,30 @@ Each process gets its own rotating log file too (named after its config
 file's stem) so two processes never interleave writes into the same file —
 see resolve_paths().
 
-Step 2's local pre-check (see ConveyorClient.check_qty_limit) compares the
-scan's quantity against the tracked dispatch task's remaining allowed
-quantity (target_qty - processed_qty) BEFORE calling the backend at all. If
-the scan would exceed it, the scan is rejected locally and never sent over
-the network — this is purely a fast-fail on the device; the backend's own
-QTY_OK rule (if configured on the task's rule set) is the authoritative check.
+Step 2's SKU resolution (see ConveyorClient.resolve_sku) calls
+GET /api/conveyor/skumaster?barcode= BEFORE ever touching a Dispatch Task —
+an unrecognized or inactive barcode is rejected locally right there, no
+further backend call at all. This is the same barcode->SKU lookup
+POST /api/conveyor/scan itself runs server-side as its own authoritative
+check (com.aria.conveyor.service.SkuMasterLookupService).
+
+Once a SKU is resolved, ConveyorClient.fetch_dispatch_details calls
+GET /api/conveyor/dispatchdetails?workflowCode=&bayCode=&skuCode=&status=Open
+to fetch that SKU's current Open task LIVE (workflowCode/bayCode/skuCode
+identify it; status=Open is the only status a scan can ever target) — not
+from the snapshot cached at the last fetch_workflow_config, so the qty
+pre-check below always sees up-to-date target_qty/processed_qty even if
+another device or process changed the task since then.
+
+The qty pre-check itself (see ConveyorClient.check_qty_limit) compares the
+scan's quantity against that live task's remaining allowed quantity
+(target_qty - processed_qty). If the scan would exceed it, the scan is
+rejected locally and never sent to /api/conveyor/scan — this is purely a
+fast-fail on the device; the backend's own QTY_OK rule (if configured on the
+task's rule set) is the authoritative check. Net cost: every scan now makes
+THREE backend round-trips (skumaster, dispatchdetails, scan) instead of one,
+in exchange for the local pre-check always working per-SKU off live data
+instead of a cached snapshot.
 
 Requires: pip install requests
 """
@@ -54,6 +75,7 @@ import time
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from urllib.parse import quote
 
 import requests
 
@@ -135,28 +157,28 @@ class ConveyorClient:
         self._current_dispatch_task_id = None
         self._integration_health = {}
         self._stop_event = threading.Event()
-        self._active_task = None  # {"id", "target_qty", "processed_qty"} Decimals; None = untracked/ambiguous
+        self._open_tasks_by_sku = {}  # sku_code -> {"id", "target_qty", "processed_qty"} Decimals
 
-    # ---- local qty pre-check -----------------------------------------------
+    # ---- SKU resolution + local qty pre-check --------------------------------
 
     def track_tasks_from_workflow(self, workflow):
         """
-        Call once after fetch_workflow_config (and again after any re-sync) to
-        seed the local view of this bay's active dispatch task, so scans can be
-        qty-checked before ever hitting the network. Only tracks when exactly
-        one Open task exists for this bay — with several concurrent
-        tasks on one bay, which task a scan belongs to isn't known until the
-        backend resolves it, so the local pre-check is skipped (deferred to
-        the backend) rather than guessed at.
+        Call once after fetch_workflow_config (and again after any re-sync) --
+        startup/diagnostic visibility only (has_tracked_task's warning in
+        run()) as of the switch to fetch_dispatch_details: submit_scan() now
+        fetches each scan's task LIVE per-SKU right before qty-checking it
+        (see fetch_dispatch_details), rather than consulting this snapshot,
+        so it always sees up-to-date target_qty/processed_qty even if another
+        device or process changed the task since this fetch.
         """
-        candidates = [
-            t for t in workflow.get("dispatchTasks", [])
-            if t.get("bay_code") == self.bay_code and t.get("status") == "Open"
-        ]
-        self._active_task = self._to_local_task(candidates[0]) if len(candidates) == 1 else None
+        self._open_tasks_by_sku = {
+            t["sku_code"]: self._to_local_task(t)
+            for t in workflow.get("dispatchTasks", [])
+            if t.get("bay_code") == self.bay_code and t.get("status") == "Open" and t.get("sku_code")
+        }
 
     def has_tracked_task(self):
-        return self._active_task is not None
+        return bool(self._open_tasks_by_sku)
 
     @staticmethod
     def _to_local_task(task):
@@ -166,21 +188,65 @@ class ConveyorClient:
             "processed_qty": Decimal(str(task["processed_qty"])),
         }
 
-    def check_qty_limit(self, qty):
+    def resolve_sku(self, barcode):
+        """
+        GET /api/conveyor/skumaster?barcode= -- the same barcode->SKU lookup
+        POST /api/conveyor/scan runs server-side as its own authoritative
+        check (com.aria.conveyor.service.SkuMasterLookupService), called here
+        too so the qty pre-check below can target the right task. Returns
+        (sku_code, None) on a resolved, active SKU, or (None, reason) with
+        reason in {"UNKNOWN_BARCODE", "SKU_INACTIVE"} -- the caller
+        local-rejects on either, without ever calling /api/conveyor/scan.
+        """
+        resp = self._request("GET", f"/api/conveyor/skumaster?barcode={quote(barcode, safe='')}")
+        resp.raise_for_status()
+        data = resp.json()
+        if not data.get("found"):
+            return None, "UNKNOWN_BARCODE"
+        if str(data.get("status", "")).upper() != "ACTIVE":
+            return None, "SKU_INACTIVE"
+        log.info("resolved barcode=%s -> sku=%s (%s) boxQty=%s",
+                  barcode, data["skuCode"], data.get("skuDescription"), data.get("boxQty"))
+        return data["skuCode"], None
+
+    def fetch_dispatch_details(self, sku_code):
+        """
+        GET /api/conveyor/dispatchdetails?workflowCode=&bayCode=&skuCode=&status=Open --
+        the live Open task for this SKU on this bay, fetched fresh on every
+        scan (workflowCode/bayCode identify the line/bay same as everywhere
+        else; skuCode narrows to this one SKU; status=Open is the only
+        status a scan can ever target). Returns the local task dict (see
+        _to_local_task), or None if no Open task matches -- not an error,
+        just means the qty pre-check below is a no-op and the backend is the
+        fallback authority for task resolution too.
+        """
+        path = (
+            f"/api/conveyor/dispatchdetails?workflowCode={quote(self.workflow_code, safe='')}"
+            f"&bayCode={quote(self.bay_code, safe='')}&skuCode={quote(sku_code, safe='')}&status=Open"
+        )
+        resp = self._request("GET", path)
+        resp.raise_for_status()
+        data = resp.json()
+        if not data.get("found"):
+            return None
+        return self._to_local_task(data["dispatchTask"])
+
+    def check_qty_limit(self, task, qty):
         """
         Returns (ok, error_message). ok=False means: do NOT call the backend
         for this scan — the scanned quantity would push the tracked task's
-        processed_qty past its target_qty. Always ok=True when no single
-        active task is tracked for this bay (untracked/ambiguous — the
-        backend is the fallback authority in that case).
+        processed_qty past its target_qty. Always ok=True when no Open task
+        is tracked locally for this SKU (untracked — the backend is the
+        fallback authority in that case, e.g. immediately after this SKU's
+        task auto-completes and a re-sync hasn't happened yet).
         """
-        if self._active_task is None:
+        if task is None:
             return True, None
-        remaining = self._active_task["target_qty"] - self._active_task["processed_qty"]
+        remaining = task["target_qty"] - task["processed_qty"]
         if qty > remaining:
             return False, (
                 f"scan qty {qty} exceeds remaining allowed qty {remaining} "
-                f"(target={self._active_task['target_qty']}, processed={self._active_task['processed_qty']})"
+                f"(target={task['target_qty']}, processed={task['processed_qty']})"
             )
         return True, None
 
@@ -223,9 +289,42 @@ class ConveyorClient:
         resp.raise_for_status()
         return resp.json()
 
-    def submit_scan(self, barcode, task_id=None, sku=None, order_ref=None, qty=None):
+    def submit_scan(self, barcode, task_id=None, order_ref=None, qty=None):
+        """
+        Three local (device-side) steps before ever calling
+        POST /api/conveyor/scan:
+
+          1. resolve_sku(barcode) -- an unrecognized or inactive barcode is
+             rejected right here, no further backend call at all.
+          2. fetch_dispatch_details(resolved_sku) -- the live Open task for
+             this SKU/bay, fetched fresh (not a cached snapshot).
+          3. check_qty_limit against that live task -- a scan that would
+             exceed its remaining qty is rejected right here too.
+
+        On a resolved SKU, the matching task's id (if any) is forwarded as an
+        explicit taskId, so the backend never has to guess which task a scan
+        on a multi-task bay belongs to -- no explicit sku field is ever sent;
+        the backend re-resolves it from barcode itself as its own
+        authoritative check regardless (com.aria.conveyor.service.
+        SkuMasterLookupService) — see CONVEYOR_SCANNER_WORKFLOW_GUIDE.md
+        section 3.2 for the full contract.
+        """
+        resolved_sku, local_reject_reason = self.resolve_sku(barcode)
+        if resolved_sku is None:
+            log.error("LOCAL REJECT barcode=%s: %s (not sent to backend)", barcode, local_reject_reason)
+            return {
+                "outcome": "REJECT",
+                "reason": local_reject_reason,
+                "dispatchTask": None,
+                "plcSignalOk": None,
+                "sentToBackend": False,
+            }
+
+        task = self.fetch_dispatch_details(resolved_sku)
+        effective_task_id = task_id if task_id is not None else (task["id"] if task else None)
+
         effective_qty = Decimal("1") if qty is None else Decimal(str(qty))
-        ok, error_message = self.check_qty_limit(effective_qty)
+        ok, error_message = self.check_qty_limit(task, effective_qty)
         if not ok:
             log.error("LOCAL REJECT barcode=%s: %s (not sent to backend)", barcode, error_message)
             return {
@@ -241,9 +340,8 @@ class ConveyorClient:
             "stepCode": self.step_code,
             "bayCode": self.bay_code,
             "barcode": barcode,
-            "taskId": task_id,
+            "taskId": effective_task_id,
             "scannerIntegrationId": self.scanner_integration_id,
-            "sku": sku,
             "orderRef": order_ref,
             "qty": qty,
         }
@@ -255,8 +353,15 @@ class ConveyorClient:
         dispatch_task = result.get("dispatchTask")
         if dispatch_task:
             self._current_dispatch_task_id = dispatch_task.get("id")
-            if self._active_task is not None and dispatch_task.get("id") == self._active_task["id"]:
-                self._active_task = self._to_local_task(dispatch_task)
+            sku_code = dispatch_task.get("sku_code")
+            if sku_code:
+                if dispatch_task.get("status") == "Open":
+                    self._open_tasks_by_sku[sku_code] = self._to_local_task(dispatch_task)
+                else:
+                    # Auto-completed (or otherwise no longer Open) -- stop
+                    # tracking it locally so a stale zero-remaining entry
+                    # doesn't linger for this SKU.
+                    self._open_tasks_by_sku.pop(sku_code, None)
         return result
 
     def send_heartbeat(self, workflow_status="RUNNING", device_status="ONLINE"):
@@ -391,8 +496,9 @@ def run(config):
     client.track_tasks_from_workflow(workflow)
     if not client.has_tracked_task():
         log.warning(
-            "no single Open task tracked for bay '%s' — local qty pre-check is disabled "
-            "until exactly one active task exists for this bay", client.bay_code,
+            "no Open dispatch task found for bay '%s' at startup — every scan's "
+            "fetch_dispatch_details will re-check this live, so this is just a heads-up, "
+            "not a disabled feature", client.bay_code,
         )
 
     client.start_heartbeat_loop()

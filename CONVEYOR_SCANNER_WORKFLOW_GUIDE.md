@@ -54,7 +54,7 @@ sequenceDiagram
 
 1. **Fetch config** — Pi calls `GET /api/scanner/workflows/{workflowId}?bayCode={bayCode}` once (and again whenever it needs to re-sync) to learn which Integration IDs handle which role at which step, its loading bay, the rule sets in force, and its current dispatch task(s) — scoped to its own bay.
 2. **Read barcode** — via the Integration ID bound to role `BARCODE_SCANNER` for the current step/bay.
-3. **Local qty pre-check** — before calling the backend at all, the Pi compares the scan's quantity against its locally-tracked dispatch task's remaining quantity (`target_qty - processed_qty`); see §3.4. If it would be exceeded, the scan is rejected on the device and never sent over the network.
+3. **Resolve SKU + local qty pre-check** — before calling `/api/conveyor/scan`, the Pi resolves the barcode's SKU (`GET /api/conveyor/skumaster`), fetches that SKU's live task (`GET /api/conveyor/dispatchdetails`), and compares the scan's quantity against its remaining quantity (`target_qty - processed_qty`); see §3.6. Any check failing rejects the scan on the device and never sends it over the network.
 4. **Submit scan** — `POST /api/conveyor/scan`. The backend, not the device, evaluates every rule — the device never runs rule logic.
 5. **Accept** → dispatch task's `processed_qty` increments (auto-completing at `target_qty`), PLC gets `signalAccept`.
 6. **Reject** → PLC gets `signalReject`, reason recorded.
@@ -131,10 +131,31 @@ Optional query param **`?bayCode=BAY1`** scopes `integrations`, `plcIntegrations
 | `bayCode` | yes | Which bay this scan happened at — used to resolve the active Dispatch Task and the PLC binding. |
 | `barcode` | yes | The raw scanned value. |
 | `stepCode` | recommended | Used to resolve the `PLC` integration binding for THIS step (a line can use a different PLC at different steps). |
-| `taskId` | optional | Force a specific Dispatch Task. If omitted, the bay's single active task is used automatically; if several tasks are concurrently active on the bay, the one whose `sku`/`orderRef` matches wins. |
+| `taskId` | optional | Force a specific Dispatch Task. If omitted, the bay's single active task is used automatically; if several tasks are concurrently active on the bay, the one whose **resolved** SKU (see below)/`orderRef` matches wins. |
 | `scannerIntegrationId` | optional | Recorded on the scan log for traceability. |
-| `sku`, `orderRef` | optional | Whatever the label/scan actually encodes — fed into Rule Builder evaluation and, on accept, stamped onto the scan log. |
-| `qty` | optional | Defaults to `1`. Supports multi-unit scans (e.g. a case barcode worth 12 units). Checked client-side against the tracked task's remaining qty before this request is even sent — see §3.4. |
+| `sku` | **ignored** | Not read anywhere — see the SKU resolution note below. Still accepted on the wire (older clients may still send it) but has no effect. |
+| `orderRef` | optional | Whatever the label/scan actually encodes — fed into Rule Builder evaluation and, on accept, stamped onto the scan log. |
+| `qty` | optional | Defaults to `1`. Supports multi-unit scans (e.g. a case barcode worth 12 units). Checked client-side against the tracked task's remaining qty before this request is even sent — see §3.6. |
+
+**SKU resolution (server-side, never trusted from the device):** before any Dispatch Task
+lookup or Rule Builder evaluation, the backend resolves the *authoritative* SKU by looking
+up `barcode` against `m5_sku_master` — `WHERE tenant_id = ? AND (barcode = ? OR sku_code = ?)`
+(matches either column, since some scanner configurations emit the SKU code directly rather
+than the printed barcode; ties broken by `id` — `barcode` isn't a unique key). This resolved
+SKU, not the request's own `sku` field, is what `scannedSku` in the Rule Builder context
+(§5) and `matched_sku` in `dispatch_task_scan_log` actually are. Two REJECT outcomes happen
+here, before a Dispatch Task is even looked up:
+```json
+{ "outcome": "REJECT", "reason": "UNKNOWN_BARCODE", "dispatchTask": null, "plcSignalOk": null }
+```
+```json
+{ "outcome": "REJECT", "reason": "SKU_INACTIVE", "dispatchTask": null, "plcSignalOk": null }
+```
+`UNKNOWN_BARCODE` — no `m5_sku_master` row matches at all. `SKU_INACTIVE` — a row matched but
+its `status` isn't `ACTIVE` (discontinued/blocked). Same convention as the older
+`ConveyorAgentController`'s equivalent lookup (`com.aria.integration.conveyor`) — a different
+system, but the same physical problem (a barcode that isn't a known, active SKU should never
+reach rule evaluation).
 
 **Response — ACCEPT** (verified live):
 ```json
@@ -184,20 +205,88 @@ Send roughly every 5 seconds. `(workflowCode, deviceId)` is the upsert key. A de
 
 **Response:** `{"ok": true}`
 
-### 3.4 Client-side quantity pre-check (device, not backend)
+### 3.4 `GET /api/conveyor/skumaster?barcode=...`
 
-Before the Pi ever calls `POST /api/conveyor/scan`, `ConveyorClient` (in `raspberry-pi-client/conveyor_client.py`) runs a local check:
+Tokenless (same `/api/conveyor/**` permit-all convention). Lets the device resolve a scanned
+barcode to its SKU **before** deciding whether to even call `/api/conveyor/scan` — the same
+resolution `POST /api/conveyor/scan` runs server-side as its own authoritative check
+(`SkuMasterLookupService`, §3.2), exposed here for the device's own local pre-check (§3.6) to
+use. Matches on either `barcode` or `sku_code` on `m5_sku_master`, same as the server-side
+check.
 
-1. After fetching workflow config (and any re-sync), `track_tasks_from_workflow()` looks for exactly one `Open` `dispatch_task` on the device's `bayCode` and caches its `target_qty`/`processed_qty`. If a bay has zero or several concurrently-active tasks, nothing is tracked — the pre-check is skipped entirely and every scan for that bay goes straight to the backend (the backend is the only authority in that case, since the device can't know in advance which task an ambiguous scan will resolve to).
-2. On every scan, `check_qty_limit(qty)` compares the scan's quantity (default `1`) against the tracked task's remaining quantity (`target_qty - processed_qty`).
-3. If the scan would exceed it, `submit_scan()` returns immediately **without making any HTTP call**:
+**Response — found, active:**
+```json
+{"found": true, "skuCode": "SKU1463", "skuDescription": "...", "boxQty": 12, "status": "ACTIVE"}
+```
+**Response — found, inactive:**
+```json
+{"found": true, "skuCode": "SKU9999", "skuDescription": "...", "boxQty": 12, "status": "DISCONTINUED"}
+```
+**Response — no match:** `{"found": false}`
+
+`skuDescription` (`m5_sku_master.sku_name`) and `boxQty` (`m5_sku_master.pack_pieces_per_case`
+— pieces per case/box) are display/logging fields only — neither is read anywhere in the
+scan/rule-evaluation flow itself, same tier as `dispatch_task.vehicle_no`.
+
+Always `200` — no 404, matching this endpoint family's convention of structured outcomes
+rather than HTTP error codes for business-level "not found."
+
+### 3.5 `GET /api/conveyor/dispatchdetails?workflowCode=&bayCode=&skuCode=&status=Open`
+
+Tokenless (same `/api/conveyor/**` permit-all convention). Fetches the ONE `dispatch_task`
+matching all four filters, **live** — not from the aggregate `GET /api/scanner/workflows/{id}`
+snapshot cached at the last (re-)sync. `status` defaults to `Open` if omitted (the only status
+a scan can ever target). Called by the device after §3.4 resolves a barcode's SKU, so its local
+qty pre-check (§3.6) always sees up-to-date `target_qty`/`processed_qty`, even if another
+device or process changed the task since the last workflow-config fetch.
+
+**Response — found:**
+```json
+{ "found": true, "dispatchTask": { "id": 3, "target_qty": 5.000, "processed_qty": 2.000, "status": "Open", "...": "..." } }
+```
+**Response — no match:** `{"found": false}` — not an error; means no `Open` task exists for
+this exact `(workflowCode, bayCode, skuCode)` right now.
+
+Always `200`, same "structured outcome, not HTTP error code" convention as §3.4.
+
+### 3.6 Client-side SKU resolution + quantity pre-check (device, not backend)
+
+Before the Pi ever calls `POST /api/conveyor/scan`, `ConveyorClient` (in
+`raspberry-pi-client/conveyor_client.py`) runs two local checks:
+
+1. **SKU resolution** — `resolve_sku(barcode)` calls §3.4. `found: false` or a non-`ACTIVE`
+   status rejects immediately, **without making any further backend call**:
+   ```json
+   { "outcome": "REJECT", "reason": "UNKNOWN_BARCODE", "dispatchTask": null, "plcSignalOk": null, "sentToBackend": false }
+   ```
+   (or `"reason": "SKU_INACTIVE"`) — mirrors the server-side rejections in §3.2 exactly, just
+   caught earlier.
+2. **Quantity pre-check** — on a resolved SKU, `fetch_dispatch_details(resolved_sku)` calls §3.5
+   **live** (`workflowCode`/`bayCode` from config, `skuCode` from step 1, `status=Open`) to get
+   that SKU's current task. `check_qty_limit(task, qty)` then compares the scan's quantity
+   (default `1`) against its remaining quantity (`target_qty - processed_qty`). If it would be
+   exceeded:
    ```json
    { "outcome": "REJECT", "reason": "LOCAL_QTY_LIMIT_EXCEEDED", "dispatchTask": null, "plcSignalOk": null, "sentToBackend": false }
    ```
-   No `dispatch_task_scan_log` row is written for these — they never reach the backend at all.
-4. On every real ACCEPT response, the tracked task's `processed_qty` is refreshed from the backend's returned `dispatchTask`, so the local view stays in sync (including auto-completion).
+   No `dispatch_task_scan_log` row is written for either local rejection — neither reaches the
+   backend at all. If §3.5 returns `found: false` (no Open task for this exact SKU right now),
+   the qty check is a no-op (`ok=True`) and the scan proceeds — the backend is the fallback
+   authority in that case.
+3. On a resolved SKU with a live task, its `id` is forwarded as an explicit `taskId` on the
+   `/api/conveyor/scan` request — the backend never has to guess which task a scan on a
+   multi-task bay belongs to.
 
-This is a device-side fast-fail for UX/network efficiency only — it does **not** replace the backend's own `QTY_OK` rule (§5) if one is configured on the task's rule set, and it is skipped outright whenever a bay's active-task set is ambiguous.
+This is a device-side fast-fail for UX/network efficiency only — it does **not** replace the
+backend's own `QTY_OK` rule (§5) if one is configured on the task's rule set. Cost: every scan
+now makes **three** backend round-trips (`GET /api/conveyor/skumaster`,
+`GET /api/conveyor/dispatchdetails`, then `POST /api/conveyor/scan`) instead of one, in
+exchange for the pre-check always working per-SKU off live data instead of a cached snapshot
+that could go stale between syncs.
+
+(`track_tasks_from_workflow`/`has_tracked_task` still run once at startup, purely as a
+"does this bay have any Open task at all yet" diagnostic warning — no longer what the qty
+pre-check itself consults.)
 
 ## 4. Quantity update & auto-complete
 
@@ -278,7 +367,8 @@ Context variables available to a rule's `expression` (as `#submitted['key']`):
 | Key | Source |
 |---|---|
 | `barcode` | the scanned value |
-| `scannedSku`, `scannedOrderRef`, `scannedQty` | from the scan request |
+| `scannedSku` | **resolved server-side from `barcode` via `m5_sku_master`** (§3.2), not the request's own `sku` field |
+| `scannedOrderRef`, `scannedQty` | from the scan request |
 | `taskSkuCode`, `taskOrderRef`, `taskTargetQty`, `taskProcessedQty`, `taskRemainingQty`, `taskStatus` | from the resolved Dispatch Task |
 
 Example rules:
@@ -448,6 +538,6 @@ python conveyor_client.py
 # logs "no scannerIp configured - reading barcodes from stdin (dev/testing mode)"
 # then type a barcode and press enter per scan
 ```
-This exercises the full device-side logic too — local qty pre-check (§3.4), the 5s heartbeat loop, and task tracking/resync — not just the bare HTTP calls. Prefer Option A when you need a specific outcome (e.g. forcing a REJECT); prefer Option B to sanity-check the client logic itself.
+This exercises the full device-side logic too — SKU resolution + live dispatch details + local qty pre-check (§3.6), the 5s heartbeat loop, and task tracking/resync — not just the bare HTTP calls. Prefer Option A when you need a specific outcome (e.g. forcing a REJECT); prefer Option B to sanity-check the client logic itself.
 
 Both options are HTTP-only exercises of §2/§3 — neither touches the MQTT path in §9, which has no broker in this dev environment to test against at all.
