@@ -24,13 +24,16 @@ public class ConveyorScanService {
     private final RuleEvaluationService rules;
     private final WorkflowIntegrationBindingService bindings;
     private final PlcSignalService plc;
+    private final SkuMasterLookupService skuMasterLookup;
 
     public ConveyorScanService(DispatchTaskService tasks, RuleEvaluationService rules,
-                                WorkflowIntegrationBindingService bindings, PlcSignalService plc) {
+                                WorkflowIntegrationBindingService bindings, PlcSignalService plc,
+                                SkuMasterLookupService skuMasterLookup) {
         this.tasks = tasks;
         this.rules = rules;
         this.bindings = bindings;
         this.plc = plc;
+        this.skuMasterLookup = skuMasterLookup;
     }
 
     public Map<String, Object> scan(ScanRequest req) {
@@ -38,14 +41,31 @@ public class ConveyorScanService {
             return Map.of("outcome", "ERROR", "reason", "workflowCode, bayCode, and barcode are required");
         }
 
-        Map<String, Object> task = resolveTask(req).orElse(null);
+        // Resolve the authoritative SKU from m5_sku_master BEFORE any task
+        // resolution or rule evaluation — the device's own req.sku() is
+        // never trusted (same principle as rules only ever running on the
+        // backend, never the device): a scanned barcode that isn't a known,
+        // active SKU is rejected right here, before a Dispatch Task is even
+        // looked up.
+        Map<String, Object> skuMaster = skuMasterLookup.resolveByBarcode(req.barcode()).orElse(null);
+        if (skuMaster == null) {
+            tasks.recordRejectedScan(null, req.barcode(), "UNKNOWN_BARCODE", req.scannerIntegrationId());
+            return response("REJECT", "UNKNOWN_BARCODE", null, null);
+        }
+        if (!"ACTIVE".equalsIgnoreCase(String.valueOf(skuMaster.get("status")))) {
+            tasks.recordRejectedScan(null, req.barcode(), "SKU_INACTIVE", req.scannerIntegrationId());
+            return response("REJECT", "SKU_INACTIVE", null, null);
+        }
+        String resolvedSku = (String) skuMaster.get("sku_code");
+
+        Map<String, Object> task = resolveTask(req, resolvedSku).orElse(null);
         if (task == null) {
             tasks.recordRejectedScan(null, req.barcode(), "NO_ACTIVE_TASK", req.scannerIntegrationId());
             return response("REJECT", "NO_ACTIVE_TASK", null, null);
         }
         Long taskId = ((Number) task.get("id")).longValue();
 
-        Map<String, Object> context = buildContext(req, task);
+        Map<String, Object> context = buildContext(req, task, resolvedSku);
         Long ruleSetId = task.get("rule_set_id") != null ? ((Number) task.get("rule_set_id")).longValue() : null;
         Object workflowInstanceIdRaw = task.get("workflow_instance_id");
         Long workflowInstanceId = workflowInstanceIdRaw != null ? ((Number) workflowInstanceIdRaw).longValue() : null;
@@ -60,32 +80,32 @@ public class ConveyorScanService {
         }
 
         BigDecimal qty = req.qty() == null ? BigDecimal.ONE : req.qty();
-        Map<String, Object> updated = tasks.recordAcceptedScan(taskId, req.barcode(), req.sku(), req.orderRef(),
+        Map<String, Object> updated = tasks.recordAcceptedScan(taskId, req.barcode(), resolvedSku, req.orderRef(),
                 req.scannerIntegrationId(), qty).orElse(task);
         OutboundResult signal = plcIntegrationId == null ? null : plc.signalAccept(plcIntegrationId);
         return response("ACCEPT", null, updated, signal);
     }
 
     /** Explicit taskId wins; else the bay's one active task; else, among several, the one matching sku/orderRef. */
-    private Optional<Map<String, Object>> resolveTask(ScanRequest req) {
+    private Optional<Map<String, Object>> resolveTask(ScanRequest req, String resolvedSku) {
         if (req.taskId() != null) return tasks.findById(req.taskId());
         List<Map<String, Object>> active = tasks.listActiveForBay(req.workflowCode(), req.bayCode());
         if (active.isEmpty()) return Optional.empty();
         if (active.size() == 1) return Optional.of(active.get(0));
         for (Map<String, Object> t : active) {
-            boolean skuMatch = req.sku() != null && req.sku().equals(t.get("sku_code"));
+            boolean skuMatch = resolvedSku.equals(t.get("sku_code"));
             boolean orderMatch = req.orderRef() != null && req.orderRef().equals(t.get("order_ref"));
             if (skuMatch || orderMatch) return Optional.of(t);
         }
         return Optional.empty(); // ambiguous — caller must disambiguate with sku/orderRef/taskId
     }
 
-    private Map<String, Object> buildContext(ScanRequest req, Map<String, Object> task) {
+    private Map<String, Object> buildContext(ScanRequest req, Map<String, Object> task, String resolvedSku) {
         BigDecimal target = (BigDecimal) task.get("target_qty");
         BigDecimal processed = (BigDecimal) task.get("processed_qty");
         Map<String, Object> ctx = new LinkedHashMap<>();
         ctx.put("barcode", req.barcode());
-        ctx.put("scannedSku", req.sku());
+        ctx.put("scannedSku", resolvedSku);
         ctx.put("scannedOrderRef", req.orderRef());
         ctx.put("scannedQty", req.qty() == null ? BigDecimal.ONE : req.qty());
         ctx.put("taskSkuCode", task.get("sku_code"));

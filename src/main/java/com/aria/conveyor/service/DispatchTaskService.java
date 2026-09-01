@@ -50,6 +50,22 @@ public class DispatchTaskService {
                 tenantId, workflowCode, bayCode);
     }
 
+    /**
+     * The one task matching (workflowCode, bayCode, skuCode, status) exactly — used by
+     * {@code GET /api/conveyor/dispatchdetails} so a device can fetch a specific task's
+     * live target_qty/processed_qty right before a scan (not from a cached snapshot).
+     * Deterministic on ties via {@code created_at} (oldest first, same convention as
+     * {@link #listActiveForBay}).
+     */
+    public Optional<Map<String, Object>> findOne(String workflowCode, String bayCode, String skuCode, String status) {
+        long tenantId = TenantContext.get();
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT * FROM dispatch_task WHERE tenant_id = ? AND workflow_code = ? AND bay_code = ? "
+                        + "AND sku_code = ? AND status = ? ORDER BY created_at LIMIT 1",
+                tenantId, workflowCode, bayCode, skuCode, status);
+        return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+    }
+
     /** Every task for a workflow (used to build the aggregate GET response' "current dispatch tasks"). */
     public List<Map<String, Object>> listForWorkflow(String workflowCode) {
         return listForWorkflow(workflowCode, null);
