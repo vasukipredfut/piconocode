@@ -98,11 +98,14 @@ import java.util.stream.IntStream;
  * <p>{@code scanning_status} and {@code conveyor_mode} are mandatory per line
  * -- straight off that SKU's {@code m5_sku_master} row (V276/V277), the
  * page's own lookup, not re-validated here (a line missing either is
- * rejected before any row is written). {@code scanning_status} is carried
- * through only (not currently acted on by this handler); {@code conveyor_mode}
- * controls whether a {@code dispatch_task} is opened below --
- * {@code WITHOUT_CONVEYOR} lines (pure manual entry, nothing will ever scan or
- * count against them) get none.
+ * rejected before any row is written). Together they control whether a
+ * {@code dispatch_task} is opened below: {@code WITHOUT_CONVEYOR} lines (pure
+ * manual entry, nothing will ever scan or count against them) get none, and
+ * neither does a {@code WITHOUT_BARCODE} line even when its {@code conveyor_mode}
+ * is {@code CONVEYOR_MANUAL_SELECT} (still physically on the belt, but with no
+ * barcode for the scanner to read, a scan-tracking task for it would never be
+ * fulfilled by an actual scan) -- only a {@code BARCODE} line on a plain
+ * {@code CONVEYOR} gets one.
  *
  * <p>M10.TankerOutbound has no physical bay — the operator instead picks a
  * tank from {@code m10_tanker_location} (V217, codes like "ROT-1", "F7",
@@ -282,11 +285,14 @@ public class M10StartBayActionHandler implements ActionHandler {
                 "SELECT id FROM loading_progress_detail WHERE tenant_id = ? AND workflow_instance_id = ?",
                 Long.class, tenantId, instanceId);
 
-        // conveyor_mode per line is mandatory (validated above) -- straight
-        // off the SKU's m5_sku_master row (V276/V277), the page's own lookup.
-        // WITHOUT_CONVEYOR items are pure manual-entry, never scanned or
-        // counted on the conveyor, so no dispatch_task is opened for them
-        // (nothing will ever reference it).
+        // scanning_status/conveyor_mode per line are mandatory (validated
+        // above) -- straight off the SKU's m5_sku_master row (V276/V277), the
+        // page's own lookup. WITHOUT_CONVEYOR items are pure manual-entry,
+        // never scanned or counted on the conveyor; WITHOUT_BARCODE items
+        // have no barcode for the scanner to read regardless of conveyor_mode
+        // (CONVEYOR_MANUAL_SELECT still puts them on the belt, but a
+        // scan-tracking task for them would never be fulfilled). Either way,
+        // no dispatch_task is opened -- nothing will ever reference it.
         int dispatchTasksSkipped = 0;
         for (LineEntry e : parsed) {
             jdbc.update(
@@ -295,7 +301,7 @@ public class M10StartBayActionHandler implements ActionHandler {
                             + "VALUES (?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
                     tenantId, parentId, instanceId, e.routeId, e.orderId, e.skuCode, e.skuDesc, bayName, e.quantity);
 
-            if ("WITHOUT_CONVEYOR".equals(e.conveyorMode)) {
+            if ("WITHOUT_CONVEYOR".equals(e.conveyorMode) || "WITHOUT_BARCODE".equals(e.scanningStatus)) {
                 dispatchTasksSkipped++;
                 continue;
             }
