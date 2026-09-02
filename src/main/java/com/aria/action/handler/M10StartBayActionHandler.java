@@ -87,11 +87,22 @@ import java.util.stream.IntStream;
  *       "vehicle_no": "TN86J8070", "route_id": "ROU028912", "gpNumber": "GP-1-1495",
  *       "bay_name": "Bay1",
  *       "order_sku_line_items": [
- *         { "route_id": "ROU028912", "order_id": "ORD1123", "sku_code": "SKU1215", "sku_desc": "GROUNDNUT RAW OIL 15 KG TIN", "order_qty": 45 },
- *         { "route_id": "ROU028912", "order_id": "ORD1124", "sku_code": "SKU1461", "sku_desc": "REF SUNFLOWER OIL 15 LTR TIN ROYAL", "order_qty": 250 }
+ *         { "route_id": "ROU028912", "order_id": "ORD1123", "sku_code": "SKU1215", "sku_desc": "GROUNDNUT RAW OIL 15 KG TIN", "order_qty": 45,
+ *           "scanning_status": "BARCODE", "conveyor_mode": "CONVEYOR" },
+ *         { "route_id": "ROU028912", "order_id": "ORD1124", "sku_code": "SKU1461", "sku_desc": "REF SUNFLOWER OIL 15 LTR TIN ROYAL", "order_qty": 250,
+ *           "scanning_status": "WITHOUT_BARCODE", "conveyor_mode": "WITHOUT_CONVEYOR" }
  *       ]
  *     } }
  * </pre>
+ *
+ * <p>{@code scanning_status} and {@code conveyor_mode} are mandatory per line
+ * -- straight off that SKU's {@code m5_sku_master} row (V276/V277), the
+ * page's own lookup, not re-validated here (a line missing either is
+ * rejected before any row is written). {@code scanning_status} is carried
+ * through only (not currently acted on by this handler); {@code conveyor_mode}
+ * controls whether a {@code dispatch_task} is opened below --
+ * {@code WITHOUT_CONVEYOR} lines (pure manual entry, nothing will ever scan or
+ * count against them) get none.
  *
  * <p>M10.TankerOutbound has no physical bay — the operator instead picks a
  * tank from {@code m10_tanker_location} (V217, codes like "ROT-1", "F7",
@@ -181,7 +192,16 @@ public class M10StartBayActionHandler implements ActionHandler {
             if (qty == null || qty.signum() <= 0) {
                 return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") needs order_qty > 0");
             }
-            parsed.add(new LineEntry(routeId, strOpt(line, "order_id"), skuCode, strOpt(line, "sku_desc"), qty));
+            String scanningStatus = strReq(line, "scanning_status");
+            if (scanningStatus == null) {
+                return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") is missing scanning_status");
+            }
+            String conveyorMode = strReq(line, "conveyor_mode");
+            if (conveyorMode == null) {
+                return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") is missing conveyor_mode");
+            }
+            parsed.add(new LineEntry(routeId, strOpt(line, "order_id"), skuCode, strOpt(line, "sku_desc"), qty,
+                    scanningStatus, conveyorMode));
             totalQty = totalQty.add(qty);
         }
 
@@ -262,12 +282,23 @@ public class M10StartBayActionHandler implements ActionHandler {
                 "SELECT id FROM loading_progress_detail WHERE tenant_id = ? AND workflow_instance_id = ?",
                 Long.class, tenantId, instanceId);
 
+        // conveyor_mode per line is mandatory (validated above) -- straight
+        // off the SKU's m5_sku_master row (V276/V277), the page's own lookup.
+        // WITHOUT_CONVEYOR items are pure manual-entry, never scanned or
+        // counted on the conveyor, so no dispatch_task is opened for them
+        // (nothing will ever reference it).
+        int dispatchTasksSkipped = 0;
         for (LineEntry e : parsed) {
             jdbc.update(
                     "INSERT INTO loading_progress_detail_bay "
                             + "(tenant_id, loading_progress_detail_id, workflow_instance_id, route_id, order_id, sku_code, sku_desc, bay_name, quantity, status) "
                             + "VALUES (?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
                     tenantId, parentId, instanceId, e.routeId, e.orderId, e.skuCode, e.skuDesc, bayName, e.quantity);
+
+            if ("WITHOUT_CONVEYOR".equals(e.conveyorMode)) {
+                dispatchTasksSkipped++;
+                continue;
+            }
 
             // One conveyor dispatch_task per SKU line, so the barcode scanner
             // covering this physical bay (see CONVEYOR_SCANNER_WORKFLOW_GUIDE.md)
@@ -290,6 +321,7 @@ public class M10StartBayActionHandler implements ActionHandler {
         data.put("bayName", bayName);
         data.put("lineCount", parsed.size());
         data.put("totalQuantity", totalQty);
+        data.put("dispatchTasksSkipped", dispatchTasksSkipped);
         data.put("fromState", currentState);
         data.put("toState", newState);
         data.put("transitioned", transitioned);
@@ -312,5 +344,6 @@ public class M10StartBayActionHandler implements ActionHandler {
         return v == null ? null : v.toString();
     }
 
-    private record LineEntry(String routeId, String orderId, String skuCode, String skuDesc, BigDecimal quantity) {}
+    private record LineEntry(String routeId, String orderId, String skuCode, String skuDesc, BigDecimal quantity,
+                              String scanningStatus, String conveyorMode) {}
 }
