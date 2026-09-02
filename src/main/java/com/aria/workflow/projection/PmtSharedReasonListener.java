@@ -147,11 +147,26 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
                     // ambiguity risk here (unlike WorkflowProjectionListener's generic
                     // pluck()) since pageData() already scopes to aria:manager-qty-approval.
                     BigDecimal timeTaken = firstNonNull(toBig(page.get("time_taken")), toBig(page.get("timeTaken")));
+                    // grn_status (M10.PackUnload/M10.FGUnloading only — the page shows
+                    // this field solely for those two flow variants): manager_qty_
+                    // approval_detail.grn_status already existed as an unused column,
+                    // no listener wrote it, so a manager's GRN pick here was silently
+                    // discarded. aria:reconciliation's own grn_status is a DIFFERENT
+                    // page's bag entry (pageData() below scopes to THIS page only), so
+                    // this doesn't collide with or replace that separate capture.
+                    String grnStatus = str(page, "grn_status");
+                    // unloading_qty: deliberately NOT set from this page's own
+                    // client-computed variance_display_kg -- DispatchToleranceListener
+                    // now writes it server-side instead (same server-verified
+                    // loaded/unloaded weight it already computes for loaded_weight_kg),
+                    // consistent with this whole class's "trust the server, not the
+                    // client" design (see DispatchToleranceListener's own javadoc).
                     Map<String, Object> cols = new LinkedHashMap<>();
                     if (reason != null) cols.put("manager_qty_reason", reason);
                     if (decision != null) cols.put("manager_decision", decision);
                     if (queueReason != null) cols.put("queue_reason", queueReason);
                     if (timeTaken != null) cols.put("time_taken", timeTaken);
+                    if (grnStatus != null) cols.put("grn_status", grnStatus);
                     // TankerOutbound only: since aria:weight-diff-entry was retired
                     // from the UI (V264), aria:manager-qty-approval is now the ONLY
                     // place these 4 tolerance columns get submitted for this workflow
@@ -232,12 +247,14 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
                     String decision = str(page, "status");
                     String queueReason = queueReasonOf(page);
                     BigDecimal timeTaken = firstNonNull(toBig(page.get("time_taken")), toBig(page.get("timeTaken")));
-                    if (reason != null || decision != null || queueReason != null || timeTaken != null) {
+                    String grnStatus = str(page, "grn_status");
+                    if (reason != null || decision != null || queueReason != null || timeTaken != null || grnStatus != null) {
                         Map<String, Object> cols = new LinkedHashMap<>();
                         if (reason != null) cols.put("manager_qty_reason", reason);
                         if (decision != null) cols.put("manager_decision", decision);
                         if (queueReason != null) cols.put("queue_reason", queueReason);
                         if (timeTaken != null) cols.put("time_taken", timeTaken);
+                        if (grnStatus != null) cols.put("grn_status", grnStatus);
                         upsert("manager_qty_approval_detail", instance, cols);
                     }
                     break;

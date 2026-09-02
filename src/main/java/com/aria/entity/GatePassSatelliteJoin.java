@@ -101,6 +101,16 @@ public final class GatePassSatelliteJoin {
             // read now also surfaces the actual approve/reject/skip decision and reason,
             // same treatment mwad already got below.
             "mqad.manager_decision, mqad.manager_qty_reason, " +
+            // unloading_qty (server-computed by DispatchToleranceListener, M10.PackUnload/
+            // M10.FGUnloading only) and grn_status (PmtSharedReasonListener, same two
+            // workflows' aria:manager-qty-approval submission) were saving to
+            // manager_qty_approval_detail but never selected here, so a plain GatePass
+            // read never surfaced them. grn_status is aliased distinctly -- urd.grn_status
+            // (unload_reconciliation_detail's OWN, separately-captured GRN status from
+            // aria:reconciliation) already occupies the bare "grn_status" key below; two
+            // columns sharing one label in this query would silently collapse to whichever
+            // JDBC keeps last, clobbering one with the other.
+            "mqad.unloading_qty, mqad.grn_status AS manager_qty_grn_status, " +
             "pcvd.camera_photo, pcvd.issue_identified, pcvd.camera_variance_reason, " +
             "dvd.broker_name, dvd.broker_number, dvd.invoice_qty, dvd.oil_rm_item, dvd.transport_name, " +
             "dvd.po_numbers, dvd.po_attachment, dvd.party_name, " +

@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Generic dispatch weight-tolerance verdict.
@@ -98,7 +99,7 @@ public class DispatchToleranceListener implements WorkflowTransitionListener {
         }
         for (Map<String, Object> cfg : configs) {
             try {
-                computeVerdict(cfg, instance.getId(), tenantId);
+                computeVerdict(cfg, instance.getId(), tenantId, code);
             } catch (Exception ex) {
                 log.warn("tolerance verdict failed for workflow={} instance={}: {}",
                         code, instance.getId(), ex.getMessage());
@@ -106,7 +107,17 @@ public class DispatchToleranceListener implements WorkflowTransitionListener {
         }
     }
 
-    private void computeVerdict(Map<String, Object> cfg, Long instanceId, Long tenantId) {
+    /** Workflows whose direction is receiving/unloading rather than dispatch/
+     *  loading — for these, the same server-verified |W1-W2| this method
+     *  already computes into loaded_weight_kg is ALSO the physically-unloaded
+     *  quantity manager_qty_approval_detail.unloading_qty exists to record
+     *  (that column previously had nothing writing to it at all). Loading-
+     *  direction workflows (FGLoading/PackLoading/TankerOutbound) never touch
+     *  unloading_qty — same reasoning as loaded_weight_kg being the wrong
+     *  concept for them to duplicate into a second column. */
+    private static final Set<String> UNLOADING_DIRECTION_WORKFLOWS = Set.of("M10.PackUnload", "M10.FGUnloading");
+
+    private void computeVerdict(Map<String, Object> cfg, Long instanceId, Long tenantId, String workflowCode) {
         // Only gate_pass is wired today; guard the identifier defensively anyway.
         String table = (String) cfg.get("target_table");
         String keyCol = orDefault((String) cfg.get("key_column"), "workflow_instance_id");
@@ -154,15 +165,26 @@ public class DispatchToleranceListener implements WorkflowTransitionListener {
 
         BigDecimal loaded = w1.subtract(w2).abs();
         BigDecimal variancePct = variancePct(loaded, expected);
+        String verdict = verdict(loaded, expected, tolerancePct);
 
-        jdbc.update(
-                "INSERT INTO manager_qty_approval_detail " +
-                        "(tenant_id, workflow_instance_id, expected_weight_kg, loaded_weight_kg, pmt_variance_pct, pmt_within_tolerance) " +
-                        "VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE " +
-                        "expected_weight_kg=VALUES(expected_weight_kg), loaded_weight_kg=VALUES(loaded_weight_kg), " +
-                        "pmt_variance_pct=VALUES(pmt_variance_pct), pmt_within_tolerance=VALUES(pmt_within_tolerance)",
-                tenantId, instanceId, expected, loaded, variancePct,
-                verdict(loaded, expected, tolerancePct));
+        if (UNLOADING_DIRECTION_WORKFLOWS.contains(workflowCode)) {
+            jdbc.update(
+                    "INSERT INTO manager_qty_approval_detail " +
+                            "(tenant_id, workflow_instance_id, expected_weight_kg, loaded_weight_kg, unloading_qty, pmt_variance_pct, pmt_within_tolerance) " +
+                            "VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE " +
+                            "expected_weight_kg=VALUES(expected_weight_kg), loaded_weight_kg=VALUES(loaded_weight_kg), " +
+                            "unloading_qty=VALUES(unloading_qty), " +
+                            "pmt_variance_pct=VALUES(pmt_variance_pct), pmt_within_tolerance=VALUES(pmt_within_tolerance)",
+                    tenantId, instanceId, expected, loaded, loaded, variancePct, verdict);
+        } else {
+            jdbc.update(
+                    "INSERT INTO manager_qty_approval_detail " +
+                            "(tenant_id, workflow_instance_id, expected_weight_kg, loaded_weight_kg, pmt_variance_pct, pmt_within_tolerance) " +
+                            "VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE " +
+                            "expected_weight_kg=VALUES(expected_weight_kg), loaded_weight_kg=VALUES(loaded_weight_kg), " +
+                            "pmt_variance_pct=VALUES(pmt_variance_pct), pmt_within_tolerance=VALUES(pmt_within_tolerance)",
+                    tenantId, instanceId, expected, loaded, variancePct, verdict);
+        }
     }
 
     /** |loaded − expected| / expected × 100, rounded to 3 dp. Caller ensures expected &gt; 0. */
