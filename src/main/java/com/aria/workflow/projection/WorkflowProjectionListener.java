@@ -12,7 +12,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import java.sql.Timestamp;
-import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.*;
 import java.util.regex.Pattern;
 
@@ -333,7 +334,7 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
                             : "SECOND".equals(seq) ? "w2_"
                             : "THIRD".equals(seq) ? "w3_" : null;
                     if (prefix != null) {
-                        cols.put(ident(prefix + "captured_at"), Timestamp.from(Instant.now()));
+                        cols.put(ident(prefix + "captured_at"), nowIst());
                     }
                     continue;
                 }
@@ -355,7 +356,7 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
         // Terminal timestamp.
         String terminalTsCol = (String) cfg.get("terminal_ts_column");
         if (terminalTsCol != null && splitCsv((String) cfg.get("terminal_states")).contains(state)) {
-            cols.put(ident(terminalTsCol), Timestamp.from(Instant.now()));
+            cols.put(ident(terminalTsCol), nowIst());
         }
 
         // Per-state timestamps: unlike terminal_ts_column (one column, one
@@ -367,7 +368,7 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
         if (stateTsColumnsJson != null && !stateTsColumnsJson.isBlank()) {
             Map<String, String> stateTsColumns = MAPPER.readValue(stateTsColumnsJson, Map.class);
             String col = stateTsColumns.get(state);
-            if (col != null) cols.put(ident(col), Timestamp.from(Instant.now()));
+            if (col != null) cols.put(ident(col), nowIst());
         }
 
         boolean exists;
@@ -515,6 +516,26 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
      * fallback would risk returning a different page's value.
      */
     @SuppressWarnings("unchecked")
+    /**
+     * Server-stamped "now", rendered as IST wall-clock digits regardless of
+     * the JVM host's own default timezone. {@code Timestamp.from(Instant.now())}
+     * (this class's previous approach, matching {@code DateUtil}'s absence of
+     * IST-awareness in a few spots) round-trips through JDBC's
+     * setTimestamp(no-Calendar), which renders the instant using the JVM's
+     * default zone before sending it to MariaDB -- confirmed live: on a host
+     * whose JVM default zone is UTC while the DB session zone is IST, this
+     * silently stored "09:53:18" for a reading actually captured at 15:23:18
+     * IST (row's own created_at/updated_at, both DB-computed CURRENT_TIMESTAMP,
+     * showed the correct 15:23:18 side by side). Deliberately mirrors this
+     * codebase's established IST-explicit convention ({@link
+     * com.aria.utils.DateUtil#getNowLocalDateTime()}) rather than inventing a
+     * new one: compute the IST wall-clock fields explicitly, then hand JDBC a
+     * Timestamp whose own default-zone rendering reproduces those exact digits.
+     */
+    private static Timestamp nowIst() {
+        return Timestamp.valueOf(LocalDateTime.now(ZoneId.of("Asia/Kolkata")));
+    }
+
     private String pluckScoped(Map<String, Object> bag, List<String> keys, String pageCode) {
         if (bag == null || pageCode == null) return null;
         Object v = bag.get(pageCode);

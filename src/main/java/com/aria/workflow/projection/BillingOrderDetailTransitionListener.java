@@ -166,8 +166,13 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
                             // carrying two orders that share a SKU would double-count: every bay row for
                             // that SKU on this instance would sum into BOTH orders' lines. NULL-safe (same
                             // idiom as M10BayCompleteActionHandler:215) so bay rows opened before V252
-                            // (order_id NULL) still match a line whose order_id is also NULL.
-                            + "AND ((lpb.order_id IS NULL AND odd.order_id IS NULL) OR lpb.order_id = odd.order_id) "
+                            // (order_id NULL) still match a line whose order_id is also NULL. COLLATE
+                            // matches the sku_code joins above -- loading_progress_detail_bay.order_id and
+                            // m5_order_dispatch_detail.order_id can carry different collations (same class
+                            // of mismatch as sku_code), which throws "Illegal mix of collations" and takes
+                            // this whole billing-rate lookup down (caught below, but every workflow's
+                            // transition pays for it since this runs unconditionally -- see class javadoc).
+                            + "AND ((lpb.order_id IS NULL AND odd.order_id IS NULL) OR lpb.order_id = odd.order_id COLLATE utf8mb4_general_ci) "
                             + "WHERE odd.tenant_id = ? AND odd.vehicle_no = ? AND odd.assign_qty >= 1 "
                             + "GROUP BY odd.id, odd.order_id, odd.sku_code, odd.rd_code, odd.rd_desc, "
                             + "odd.sku_desc, odd.order_rate, sm.gst_rate_pct, odd.line_dispatch_qty, odd.assign_qty",

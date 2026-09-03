@@ -67,6 +67,13 @@ public class ManagerQtyApprovalDecisionListener implements WorkflowTransitionLis
             putIfPresent(cols, "manager_decision", page, "status");
             putIfPresent(cols, "grn_status", page, "grn_status");
             putIfPresent(cols, "time_taken", page, "time_taken");
+            // queue_reason (V290): every other workflow's own manager-qty-
+            // approval capture (PmtSharedReasonListener) has always saved this;
+            // M10.TankerInbound's own capture here never did, silently dropping
+            // an out-of-order-pick reason whenever a manager skipped a priority
+            // vehicle for this specific workflow.
+            String queueReason = firstNonBlank(str(page, "queue_reason"), str(page, "queueReason"));
+            if (queueReason != null) cols.put("queue_reason", queueReason);
             if (cols.isEmpty()) return;
 
             Long tenantId = TenantContext.get();
@@ -108,5 +115,10 @@ public class ManagerQtyApprovalDecisionListener implements WorkflowTransitionLis
     private static String str(Map<String, Object> bag, String key) {
         Object v = bag.get(key);
         return (v == null || v.toString().isBlank()) ? null : String.valueOf(v);
+    }
+
+    private static String firstNonBlank(String... vals) {
+        for (String v : vals) if (v != null && !v.isBlank()) return v;
+        return null;
     }
 }

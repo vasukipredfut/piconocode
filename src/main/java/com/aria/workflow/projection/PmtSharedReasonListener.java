@@ -216,10 +216,15 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
                     String reason = firstNonBlank(str(page, "variance_reason"), str(page, "varianceReason"));
                     String decision = str(page, "status");
                     String queueReason = queueReasonOf(page);
+                    // time_taken (V294): same UI-computed elapsed-time field every
+                    // other queue page submits -- manager_qty_approval_detail's own
+                    // case above already captures it; this table never did.
+                    BigDecimal timeTaken = firstNonNull(toBig(page.get("time_taken")), toBig(page.get("timeTaken")));
                     Map<String, Object> cols = new LinkedHashMap<>();
                     if (reason != null) cols.put("weight_variance_reason", reason);
                     if (decision != null) cols.put("weight_decision", decision);
                     if (queueReason != null) cols.put("queue_reason", queueReason);
+                    if (timeTaken != null) cols.put("time_taken", timeTaken);
                     // weight_difference_display (TankerInbound: W2-W3) /
                     // rsi_weight_difference_display (ReturnStockIn: Expected-
                     // Second) are client-computed FormFields, not server-derived
@@ -248,13 +253,31 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
                     String queueReason = queueReasonOf(page);
                     BigDecimal timeTaken = firstNonNull(toBig(page.get("time_taken")), toBig(page.get("timeTaken")));
                     String grnStatus = str(page, "grn_status");
-                    if (reason != null || decision != null || queueReason != null || timeTaken != null || grnStatus != null) {
+                    // GRN detail fields (V290): only visible on the page for
+                    // M10.PackUnload/M10.FGUnloading, i.e. only ever present in
+                    // this exact branch (the only workflows reaching
+                    // QUANTITY_APPROVAL_PENDING) -- grn_status already saved,
+                    // these 5 never did, only ever surviving in
+                    // submitted_data_json.
+                    String grnNumber = str(page, "grn_number");
+                    String grnDate = str(page, "grn_date");
+                    String grnNotRequiredReason = str(page, "grn_not_required_reason");
+                    String grnExceptionReason = str(page, "grn_exception_reason");
+                    String grnUpdatedBy = str(page, "grn_updated_by");
+                    if (reason != null || decision != null || queueReason != null || timeTaken != null || grnStatus != null
+                            || grnNumber != null || grnDate != null || grnNotRequiredReason != null
+                            || grnExceptionReason != null || grnUpdatedBy != null) {
                         Map<String, Object> cols = new LinkedHashMap<>();
                         if (reason != null) cols.put("manager_qty_reason", reason);
                         if (decision != null) cols.put("manager_decision", decision);
                         if (queueReason != null) cols.put("queue_reason", queueReason);
                         if (timeTaken != null) cols.put("time_taken", timeTaken);
                         if (grnStatus != null) cols.put("grn_status", grnStatus);
+                        if (grnNumber != null) cols.put("grn_number", grnNumber);
+                        if (grnDate != null) cols.put("grn_date", grnDate);
+                        if (grnNotRequiredReason != null) cols.put("grn_not_required_reason", grnNotRequiredReason);
+                        if (grnExceptionReason != null) cols.put("grn_exception_reason", grnExceptionReason);
+                        if (grnUpdatedBy != null) cols.put("grn_updated_by", grnUpdatedBy);
                         upsert("manager_qty_approval_detail", instance, cols);
                     }
                     break;
