@@ -391,6 +391,7 @@ public class WorkflowEngineService {
     }
 
     private static final String DISPATCH_VEHICLE_DETAILS_PAGE = "aria:dispatch-vehicle-details";
+    private static final String OTHER_VEHICLE_WEIGHMENT_PAGE = "aria:weighment-capture-other-vehicle";
 
     /**
      * Page-scoped work queue: only the open instances whose current state is
@@ -404,13 +405,19 @@ public class WorkflowEngineService {
      * all yet (see {@link #plainGatePassQueueItems}) — otherwise a gate pass
      * created without picking a Flow Variant (see
      * {@code GatePassCreateActionHandler}) would never show up anywhere for
-     * the operator to act on.
+     * the operator to act on. {@link #OTHER_VEHICLE_WEIGHMENT_PAGE} gets the
+     * mirror image of that same fallback (see
+     * {@link #otherVehicleGatePassQueueItems}) — {@code loading_type='OTHERS'}
+     * gate passes are exactly the ones {@link #plainGatePassQueueItems}
+     * excludes.
      */
     @Transactional(value = "m0PageTransactionManager", readOnly = true)
     public List<WorkflowQueueItem> queueForPage(String pageCode, int page, int size) {
         Long tenantId = TenantContext.get();
         Set<String> keys = statesForPage(tenantId, pageCode);
-        if (keys.isEmpty() && !DISPATCH_VEHICLE_DETAILS_PAGE.equals(pageCode)) {
+        boolean isDispatchPage = DISPATCH_VEHICLE_DETAILS_PAGE.equals(pageCode);
+        boolean isOtherVehiclePage = OTHER_VEHICLE_WEIGHMENT_PAGE.equals(pageCode);
+        if (keys.isEmpty() && !isDispatchPage && !isOtherVehiclePage) {
             return null; // not a step page — caller falls back
         }
         Pageable p = PageRequest.of(Math.max(page, 0), Math.max(1, Math.min(size, 100)));
@@ -419,8 +426,11 @@ public class WorkflowEngineService {
                 : instances.queueForWorkflowStates(tenantId, keys, p).getContent().stream()
                         .map(this::toQueueItem)
                         .toList());
-        if (DISPATCH_VEHICLE_DETAILS_PAGE.equals(pageCode)) {
+        if (isDispatchPage) {
             items.addAll(plainGatePassQueueItems(tenantId));
+        }
+        if (isOtherVehiclePage) {
+            items.addAll(otherVehicleGatePassQueueItems(tenantId));
         }
         return items;
     }
@@ -439,12 +449,40 @@ public class WorkflowEngineService {
      * straight at aria:weighment-capture and never has a transition through
      * {@link #DISPATCH_VEHICLE_DETAILS_PAGE} at all, so they'd otherwise leak
      * into this queue even though the operator will never act on them here.
+     * See {@link #otherVehicleGatePassQueueItems} for where they go instead.
      */
     private List<WorkflowQueueItem> plainGatePassQueueItems(Long tenantId) {
         return jdbc.queryForList(
                 "SELECT id, gp_number, vehicle_no, status, updated_at, queue_reason FROM gate_pass " +
                 "WHERE tenant_id=? AND workflow_instance_id IS NULL AND status='GATE_PASS_CREATED' " +
                 "AND (loading_type IS NULL OR loading_type <> 'OTHERS') " +
+                "ORDER BY updated_at ASC",
+                tenantId).stream()
+            .map(row -> WorkflowQueueItem.builder()
+                    .id((Long) row.get("id"))
+                    .gpNumber((String) row.get("gp_number"))
+                    .businessRef((String) row.get("vehicle_no"))
+                    .status((String) row.get("status"))
+                    .updatedAt(toInstant(row.get("updated_at")))
+                    .orderSheetUploaded(orderSheetUploadedFor(tenantId, (String) row.get("vehicle_no")))
+                    .queueReason((String) row.get("queue_reason"))
+                    .build())
+            .toList();
+    }
+
+    /**
+     * The {@code loading_type='OTHERS'} counterpart of
+     * {@link #plainGatePassQueueItems}: gate passes bound for
+     * M10.OtherVehicles never pass through {@link #DISPATCH_VEHICLE_DETAILS_PAGE},
+     * so before their workflow_instance exists they must surface here instead
+     * — on {@link #OTHER_VEHICLE_WEIGHMENT_PAGE}, the page the operator
+     * actually acts on them from.
+     */
+    private List<WorkflowQueueItem> otherVehicleGatePassQueueItems(Long tenantId) {
+        return jdbc.queryForList(
+                "SELECT id, gp_number, vehicle_no, status, updated_at, queue_reason FROM gate_pass " +
+                "WHERE tenant_id=? AND workflow_instance_id IS NULL AND status='GATE_PASS_CREATED' " +
+                "AND loading_type='OTHERS' " +
                 "ORDER BY updated_at ASC",
                 tenantId).stream()
             .map(row -> WorkflowQueueItem.builder()
