@@ -317,6 +317,26 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
                     }
                     continue;
                 }
+                // weight_entry_at on weighment_capture_detail (V289): same
+                // weight_seq-prefixed routing as wb_display_photo/vehicle_photo
+                // above, but server-stamped rather than plucked -- none of the
+                // pages that submit through this key (aria:weighment-capture,
+                // aria:weighment-capture-other-vehicle) actually carry a
+                // capture-timestamp value worth trusting (aria:weighment-capture
+                // has no such field at all; the other-vehicle page's own
+                // w1_captured_at/w2_captured_at were just a client "now()"
+                // default, subject to clock skew). w1_/w2_/w3_captured_at record
+                // when THIS SERVER actually persisted each reading.
+                if (isWeighmentCaptureDetail && "weight_entry_at".equals(e.getKey())) {
+                    String seq = pluck(bag, List.of("weight_seq"));
+                    String prefix = "FIRST".equals(seq) ? "w1_"
+                            : "SECOND".equals(seq) ? "w2_"
+                            : "THIRD".equals(seq) ? "w3_" : null;
+                    if (prefix != null) {
+                        cols.put(ident(prefix + "captured_at"), Timestamp.from(Instant.now()));
+                    }
+                    continue;
+                }
                 // qc_sample_test on qc_final_outbound_detail (V250): same
                 // repeater/array shape as po_attachment above -- a sample
                 // sign-off can carry more than one attached file.
