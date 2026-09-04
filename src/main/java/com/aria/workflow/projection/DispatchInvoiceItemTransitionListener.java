@@ -49,7 +49,13 @@ public class DispatchInvoiceItemTransitionListener implements WorkflowTransition
         if (!(pageDataRaw instanceof Map)) return;
         @SuppressWarnings("unchecked")
         Map<String, Object> pageData = (Map<String, Object>) pageDataRaw;
+        // M10.TankerInbound submits "invoice_items"; M10.ReturnStockIn's own
+        // invoice grid on the same page submits under a distinct key,
+        // "invoice_items_return_stock" -- both feed this same child table.
         Object linesRaw = pageData.get("invoice_items");
+        if (!(linesRaw instanceof List<?> rawList) || rawList.isEmpty()) {
+            linesRaw = pageData.get("invoice_items_return_stock");
+        }
         if (!(linesRaw instanceof List<?> lines) || lines.isEmpty()) return;
 
         long tenantId = TenantContext.get();

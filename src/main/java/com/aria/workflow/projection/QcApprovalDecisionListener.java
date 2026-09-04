@@ -14,9 +14,12 @@ import java.util.Set;
 /**
  * Captures aria:qc-approval's literal decision ("APPROVED" / "REJECTED") plus
  * qc_reject_reason (only present when REJECTED) into
- * qc_unloading_approval.status, for M10.TankerInbound and M10.ReturnStockIn
- * (both reach aria:qc-approval from DISPATCH_QUEUED) and M10.PackUnload
- * (reaches it from DISPATCH_VEHICLE_ENTRY instead).
+ * qc_unloading_approval.status, for M10.TankerInbound (reaches
+ * aria:qc-approval from DISPATCH_QUEUED), M10.ReturnStockIn (reaches it from
+ * RETURN_STOCK_OFFICER -- QC Approval sits after the first weighment +
+ * Return Stock Officer capture for this flow variant only, see the tenant-1
+ * M10.ReturnStockIn workflow_definition), and M10.PackUnload (reaches it
+ * from DISPATCH_VEHICLE_ENTRY).
  *
  * <p>Kept OUT of WorkflowProjectionListener's generic field_map_json on
  * purpose, same reasoning as {@link PmtSharedReasonListener}: aria:qc-approval's
@@ -43,7 +46,7 @@ public class QcApprovalDecisionListener implements WorkflowTransitionListener {
 
     private static final Logger log = LoggerFactory.getLogger(QcApprovalDecisionListener.class);
     private static final Set<String> WORKFLOW_CODES = Set.of("M10.TankerInbound", "M10.ReturnStockIn", "M10.PackUnload", "M10.FGUnloading");
-    private static final Set<String> QC_PREVIOUS_STATES = Set.of("DISPATCH_QUEUED", "DISPATCH_VEHICLE_ENTRY");
+    private static final Set<String> QC_PREVIOUS_STATES = Set.of("DISPATCH_QUEUED", "DISPATCH_VEHICLE_ENTRY", "RETURN_STOCK_OFFICER");
 
     private final JdbcTemplate jdbc;
 

@@ -12,15 +12,16 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Captures aria:reconciliation's variance_reason and withinTolerance decision
- * into its own dedicated table, unload_reconciliation_detail, for
- * M10.TankerInbound (previousState WEIGHMENT_2), M10.ReturnStockIn
- * (previousState UNLOADING_DONE — its equivalent invoice-vs-received stock
- * diff step, reusing this same page/listener rather than duplicating the
- * pattern; ReturnStockIn has no dedicated parking states to land in between,
- * per V131), and M10.PackUnload (previousState WEIGHMENT_2 — also reusing
- * this same page/table, since it's a generic reconciliation-decision record,
- * not TankerInbound-specific despite its original migration's naming).
+ * Captures variance_reason and withinTolerance decision into its own
+ * dedicated table, unload_reconciliation_detail, for M10.TankerInbound
+ * (previousState WEIGHMENT_2, page aria:reconciliation), M10.PackUnload
+ * (previousState WEIGHMENT_2, page aria:reconciliation — reusing the same
+ * page/table as TankerInbound, since it's a generic reconciliation-decision
+ * record, not TankerInbound-specific despite its original migration's
+ * naming), and M10.ReturnStockIn (previousState WEIGHMENT_2, page
+ * aria:stock-checking-officer — its own dedicated "Stock Checking Officer"
+ * screen, functionally identical to aria:reconciliation's invoice-vs-received
+ * capture but built as a separate page/pageCode rather than reusing it).
  *
  * <p>Kept OUT of WorkflowProjectionListener's generic field_map_json on
  * purpose, same reasoning as {@link PmtSharedReasonListener} and
@@ -64,14 +65,18 @@ public class ReconciliationDecisionListener implements WorkflowTransitionListene
 
     @Override
     public void onTransition(WorkflowInstance instance, String previousState, Map<String, Object> bag) {
+        boolean isReturnStockIn = "M10.ReturnStockIn".equals(instance.getWorkflowCode());
         boolean fires = ("M10.TankerInbound".equals(instance.getWorkflowCode()) && "WEIGHMENT_2".equals(previousState))
-                || ("M10.ReturnStockIn".equals(instance.getWorkflowCode()) && "UNLOADING_DONE".equals(previousState))
+                || (isReturnStockIn && "WEIGHMENT_2".equals(previousState))
                 || ("M10.PackUnload".equals(instance.getWorkflowCode()) && "WEIGHMENT_2".equals(previousState));
         if (bag == null || !fires) {
             return;
         }
         try {
-            Map<String, Object> page = pageData(bag, "aria:reconciliation");
+            // M10.ReturnStockIn captures this decision on its own dedicated
+            // aria:stock-checking-officer page rather than the shared
+            // aria:reconciliation page every other workflow here uses.
+            Map<String, Object> page = pageData(bag, isReturnStockIn ? "aria:stock-checking-officer" : "aria:reconciliation");
             String reason = str(page, "variance_reason");
             String withinTolerance = str(page, "withinTolerance");
             if (reason == null && withinTolerance == null) return;
