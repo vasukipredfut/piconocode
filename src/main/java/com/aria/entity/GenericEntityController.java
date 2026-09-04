@@ -13,6 +13,7 @@ import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
 import java.sql.PreparedStatement;
@@ -71,8 +72,35 @@ public class GenericEntityController {
     @Autowired(required = false)
     private com.aria.workflow.engine.WorkflowEngineService workflowEngine;
 
-    public GenericEntityController(JdbcTemplate jdbc) {
+    private final PasswordEncoder passwordEncoder;
+
+    public GenericEntityController(JdbcTemplate jdbc, PasswordEncoder passwordEncoder) {
         this.jdbc = jdbc;
+        this.passwordEncoder = passwordEncoder;
+    }
+
+    /**
+     * Only {@code Employee} (table {@code employee_details}) has a
+     * registered {@code password} field today, and that same column is
+     * read straight off the row by {@code AuthUserDetailsService} for
+     * login -- Spring Security's {@code DaoAuthenticationProvider} always
+     * compares a submitted password against it via the app's
+     * {@code BCryptPasswordEncoder} bean.
+     *
+     * <p>{@code entity_field_registry.password} is {@code hidden=1} (a
+     * pre-existing guard against the generic column-passthrough writing a
+     * raw plaintext value nothing ever hashed), so the normal body-to-
+     * {@code safe} copy in {@link #insert} never carries it — read the raw
+     * value straight off {@code body} instead of {@code safe}. Hash
+     * whatever was submitted; if the caller left it out or blank, default
+     * to a known password ("changeme") the new hire can log in with and be
+     * told to change.
+     */
+    private void applyDefaultPasswordIfNeeded(String table, Map<String, Object> body, Map<String, Object> safe) {
+        if (!tableHasColumn(table, "password")) return;
+        Object raw = body == null ? null : body.get("password");
+        String plain = (raw == null || raw.toString().isBlank()) ? "changeme" : raw.toString();
+        safe.put("password", passwordEncoder.encode(plain));
     }
 
     // ------------------------------------------------------------------------
@@ -296,6 +324,7 @@ public class GenericEntityController {
         if (tableHasColumn(table, "tenant_id")) {
             safe.put("tenant_id", TenantContext.get());
         }
+        applyDefaultPasswordIfNeeded(table, body, safe);
         encryptSecretsInPlace(code, safe);
 
         String cols = String.join(",", safe.keySet());
@@ -318,7 +347,15 @@ public class GenericEntityController {
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("ok", true);
             result.put("entity", code);
-            result.put("inserted", safe);
+            // Never echo the password hash back in the response body, even
+            // hashed -- the rest of "safe" (what was actually written) is
+            // still useful for the caller to confirm.
+            Map<String, Object> inserted = safe;
+            if (safe.containsKey("password")) {
+                inserted = new LinkedHashMap<>(safe);
+                inserted.remove("password");
+            }
+            result.put("inserted", inserted);
             if (lastId != null && lastId > 0) result.put("id", lastId);
             return ResponseEntity.ok(result);
         } catch (Exception ex) {

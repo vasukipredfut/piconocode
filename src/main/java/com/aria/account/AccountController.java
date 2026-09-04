@@ -8,6 +8,7 @@ import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -31,11 +32,14 @@ public class AccountController {
 
     private final JdbcTemplate jdbc;
     private final String storageDir;
+    private final PasswordEncoder passwordEncoder;
 
     public AccountController(JdbcTemplate jdbc,
-                              @Value("${earms.document-storage:/tmp/earms-docs}") String storageDir) {
+                              @Value("${earms.document-storage:/tmp/earms-docs}") String storageDir,
+                              PasswordEncoder passwordEncoder) {
         this.jdbc = jdbc;
         this.storageDir = storageDir;
+        this.passwordEncoder = passwordEncoder;
         new File(storageDir, "avatars").mkdirs();
         new File(storageDir, "backgrounds").mkdirs();
     }
@@ -44,6 +48,11 @@ public class AccountController {
         public String employeename;
         public String email;
         public String phoneno;
+    }
+
+    public static class ChangePasswordRequest {
+        public String oldPassword;
+        public String newPassword;
     }
 
     /**
@@ -108,6 +117,37 @@ public class AccountController {
         } catch (Exception e) {
             return Map.of("ok", false, "error", e.getMessage());
         }
+    }
+
+    /**
+     * Self-service password change: the current password must match before
+     * the new one is written. Uses the same {@code employee_details.password}
+     * / {@code PasswordEncoder} bean as login (see
+     * {@code com.aria.entity.GenericEntityController#applyDefaultPasswordIfNeeded}
+     * for the create-time counterpart of this) — the new value is always
+     * hashed, never stored in plain text.
+     */
+    @PostMapping("/change-password")
+    @Operation(summary = "Change the logged-in user's own password (old password required to verify identity).")
+    public Map<String, Object> changePassword(@RequestBody ChangePasswordRequest req) {
+        Long userId = currentUserId();
+        if (req.newPassword == null || req.newPassword.isBlank()) {
+            return Map.of("ok", false, "error", "New password is required");
+        }
+        String currentHash;
+        try {
+            currentHash = jdbc.queryForObject(
+                    "SELECT password FROM employee_details WHERE id = ?", String.class, userId);
+        } catch (EmptyResultDataAccessException e) {
+            return Map.of("ok", false, "error", "User not found");
+        }
+        if (currentHash == null || !passwordEncoder.matches(
+                req.oldPassword == null ? "" : req.oldPassword, currentHash)) {
+            return Map.of("ok", false, "error", "Old password is incorrect");
+        }
+        jdbc.update("UPDATE employee_details SET password = ? WHERE id = ?",
+                passwordEncoder.encode(req.newPassword), userId);
+        return Map.of("ok", true);
     }
 
     // ---- Preferences -------------------------------------------------------

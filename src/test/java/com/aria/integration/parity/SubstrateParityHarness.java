@@ -84,7 +84,7 @@ public abstract class SubstrateParityHarness {
     @BeforeEach
     void parityBaseSetup() {
         TenantContext.set(1L);
-        substrate = new GenericEntityController(jdbc);
+        substrate = new GenericEntityController(jdbc, new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder());
     }
 
     @AfterEach
