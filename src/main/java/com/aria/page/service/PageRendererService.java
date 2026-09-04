@@ -56,8 +56,17 @@ public class PageRendererService {
     public Optional<PageResponse> loadPublishedFor(Long tenantId, String code) {
         String key = cacheKey(tenantId, code);
 
-        // Cache hit? Inflate.
-        String cached = redis.opsForValue().get(key);
+        // Cache hit? Inflate. Redis outage must not break the API (same
+        // tolerance as the cache-populate try/catch below) -- unlike that
+        // one, this GET was unguarded, so every page load 500'd outright on
+        // any environment where Redis is unreachable instead of falling
+        // through to the DB.
+        String cached = null;
+        try {
+            cached = redis.opsForValue().get(key);
+        } catch (RuntimeException ignored) {
+            // fall through to the DB read below
+        }
         if (cached != null) {
             return Optional.of(deserialise(cached));
         }
