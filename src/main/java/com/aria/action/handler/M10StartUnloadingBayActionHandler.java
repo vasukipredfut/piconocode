@@ -32,6 +32,21 @@ import java.util.stream.IntStream;
  * convention as the loading side. {@code m10.unloading-bay-complete} closes
  * these rows and posts the RECEIPT stock movement.
  *
+ * <p>Also opens one conveyor {@code dispatch_task} row (V102/V269/V271) per
+ * SKU line alongside its {@code unloading_progress_detail_bay} counterpart —
+ * same purpose as {@link M10StartBayActionHandler}'s own dispatch_task
+ * writes (lets the barcode scanner covering this physical bay track/enforce
+ * this exact route/order/SKU target as scans come in), stamped with the
+ * same fixed {@link M10StartBayActionHandler#CONVEYOR_WORKFLOW_CODE} but
+ * {@code type = 'UnLoading'} instead of {@code 'Loading'} — this is the
+ * receiving direction. {@code rule_set_id} is left {@code NULL}, same as
+ * the loading side. Gated by the same {@code scanning_status}/{@code
+ * conveyor_mode} pair (V276/V277) as {@link M10StartBayActionHandler} —
+ * mandatory per line, straight off that SKU's {@code m5_sku_master} row (the
+ * page's own lookup, not re-validated here) — a {@code WITHOUT_CONVEYOR} or
+ * {@code WITHOUT_BARCODE} line gets no {@code dispatch_task}, same reasoning
+ * as the loading side (see that handler's javadoc).
+ *
  * <p>Payload shape mirrors {@link M10StartUnloadBayActionHandler}, with two
  * distinct quantity keys per line: {@code quantity} (required, &gt;= 0) is the
  * planned amount, stored on {@code unloading_progress_detail_bay.quantity} and
@@ -45,7 +60,8 @@ import java.util.stream.IntStream;
  *   { "instanceId": 1495, "formData": {
  *       "vehicle_no": "TN86J8070", "gpNumber": "GP-1-1495", "bay_name": "Bay1",
  *       "order_sku_line_items": [
- *         { "route_id": "ROU028912", "order_id": "ORD1123", "sku_code": "SKU1215", "sku_desc": "GROUNDNUT RAW OIL 15 KG TIN", "quantity": 20, "unloading_qty": 0 }
+ *         { "route_id": "ROU028912", "order_id": "ORD1123", "sku_code": "SKU1215", "sku_desc": "GROUNDNUT RAW OIL 15 KG TIN", "quantity": 20, "unloading_qty": 0,
+ *           "scanning_status": "BARCODE", "conveyor_mode": "CONVEYOR" }
  *       ] } }
  * </pre>
  */
@@ -123,7 +139,17 @@ public class M10StartUnloadingBayActionHandler implements ActionHandler {
                 return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") needs unloading_qty >= 0");
             }
 
-            parsed.add(new LineEntry(routeId, strOpt(line, "order_id"), skuCode, strOpt(line, "sku_desc"), qty, unloadingQty));
+            String scanningStatus = strReq(line, "scanning_status");
+            if (scanningStatus == null) {
+                return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") is missing scanning_status");
+            }
+            String conveyorMode = strReq(line, "conveyor_mode");
+            if (conveyorMode == null) {
+                return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") is missing conveyor_mode");
+            }
+
+            parsed.add(new LineEntry(routeId, strOpt(line, "order_id"), skuCode, strOpt(line, "sku_desc"), qty, unloadingQty,
+                    scanningStatus, conveyorMode));
             totalQty = totalQty.add(qty);
         }
 
@@ -161,18 +187,44 @@ public class M10StartUnloadingBayActionHandler implements ActionHandler {
                 "SELECT id FROM unloading_progress_detail WHERE tenant_id = ? AND workflow_instance_id = ?",
                 Long.class, tenantId, instanceId);
 
+        // scanning_status/conveyor_mode per line are mandatory (validated
+        // above) -- same WITHOUT_CONVEYOR/WITHOUT_BARCODE skip rule as
+        // M10StartBayActionHandler (see that handler's javadoc): either way,
+        // no dispatch_task is opened for that line -- nothing will ever
+        // reference it.
+        int dispatchTasksSkipped = 0;
         for (LineEntry e : parsed) {
             jdbc.update(
                     "INSERT INTO unloading_progress_detail_bay "
                             + "(tenant_id, unloading_progress_detail_id, workflow_instance_id, route_id, order_id, sku_code, sku_desc, bay_name, quantity, processed_quantity, status) "
                             + "VALUES (?,?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
                     tenantId, parentId, instanceId, e.routeId, e.orderId, e.skuCode, e.skuDesc, bayName, e.quantity, e.unloadingQty);
+
+            if ("WITHOUT_CONVEYOR".equals(e.conveyorMode) || "WITHOUT_BARCODE".equals(e.scanningStatus)) {
+                dispatchTasksSkipped++;
+                continue;
+            }
+
+            // One conveyor dispatch_task per SKU line, so the barcode scanner
+            // covering this physical bay can track/enforce this exact
+            // route/order/SKU target as scans come in -- same task_code
+            // convention as M10StartBayActionHandler (instanceId+bay+sku+
+            // submit-time is unique enough even across a reload cycle).
+            String taskCode = "DT-" + instanceId + "-" + bayName + "-" + e.skuCode + "-" + System.currentTimeMillis();
+            jdbc.update(
+                    "INSERT INTO dispatch_task "
+                            + "(tenant_id, workflow_code, type, workflow_instance_id, bay_code, route_id, order_id, task_code, "
+                            + "order_ref, sku_code, gp_number, target_qty, processed_qty, status) "
+                            + "VALUES (?,?,'UnLoading',?,?,?,?,?,?,?,?,?, 0, 'Open')",
+                    tenantId, M10StartBayActionHandler.CONVEYOR_WORKFLOW_CODE, instanceId, bayName, e.routeId, e.orderId, taskCode,
+                    e.orderId, e.skuCode, gatePassNo, e.quantity);
         }
 
         Map<String, Object> data = new HashMap<>();
         data.put("bayName", bayName);
         data.put("lineCount", parsed.size());
         data.put("totalQuantity", totalQty);
+        data.put("dispatchTasksSkipped", dispatchTasksSkipped);
 
         return ActionResult.builder()
                 .ok(true)
@@ -192,5 +244,6 @@ public class M10StartUnloadingBayActionHandler implements ActionHandler {
         return v == null ? null : v.toString();
     }
 
-    private record LineEntry(String routeId, String orderId, String skuCode, String skuDesc, BigDecimal quantity, BigDecimal unloadingQty) {}
+    private record LineEntry(String routeId, String orderId, String skuCode, String skuDesc, BigDecimal quantity, BigDecimal unloadingQty,
+                              String scanningStatus, String conveyorMode) {}
 }

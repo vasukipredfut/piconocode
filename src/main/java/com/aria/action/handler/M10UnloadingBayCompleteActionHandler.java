@@ -39,6 +39,15 @@ import java.util.Map;
  * <p>Matched by (route_id, order_id, sku_code) — order_id NULL-safe, same as
  * every other bay handler in this module.
  *
+ * <p>Also force-closes the conveyor {@code dispatch_task} row(s) {@link
+ * M10StartUnloadingBayActionHandler} opened for this same (route_id,
+ * order_id, sku_code) — {@code status='Completed'} — same reconciliation
+ * {@link M10BayCompleteActionHandler} does on the loading side (regardless
+ * of whether the physical conveyor scanner ever drove {@code processed_qty}
+ * up to {@code target_qty} on its own). A count of 0 is not an error — a
+ * line whose SKU is {@code WITHOUT_CONVEYOR}/{@code WITHOUT_BARCODE} never
+ * had a {@code dispatch_task} opened for it in the first place.
+ *
  * <p><b>Whole-request atomicity:</b> same as {@link M10BayCompleteActionHandler}
  * — a plain {@code ActionResult.error(...)} return does not roll back a
  * Spring {@code @Transactional} method, so {@link #markRollbackOnly()} is
@@ -148,6 +157,17 @@ public class M10UnloadingBayCompleteActionHandler implements ActionHandler {
             if (n == 0) {
                 markRollbackOnly();
                 return ActionResult.error("unloading_progress_detail_bay row changed concurrently for route_id=" + routeId + " sku_code=" + skuCode + " — retry");
+            }
+
+            int dispatchTasksClosed = jdbc.update(
+                    "UPDATE dispatch_task SET status = 'Completed', "
+                            + "completed_at = CASE WHEN completed_at IS NULL THEN CURRENT_TIMESTAMP ELSE completed_at END "
+                            + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
+                            + "((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'Open'",
+                    tenantId, instanceId, routeId, orderId, orderId, skuCode);
+            if (dispatchTasksClosed > 0) {
+                log.info("action.unloading-bay-complete.dispatch-task-closed tenantId={} instanceId={} routeId={} skuCode={} count={}",
+                        tenantId, instanceId, routeId, skuCode, dispatchTasksClosed);
             }
 
             totalReceived = totalReceived.add(qty);

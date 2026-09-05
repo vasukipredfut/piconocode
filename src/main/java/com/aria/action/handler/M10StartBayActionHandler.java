@@ -59,10 +59,12 @@ import java.util.stream.IntStream;
  * multi-bay-session note above). Stamped with {@link #CONVEYOR_WORKFLOW_CODE}
  * (the conveyor line's own fixed workflow, not this instance's M10 business
  * workflow code — see that constant's javadoc for why), and {@code type =
- * 'Loading'} (V271) — this handler is the loading side only; M10's unload-bay
- * handlers don't create dispatch_task rows at all yet. {@code rule_set_id}
- * is left {@code NULL} here — attaching a real Rule Builder rule set for
- * enforcement is a separate, not-yet-wired concern.
+ * 'Loading'} (V271) — this handler is the loading side only; {@link
+ * M10StartUnloadingBayActionHandler} (M10.PackUnload's receiving side) opens
+ * its own {@code type = 'UnLoading'} dispatch_task rows the same way, but the
+ * Reject Flow Unload sibling ({@link M10StartUnloadBayActionHandler}) still
+ * doesn't. {@code rule_set_id} is left {@code NULL} here — attaching a real
+ * Rule Builder rule set for enforcement is a separate, not-yet-wired concern.
  *
  * <p>A single transaction can span several bay sessions (Bay 1 with 2 SKUs
  * = 100, Bay 2 with 1 SKU = 200, ...). Only the FIRST bay needs an FSM
@@ -132,7 +134,7 @@ public class M10StartBayActionHandler implements ActionHandler {
      * the M10 workflow code would never be found by a device querying the
      * M12 one.
      */
-    private static final String CONVEYOR_WORKFLOW_CODE = "M12.ConveyorTest";
+    static final String CONVEYOR_WORKFLOW_CODE = "M12.ConveyorTest";
 
     /** Fixed set of 12 physical bays -- "Bay1".."Bay12" -- mirrored as a DB-level
      *  CHECK constraint on loading_progress_detail_bay.bay_name (V180). */
