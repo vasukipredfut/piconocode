@@ -57,7 +57,16 @@ public final class GatePassSatelliteJoin {
             // it was created -- aria:qc-final-out's qc_notes/status/qc_sample_test were
             // only ever reachable via workflow_instance.submitted_data_json or a direct
             // read of the satellite table itself, never through a plain GatePass read.
-            " LEFT JOIN qc_final_outbound_detail qfod ON qfod.workflow_instance_id = gp.workflow_instance_id AND qfod.tenant_id = gp.tenant_id";
+            " LEFT JOIN qc_final_outbound_detail qfod ON qfod.workflow_instance_id = gp.workflow_instance_id AND qfod.tenant_id = gp.tenant_id" +
+            // Vehicle Category master (V39/V299) — gate_pass.vehicle_category
+            // stores the master's `code` (e.g. "TANKER"), not its id, same
+            // lookup-by-code convention as loading_type. Joined so a plain
+            // GatePass read also surfaces the category's image without a
+            // separate client-side VehicleCategory lookup. Explicit COLLATE:
+            // m10_vehicle_category (V39, utf8mb4_unicode_ci) predates gate_pass's
+            // newer utf8mb4_uca1400_ai_ci columns -- MariaDB refuses a bare `=`
+            // across mismatched collations ("Illegal mix of collations").
+            " LEFT JOIN m10_vehicle_category mvc ON mvc.code = gp.vehicle_category COLLATE utf8mb4_unicode_ci";
 
     // Each satellite's own out-of-order-selection reason (see V232/V233,
     // PmtSharedReasonListener), aliased per table — gate_pass's own bare
@@ -143,5 +152,6 @@ public final class GatePassSatelliteJoin {
             // Aliased distinctly from qua.qc_notes/qc_decision_status (qc_unloading_approval,
             // a different QC step) since both satellites use the same bare column names.
             "qfod.qc_notes AS qc_final_outbound_notes, qfod.status AS qc_final_outbound_status, " +
-            "qfod.qc_sample_test";
+            "qfod.qc_sample_test, " +
+            "mvc.image_url AS vehicle_category_image_url";
 }
