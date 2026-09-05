@@ -103,6 +103,24 @@ public class GenericEntityController {
         safe.put("password", passwordEncoder.encode(plain));
     }
 
+    /**
+     * {@code employee_details.status} defaults to {@code NULL} (V1 baseline)
+     * and nothing in the create form sends a value for it, yet {@code
+     * AuthUserDetailsService}'s login query only matches {@code status = ''
+     * OR status = 'A'} — every new hire was landing unable to log in at all
+     * (default password + all) until someone manually set status='A'.
+     * Scoped to password-bearing (login) tables only, same as {@link
+     * #applyDefaultPasswordIfNeeded}, so this never touches an unrelated
+     * entity's own status semantics (workflow states, gate pass status, etc.).
+     */
+    private void applyDefaultStatusIfNeeded(String table, Map<String, Object> body, Map<String, Object> safe) {
+        if (!tableHasColumn(table, "password") || !tableHasColumn(table, "status")) return;
+        Object raw = body == null ? null : body.get("status");
+        if (raw == null || raw.toString().isBlank()) {
+            safe.put("status", "A");
+        }
+    }
+
     // ------------------------------------------------------------------------
     // Schema endpoint — no RBAC: any authenticated user may read the shape.
     // ------------------------------------------------------------------------
@@ -325,9 +343,11 @@ public class GenericEntityController {
             safe.put("tenant_id", TenantContext.get());
         }
         applyDefaultPasswordIfNeeded(table, body, safe);
+        applyDefaultStatusIfNeeded(table, body, safe);
         encryptSecretsInPlace(code, safe);
 
-        String cols = String.join(",", safe.keySet());
+        String cols = safe.keySet().stream().map(k -> "`" + k + "`")
+                .collect(java.util.stream.Collectors.joining(","));
         String marks = String.join(",", java.util.Collections.nCopies(safe.size(), "?"));
         String sql = "INSERT INTO " + table + " (" + cols + ") VALUES (" + marks + ")";
         try {
@@ -436,10 +456,11 @@ public class GenericEntityController {
             if (hasTenant) safe.put("tenant_id", TenantContext.get());
             encryptSecretsInPlace(code, safe);
 
-            String cols = String.join(",", safe.keySet());
+            String cols = safe.keySet().stream().map(k -> "`" + k + "`")
+                    .collect(java.util.stream.Collectors.joining(","));
             String marks = String.join(",", java.util.Collections.nCopies(safe.size(), "?"));
             String updateClause = safe.keySet().stream()
-                    .map(k -> k + "=VALUES(" + k + ")")
+                    .map(k -> "`" + k + "`=VALUES(`" + k + "`)")
                     .collect(java.util.stream.Collectors.joining(", "));
             String sql = "INSERT INTO " + table + " (" + cols + ") VALUES (" + marks + ") " +
                     "ON DUPLICATE KEY UPDATE " + updateClause;
@@ -504,7 +525,7 @@ public class GenericEntityController {
         StringBuilder sets = new StringBuilder();
         for (String k : safe.keySet()) {
             if (sets.length() > 0) sets.append(", ");
-            sets.append(k).append("=?");
+            sets.append("`").append(k).append("`=?");
         }
         List<Object> args = new ArrayList<>(safe.values());
         args.add(id);
