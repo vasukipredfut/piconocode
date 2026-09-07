@@ -296,7 +296,8 @@ public class M10StartBayActionHandler implements ActionHandler {
         // scan-tracking task for them would never be fulfilled). Either way,
         // no dispatch_task is opened -- nothing will ever reference it.
         int dispatchTasksSkipped = 0;
-        for (LineEntry e : parsed) {
+        for (int i = 0; i < parsed.size(); i++) {
+            LineEntry e = parsed.get(i);
             jdbc.update(
                     "INSERT INTO loading_progress_detail_bay "
                             + "(tenant_id, loading_progress_detail_id, workflow_instance_id, route_id, order_id, sku_code, sku_desc, bay_name, quantity, status) "
@@ -312,10 +313,15 @@ public class M10StartBayActionHandler implements ActionHandler {
             // covering this physical bay (see CONVEYOR_SCANNER_WORKFLOW_GUIDE.md)
             // can track/enforce this exact route/order/SKU target as scans come
             // in. task_code is synthetic and must never repeat for this tenant
-            // (UNIQUE(tenant_id, task_code) forever, V102) -- instanceId never
-            // repeats, so instanceId+bay+sku+submit-time is enough even across a
-            // reload cycle re-opening the same bay/SKU for the same instance.
-            String taskCode = "DT-" + instanceId + "-" + bayName + "-" + e.skuCode + "-" + System.currentTimeMillis();
+            // (UNIQUE(tenant_id, task_code) forever, V102) -- instanceId+bay+sku+
+            // submit-time alone is NOT enough: the same SKU can appear on more
+            // than one line of the same Start Bay submission (e.g. split across
+            // several routes/orders into one bay), and those inserts land close
+            // enough together to share a System.currentTimeMillis() value,
+            // violating uq_dt_task_code (seen in prod: instance 1906/Bay10/
+            // SKU1461 across two routes). The line index is appended so every
+            // line in this submission gets a distinct code regardless of timing.
+            String taskCode = "DT-" + instanceId + "-" + bayName + "-" + e.skuCode + "-" + System.currentTimeMillis() + "-" + i;
             jdbc.update(
                     "INSERT INTO dispatch_task "
                             + "(tenant_id, workflow_code, type, workflow_instance_id, bay_code, route_id, order_id, task_code, "
