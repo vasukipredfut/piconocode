@@ -17,18 +17,20 @@ import java.util.Map;
 
 /**
  * return_stock_officer_item child rows driven by the "Batch / SKU / Qty /
- * Good & Expiry Stock" grid on aria:dispatch-vehicle-details (M10.ReturnStockIn
+ * Good & Expiry Stock" grid on aria:return-stock-officer (M10.ReturnStockIn
  * only) -- one row per batch/SKU line, mirroring
  * {@link DispatchInvoiceItemTransitionListener}'s exact shape and reasoning:
  * the submitted lines are an ARRAY, which the generic m0_workflow_projection
  * mechanism can't fan out into N child rows.
  *
- * <p>PAGE_CODE is aria:dispatch-vehicle-details, not a dedicated
- * aria:return-stock-officer page -- the actual frontend build reuses the
- * Dispatch Vehicle Details page a second time (submitted again at
- * WEIGHMENT_1, the same reuse pattern aria:weighment-capture/aria:parking-scan
- * already use elsewhere) rather than a standalone screen. Scoped to
- * M10.ReturnStockIn only since that's the only workflow this field exists on.
+ * <p>PAGE_CODE is aria:return-stock-officer, a dedicated page (see V300).
+ * Earlier builds mistakenly reused aria:dispatch-vehicle-details a second
+ * time for this step (submitted again at WEIGHMENT_1); that meant no
+ * distinct Return Stock Officer queue and the grid appearing on the wrong
+ * page. V300 moved the grid to its own page and repointed the
+ * WEIGHMENT_1 -> RETURN_STOCK_OFFICER transition's pageCode to match.
+ * Scoped to M10.ReturnStockIn only since that's the only workflow this
+ * field exists on.
  *
  * <p>Delete-then-insert per instance, same idempotency reasoning as
  * DispatchInvoiceItemTransitionListener: submitted_data_json is cumulative
@@ -39,7 +41,7 @@ import java.util.Map;
 public class ReturnStockOfficerItemTransitionListener implements WorkflowTransitionListener {
 
     private static final Logger log = LoggerFactory.getLogger(ReturnStockOfficerItemTransitionListener.class);
-    private static final String PAGE_CODE = "aria:dispatch-vehicle-details";
+    private static final String PAGE_CODE = "aria:return-stock-officer";
 
     private final JdbcTemplate jdbc;
 
