@@ -74,12 +74,15 @@ public class ReturnStockOfficerItemTransitionListener implements WorkflowTransit
             try {
                 jdbc.update(
                         "INSERT INTO return_stock_officer_item (tenant_id, workflow_instance_id, vehicle_no, "
-                                + "gate_pass_no, batch_no, sku_code, sku_name, qty, good_stock_qty, expiry_stock_qty) "
-                                + "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                + "gate_pass_no, batch_no, sku_code, sku_name, qty, good_stock_qty, expiry_stock_qty, "
+                                + "packing_month, stock_type, box, pc, remarks) "
+                                + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         tenantId, instance.getId(), vehicleNo, gatePassNo,
                         str(line, "batch_no", "batchNo"), str(line, "sku_code", "skuCode"),
                         str(line, "sku_name", "skuName"), num(line, "qty"),
-                        num(line, "good_stock_qty"), num(line, "expiry_stock_qty"));
+                        num(line, "good_stock_qty"), num(line, "expiry_stock_qty"),
+                        str(line, "packing_month", "packingMonth"), str(line, "stock_type", "stockType"),
+                        num(line, "box"), num(line, "pc"), str(line, "remarks"));
                 written++;
             } catch (Exception e) {
                 log.warn("return_stock_officer_item insert failed for instance {} batch_no={}: {}",
