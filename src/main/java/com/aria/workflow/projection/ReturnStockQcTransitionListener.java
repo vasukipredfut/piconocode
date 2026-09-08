@@ -76,13 +76,15 @@ public class ReturnStockQcTransitionListener implements WorkflowTransitionListen
             if (rowId == null) continue;
             String qcBatchNo = str(line.get("qc_batch_no"));
             String unloadingArea = str(line.get("unloading_area"));
-            if (qcBatchNo == null && unloadingArea == null) continue; // nothing this row actually edited
+            String diffReason = str(line.get("diff_reason"));
+            if (qcBatchNo == null && unloadingArea == null && diffReason == null) continue; // nothing this row actually edited
             try {
                 int n = jdbc.update(
                         "UPDATE return_stock_officer_item SET qc_batch_no = COALESCE(?, qc_batch_no), "
-                                + "unloading_area = COALESCE(?, unloading_area) "
+                                + "unloading_area = COALESCE(?, unloading_area), "
+                                + "diff_reason = COALESCE(?, diff_reason) "
                                 + "WHERE id = ? AND tenant_id = ? AND workflow_instance_id = ?",
-                        qcBatchNo, unloadingArea, rowId, tenantId, instanceId);
+                        qcBatchNo, unloadingArea, diffReason, rowId, tenantId, instanceId);
                 updated += n;
             } catch (Exception e) {
                 log.warn("return_stock_officer_item QC update failed for instance {} row id={}: {}",

@@ -34,8 +34,22 @@ import java.util.Map;
  *
  * <p>Delete-then-insert per instance, same idempotency reasoning as
  * DispatchInvoiceItemTransitionListener: submitted_data_json is cumulative
- * for the instance's whole lifetime and this listener's onTransition fires on
- * every later transition too, not just the one where this page submitted.
+ * for the instance's whole lifetime, so without a previousState guard this
+ * listener's onTransition would fire on every later transition too, not just
+ * the one where this page submitted.
+ *
+ * <p><b>Scoped to previousState == WEIGHMENT_1</b> (the only edge this page
+ * submits from) for exactly the reason {@link ReturnStockQcTransitionListener}
+ * already documents for its own scoping: {@link com.aria.workflow.model.WorkflowInstance}
+ * ids created here are now referenced as a foreign key by
+ * qc_processed_location.return_stock_officer_item_id
+ * ({@link QcProcessedLocationTransitionListener}). Before that FK existed,
+ * re-running delete-then-insert on every later transition was harmless
+ * (nothing else pointed at the old ids). Confirmed live: without this guard,
+ * submitting aria:qc-approval re-fired this listener, deleted the batch rows
+ * QC had just allocated against, and re-inserted them under new ids --
+ * silently orphaning every qc_processed_location row and wiping the diff
+ * QcProcessedLocationTransitionListener had just computed on them.
  */
 @Component
 public class ReturnStockOfficerItemTransitionListener implements WorkflowTransitionListener {
@@ -52,6 +66,7 @@ public class ReturnStockOfficerItemTransitionListener implements WorkflowTransit
     @Override
     public void onTransition(WorkflowInstance instance, String previousState, Map<String, Object> bag) {
         if (bag == null || !"M10.ReturnStockIn".equals(instance.getWorkflowCode())) return;
+        if (!"WEIGHMENT_1".equals(previousState)) return;
         Object pageDataRaw = bag.get(PAGE_CODE);
         if (!(pageDataRaw instanceof Map)) return;
         @SuppressWarnings("unchecked")
