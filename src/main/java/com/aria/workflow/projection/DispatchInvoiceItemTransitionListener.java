@@ -12,6 +12,9 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
+import java.sql.Date;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -86,12 +89,20 @@ public class DispatchInvoiceItemTransitionListener implements WorkflowTransition
                 if (skuName == null && skuCode != null) skuName = skuNameBySkuCode.get(skuCode);
                 jdbc.update(
                         "INSERT INTO dispatch_invoice_item (tenant_id, workflow_instance_id, vehicle_no, "
-                                + "gate_pass_no, invoice_no, order_id, vendor_name, rd_code, sku_code, sku_name, qty) "
-                                + "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                                + "gate_pass_no, invoice_no, order_id, vendor_name, rd_code, sku_code, sku_name, qty, "
+                                + "billing_date, reason, others_reason, box, pc, total_pc, billing_rate, `value`, "
+                                + "stock_received_rate, remarks) "
+                                + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         tenantId, instance.getId(), vehicleNo, gatePassNo,
                         str(line, "invoice_no", "invoiceNo"), str(line, "order_id", "orderId"),
                         str(line, "vendor_name", "vendorName"), str(line, "rd_code", "rdCode"),
-                        skuCode, skuName, num(line, "qty"));
+                        skuCode, skuName, num(line, "qty"),
+                        date(line, "billing_date", "billingDate"), str(line, "reason"),
+                        str(line, "others_reason", "othersReason"),
+                        numOrNull(line, "box"), numOrNull(line, "pc"), numOrNull(line, "total_pc", "totalPc"),
+                        numOrNull(line, "billing_rate", "billingRate"), numOrNull(line, "value"),
+                        numOrNull(line, "stock_received_rate", "stockReceivedRate"),
+                        str(line, "remarks"));
                 written++;
             } catch (Exception e) {
                 // One bad line must not sink the rest — insert what we can, log what we can't.
@@ -176,6 +187,38 @@ public class DispatchInvoiceItemTransitionListener implements WorkflowTransition
             return new BigDecimal(String.valueOf(v));
         } catch (NumberFormatException e) {
             return BigDecimal.ZERO;
+        }
+    }
+
+    /**
+     * Unlike {@link #num}, the new Return Stock In fields (box/pc/total_pc/
+     * billing_rate/value/stock_received_rate) are genuinely optional per row
+     * — defaulting a missing one to ZERO would misrepresent "not entered" as
+     * "entered as zero" in a monetary/quantity column, so this returns null
+     * (persisted as SQL NULL) instead.
+     */
+    private static BigDecimal numOrNull(Map<String, Object> m, String... keys) {
+        for (String k : keys) {
+            Object v = m.get(k);
+            if (v == null || String.valueOf(v).isBlank()) continue;
+            if (v instanceof BigDecimal bd) return bd;
+            if (v instanceof Number n) return BigDecimal.valueOf(n.doubleValue());
+            try {
+                return new BigDecimal(String.valueOf(v));
+            } catch (NumberFormatException ignored) {
+                // try the next key alias
+            }
+        }
+        return null;
+    }
+
+    private static Date date(Map<String, Object> m, String... keys) {
+        String s = str(m, keys);
+        if (s == null) return null;
+        try {
+            return Date.valueOf(LocalDate.parse(s.length() > 10 ? s.substring(0, 10) : s));
+        } catch (DateTimeParseException e) {
+            return null;
         }
     }
 }
