@@ -1,8 +1,11 @@
 package com.aria.entity;
 
+import com.aria.access.RolePagePermissionEntitySync;
 import com.aria.integration.secrets.TenantSecretCodec;
 import com.aria.security.TenantContext;
 import com.aria.auth.AuthUserDetails;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.http.HttpStatus;
@@ -43,9 +46,21 @@ import java.util.regex.Pattern;
 @RequestMapping("/api/m0/entities")
 public class GenericEntityController {
 
+    private static final Logger log = LoggerFactory.getLogger(GenericEntityController.class);
     private static final Pattern SAFE_IDENT = Pattern.compile("^[A-Za-z0-9_]+$");
     private final JdbcTemplate jdbc;
     private final Map<Long, String> roleNameCache = new ConcurrentHashMap<>();
+
+    // RolePagePermission is the one entity in this generic CRUD surface with
+    // a cross-cutting side effect: a grant/revoke here also mirrors onto the
+    // page's underlying entity's entity_registry.write_role (see
+    // RolePagePermissionEntitySync's javadoc for the full "two doors"
+    // reasoning). Confirmed 2026-09-09 that this generic
+    // /api/m0/entities/RolePagePermission path -- not just
+    // EmployeeAccessMatrixController's own /role-permission endpoint -- is
+    // the one actually used to manage grants, so the sync must fire from
+    // here too.
+    @Autowired private RolePagePermissionEntitySync rolePagePermissionSync;
 
     // GatePass single-row reads (getRow/getRowByField — the data source behind
     // page-JSON onChangeFill) are the only consumer that ever saw the fields now
@@ -364,6 +379,7 @@ public class GenericEntityController {
             Long lastId = keyHolder.getKey() == null ? null : keyHolder.getKey().longValue();
             writeAudit("CREATE", code, lastId, null, safe);
             maybeStartWorkflow(code, table, lastId);
+            maybeSyncRolePagePermission(code, lastId);
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("ok", true);
             result.put("entity", code);
@@ -540,6 +556,7 @@ public class GenericEntityController {
                         Map.of("ok", false, "error", "Row not found: id=" + id + " in " + table));
             }
             writeAudit("UPDATE", code, id, before, safe);
+            maybeSyncRolePagePermission(code, id);
             return ResponseEntity.ok(Map.of("ok", true, "updated", n, "id", id));
         } catch (Exception ex) {
             return ResponseEntity.badRequest().body(
@@ -567,6 +584,7 @@ public class GenericEntityController {
                         Map.of("ok", false, "error", "Row not found: id=" + id + " in " + table));
             }
             writeAudit("DELETE", code, id, before, null);
+            maybeSyncDeletedRolePagePermission(code, before);
             return ResponseEntity.ok(Map.of("ok", true, "deleted", n, "id", id));
         } catch (Exception ex) {
             return ResponseEntity.badRequest().body(
@@ -849,6 +867,49 @@ public class GenericEntityController {
             "SELECT " + valueColumn + " AS value, " + displayColumn + " AS label " +
             "FROM " + table + where + " ORDER BY " + displayColumn,
             scopeArgs(table));
+    }
+
+    /** Fires {@link RolePagePermissionEntitySync} after a successful
+     *  create/update of a RolePagePermission row -- no-op for every other
+     *  entity. Re-reads the row by id rather than trusting the request body,
+     *  since {@link #update} only carries whatever fields the caller
+     *  actually changed (a save that only ticked "Edit" wouldn't otherwise
+     *  tell us the row's role_id/page_code). */
+    private void maybeSyncRolePagePermission(String code, Long id) {
+        if (!"RolePagePermission".equals(code) || id == null) return;
+        try {
+            Map<String, Object> row = jdbc.queryForMap(
+                "SELECT role_id, page_code, can_save, can_edit FROM role_page_permission WHERE id=?", id);
+            Long roleId = row.get("role_id") == null ? null : ((Number) row.get("role_id")).longValue();
+            String pageCode = (String) row.get("page_code");
+            boolean save = truthy(row.get("can_save"));
+            boolean edit = truthy(row.get("can_edit"));
+            rolePagePermissionSync.sync(pageCode, roleId, save || edit);
+        } catch (Exception e) {
+            log.warn("maybeSyncRolePagePermission failed for id={}: {}", id, e.getMessage());
+        }
+    }
+
+    private static boolean truthy(Object o) {
+        if (o == null) return false;
+        if (o instanceof Boolean b) return b;
+        if (o instanceof Number n) return n.intValue() != 0;
+        return Boolean.parseBoolean(String.valueOf(o));
+    }
+
+    /** Delete counterpart of {@link #maybeSyncRolePagePermission} -- deleting
+     *  a RolePagePermission row outright is a revoke, same as unticking
+     *  Save/Edit and saving. {@code before} is the row's pre-delete snapshot
+     *  (deleted rows can't be re-read by id afterwards). */
+    private void maybeSyncDeletedRolePagePermission(String code, Map<String, Object> before) {
+        if (!"RolePagePermission".equals(code) || before == null) return;
+        try {
+            Long roleId = before.get("role_id") == null ? null : ((Number) before.get("role_id")).longValue();
+            String pageCode = (String) before.get("page_code");
+            rolePagePermissionSync.sync(pageCode, roleId, false);
+        } catch (Exception e) {
+            log.warn("maybeSyncDeletedRolePagePermission failed: {}", e.getMessage());
+        }
     }
 
     private Map<String, Object> lookupRegistryWithLookup(String code) {

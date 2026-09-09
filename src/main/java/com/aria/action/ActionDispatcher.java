@@ -86,12 +86,13 @@ public class ActionDispatcher {
                 throw new ActionForbiddenException(bodyOf(denied));
             }
         }
-        // role_page_permission / employee_page_permission enforcement. Covers
-        // workflow.transition (the "Save"/"Submit" button on nearly every
-        // workflow-driven page in this app) — the only entity-less write
-        // action, so entity_registry can't gate it. See PagePermissionResolver
-        // for why "no grant configured yet" resolves to allowed rather than
-        // denied: both tables start out empty in every environment.
+        // role_page_permission enforcement (role-based only, no per-employee
+        // override -- see PagePermissionResolver). Covers workflow.transition
+        // (the "Save"/"Submit" button on nearly every workflow-driven page in
+        // this app) — the only entity-less write action, so entity_registry
+        // can't gate it. See PagePermissionResolver for why "no grant
+        // configured yet" resolves to allowed rather than denied: the table
+        // starts out empty in every environment.
         if (invocation != null && invocation.getPageCode() != null) {
             ResponseEntity<?> denied = pageGuard.check(invocation.getPageCode(), pageAccessFor(code, invocation));
             if (denied != null) {

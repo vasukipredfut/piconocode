@@ -15,12 +15,13 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Enforces {@code role_page_permission} (V195, admin-editable via
- * {@code EmployeeAccessMatrixController} / {@code aria:role-page-access},
- * TenantAdmin+SuperAdmin only) for the CURRENT logged-in user against a page
- * code. Role-based only, by design (Dhivya, 2026-09-09) — this deliberately
- * does NOT consult {@code employee_page_permission}'s per-employee override;
- * every user's permission is purely a function of their role.
+ * Enforces {@code role_page_permission} (V195, admin-editable via the
+ * "Role Page Permission" screen's generic
+ * {@code /api/m0/entities/RolePagePermission} CRUD, TenantAdmin+SuperAdmin
+ * only per that entity's {@code write_role}) for the CURRENT logged-in user
+ * against a page code. Role-based only, by design (Dhivya, 2026-09-09) --
+ * there is no per-employee override; every user's permission is purely a
+ * function of their role.
  *
  * <p>Deliberately DIFFERENT from V195's originally-documented "missing row
  * = read:true, write:false" default: role_page_permission starts out
@@ -32,7 +33,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * unrestricted" convention {@code entity_registry.write_role} already uses
  * (see {@link com.aria.security.EntityWriteGuard}). Behaviour only changes
  * once TenantAdmin/SuperAdmin explicitly grants or restricts a (role, page)
- * pair through the Employee Access Matrix.
+ * pair through Role Page Permission.
  */
 @Component
 public class PagePermissionResolver {
