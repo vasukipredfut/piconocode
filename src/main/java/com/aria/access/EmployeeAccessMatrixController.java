@@ -95,6 +95,102 @@ public class EmployeeAccessMatrixController {
         return ResponseEntity.ok(Map.of("ok", true, "roles", rows));
     }
 
+    // ---- Self-service: "what can I do" -----------------------------------
+    // Unlike every other endpoint in this controller, this one is open to
+    // ANY authenticated user (no assertRole()) — same convention as
+    // PageVisibilityController's /api/m0/nav/visible-pages. It only ever
+    // resolves the CALLER's own roleId from their JWT, never a
+    // caller-supplied id, so there is no way to ask for someone else's
+    // permissions through this endpoint. Role-based only, by design (Dhivya,
+    // 2026-09-09) — employee_page_permission is deliberately NOT consulted
+    // here; reuses the same role-only resolution as PagePermissionResolver
+    // and #roleVisibility (nav visibility), just scoped to "me".
+
+    @GetMapping("/my-permissions")
+    public ResponseEntity<?> myPermissions(@RequestParam(required = false) String pageCode) {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || auth.getAuthorities() == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(
+                    Map.of("ok", false, "code", "RBAC_NO_USER", "error", "Not authenticated"));
+        }
+
+        Long roleId = null;
+        String roleName = null;
+        for (GrantedAuthority ga : auth.getAuthorities()) {
+            String s = ga.getAuthority();
+            if (s == null) continue;
+            try {
+                roleId = Long.parseLong(s.trim());
+                roleName = roleNameCache.computeIfAbsent(roleId, this::loadRoleName);
+            } catch (NumberFormatException nfe) {
+                roleName = s; // already a role name
+            }
+            break;
+        }
+        boolean superAdmin = SUPER_ROLE.equalsIgnoreCase(roleName);
+
+        List<Map<String, Object>> pages;
+        if (pageCode != null && !pageCode.isBlank()) {
+            try {
+                pages = List.of(jdbc.queryForMap(
+                        "SELECT code, title, category FROM page_definition " +
+                        "WHERE tenant_id IN (?, -1) AND code = ? AND status = 'PUBLISHED'",
+                        TenantContext.get(), pageCode));
+            } catch (EmptyResultDataAccessException e) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+                        Map.of("ok", false, "error", "Page not found: code=" + pageCode));
+            }
+        } else {
+            pages = jdbc.queryForList(
+                    "SELECT code, title, category FROM page_definition WHERE tenant_id IN (?, -1) AND status = 'PUBLISHED'",
+                    TenantContext.get());
+        }
+
+        Set<String> visiblePages = roleId != null ? new HashSet<>(jdbc.queryForList(
+                "SELECT page_code FROM role_page_visibility WHERE tenant_id IN (?, -1) AND role_id = ?",
+                String.class, TenantContext.get(), roleId)) : Set.of();
+        boolean navRestricted = !visiblePages.isEmpty();
+
+        Map<String, PermRow> roleDefaults = roleId != null
+                ? fetchPermissionMap("role_page_permission", "role_id", roleId) : Map.of();
+
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Map<String, Object> page : pages) {
+            String code = (String) page.get("code");
+            boolean read, save, edit, approve, delete;
+            if (superAdmin) {
+                read = save = edit = approve = delete = true;
+            } else {
+                PermRow roleDefault = roleDefaults.get(code);
+                if (roleDefault != null) {
+                    read = roleDefault.read(); save = roleDefault.save(); edit = roleDefault.edit();
+                    approve = roleDefault.approve(); delete = roleDefault.delete();
+                } else {
+                    read = true; save = false; edit = false; approve = false; delete = false;
+                }
+            }
+
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("pageCode", code);
+            row.put("title", page.get("title"));
+            row.put("category", page.get("category"));
+            row.put("visible", superAdmin || !navRestricted || visiblePages.contains(code));
+            row.put("read", read);
+            row.put("save", save);
+            row.put("edit", edit);
+            row.put("approve", approve);
+            row.put("delete", delete);
+            out.add(row);
+        }
+
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("ok", true);
+        resp.put("roleId", roleId);
+        resp.put("roleName", roleName);
+        resp.put("pages", out);
+        return ResponseEntity.ok(resp);
+    }
+
     // ---- Matrix ---------------------------------------------------------
 
     @GetMapping

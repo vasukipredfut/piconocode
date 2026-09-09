@@ -1,6 +1,5 @@
 package com.aria.access;
 
-import com.aria.auth.AuthUserDetails;
 import com.aria.security.TenantContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.EmptyResultDataAccessException;
@@ -16,21 +15,20 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Enforces {@code role_page_permission} / {@code employee_page_permission}
- * (V195, admin-editable via {@code EmployeeAccessMatrixController} /
- * {@code aria:employee-access-matrix}, TenantAdmin+SuperAdmin only) for the
- * CURRENT logged-in user against a page code. Precedence matches
- * {@code EmployeeAccessMatrixController#matrix}'s own resolution: an
- * {@code employee_page_permission} row (per-employee override) wins over a
- * {@code role_page_permission} row (the employee's role default).
+ * Enforces {@code role_page_permission} (V195, admin-editable via
+ * {@code EmployeeAccessMatrixController} / {@code aria:role-page-access},
+ * TenantAdmin+SuperAdmin only) for the CURRENT logged-in user against a page
+ * code. Role-based only, by design (Dhivya, 2026-09-09) — this deliberately
+ * does NOT consult {@code employee_page_permission}'s per-employee override;
+ * every user's permission is purely a function of their role.
  *
  * <p>Deliberately DIFFERENT from V195's originally-documented "missing row
- * = read:true, write:false" default: both tables start out completely empty
- * in every environment (checked — no seed migration populates either), so a
- * deny-by-default here would lock every non-SuperAdmin user out of every
- * page's Save button the instant this guard is wired in, until an admin
- * manually re-grants each (role, page) pair. Instead, "no row anywhere for
- * this (user/role, page)" resolves to unrestricted — same "absence =
+ * = read:true, write:false" default: role_page_permission starts out
+ * completely empty in every environment (checked — no seed migration
+ * populates it), so a deny-by-default here would lock every non-SuperAdmin
+ * user out of every page's Save button the instant this guard is wired in,
+ * until an admin manually re-grants each (role, page) pair. Instead, "no row
+ * for this (role, page)" resolves to unrestricted — same "absence =
  * unrestricted" convention {@code entity_registry.write_role} already uses
  * (see {@link com.aria.security.EntityWriteGuard}). Behaviour only changes
  * once TenantAdmin/SuperAdmin explicitly grants or restricts a (role, page)
@@ -63,8 +61,6 @@ public class PagePermissionResolver {
 
         Long roleId = null;
         String roleName = null;
-        Long employeeId = null;
-        if (auth.getPrincipal() instanceof AuthUserDetails ud) employeeId = ud.getId();
         for (GrantedAuthority ga : auth.getAuthorities()) {
             String s = ga.getAuthority();
             if (s == null) continue;
@@ -78,10 +74,7 @@ public class PagePermissionResolver {
         }
         if (SUPER_ROLE.equalsIgnoreCase(roleName)) return null;
 
-        Perm effective = employeeId != null ? fetchOne("employee_page_permission", "employee_id", employeeId, pageCode) : null;
-        if (effective == null && roleId != null) {
-            effective = fetchOne("role_page_permission", "role_id", roleId, pageCode);
-        }
+        Perm effective = roleId != null ? fetchOne("role_page_permission", "role_id", roleId, pageCode) : null;
         if (effective == null) return null; // no grant/restriction configured yet -> unrestricted
 
         boolean allowed = switch (access) {
