@@ -1,6 +1,8 @@
 package com.aria.access;
 
 import com.aria.security.TenantContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -14,9 +16,11 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Employee Access Matrix — page-wise Read/Write/Approve, assignable at the
- * Role level (cascades to every employee holding that role) and overridable
- * at the individual Employee level.
+ * Employee Access Matrix — page-wise Read/Save/Edit/Approve/Delete,
+ * assignable at the Role level (cascades to every employee holding that
+ * role) and overridable at the individual Employee level. Save (create a
+ * new record via this page) and Edit (update an existing one) are separate
+ * flags — see {@code V318__role_page_permission_split_write_into_save_edit.sql}.
  *
  * <p>Screen universe: {@code page_definition} (the actual navigable pages —
  * "page-wise", not the 653-row entity_registry "entity-wise" set this
@@ -25,9 +29,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>Resolution per (employee, page): an {@code employee_page_permission}
  * row (explicit override for that one employee) wins outright over a
  * {@code role_page_permission} row (the employee's role default), which
- * wins over the hardcoded default: read=true, write=false, approve=false —
- * same "missing row = open read, closed write" convention entity_registry
- * used, just moved to real editable tables (see
+ * wins over the hardcoded default: read=true, save=false, edit=false,
+ * approve=false — same "missing row = open read, closed write" convention
+ * entity_registry used, just moved to real editable tables (see
  * {@code V195__role_and_employee_page_permission.sql}).
  *
  * <p>Backs the {@code aria:employee-access-matrix} page (registered in
@@ -37,6 +41,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @RequestMapping("/api/m0/access-matrix")
 public class EmployeeAccessMatrixController {
 
+    private static final Logger log = LoggerFactory.getLogger(EmployeeAccessMatrixController.class);
     private static final String SUPER_ROLE = "SuperAdmin";
     private static final Set<String> ALLOWED_ROLES = Set.of("TenantAdmin");
 
@@ -170,31 +175,32 @@ public class EmployeeAccessMatrixController {
 
     PermRow override = employeeOverrides.get(pageCode);
             PermRow roleDefault = roleDefaults.get(pageCode);
-            boolean read, write, approve, delete;
+            boolean read, save, edit, approve, delete;
             String source;
             if (override != null) {
-                read = override.read(); write = override.write(); approve = override.approve(); delete = override.delete();
+                read = override.read(); save = override.save(); edit = override.edit(); approve = override.approve(); delete = override.delete();
                 source = "employee-override";
             } else if (roleDefault != null) {
-                read = roleDefault.read(); write = roleDefault.write(); approve = roleDefault.approve(); delete = roleDefault.delete();
+                read = roleDefault.read(); save = roleDefault.save(); edit = roleDefault.edit(); approve = roleDefault.approve(); delete = roleDefault.delete();
                 source = "role";
             } else {
-                read = true; write = false; approve = false; delete = false;
+                read = true; save = false; edit = false; approve = false; delete = false;
                 source = "default";
             }
-            if (onlyGranted && !read && !write && !approve && !delete) continue;
+            if (onlyGranted && !read && !save && !edit && !approve && !delete) continue;
 
             Map<String, Object> screen = new LinkedHashMap<>();
             screen.put("pageCode", pageCode);
             screen.put("title", title);
             screen.put("category", pageCategory);
             screen.put("read", read);
-            screen.put("write", write);
+            screen.put("save", save);
+            screen.put("edit", edit);
             screen.put("approve", approve);
             screen.put("delete", delete);
             screen.put("source", source);
             screens.add(screen);
-            if (read || write || approve || delete) granted++;
+            if (read || save || edit || approve || delete) granted++;
         }
 
         screens.sort(Comparator
@@ -233,17 +239,94 @@ public class EmployeeAccessMatrixController {
         }
 
 boolean read = boolVal(body.get("read"));
-        boolean write = boolVal(body.get("write"));
+        boolean save = boolVal(body.get("save"));
+        boolean edit = boolVal(body.get("edit"));
         boolean approve = boolVal(body.get("approve"));
         boolean delete = boolVal(body.get("delete"));
         jdbc.update(
-                "INSERT INTO role_page_permission (tenant_id, role_id, page_code, can_read, can_write, can_approve, can_delete) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?) " +
-                "ON DUPLICATE KEY UPDATE can_read = VALUES(can_read), can_write = VALUES(can_write), can_approve = VALUES(can_approve), can_delete = VALUES(can_delete)",
-                TenantContext.get(), roleId, pageCode, read, write, approve, delete);
+                "INSERT INTO role_page_permission (tenant_id, role_id, page_code, can_read, can_save, can_edit, can_approve, can_delete) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
+                "ON DUPLICATE KEY UPDATE can_read = VALUES(can_read), can_save = VALUES(can_save), can_edit = VALUES(can_edit), can_approve = VALUES(can_approve), can_delete = VALUES(can_delete)",
+                TenantContext.get(), roleId, pageCode, read, save, edit, approve, delete);
+
+        try {
+            // Entity-level sync treats "save" and "edit" the same way --
+            // entity_registry.write_role is a single undifferentiated write
+            // flag, it has no create/update split of its own.
+            syncEntityWriteRole(pageCode, roleId, save || edit);
+        } catch (Exception e) {
+            // The page-level grant above is the actual API contract; the
+            // entity-level convenience sync must never break it.
+            log.warn("syncEntityWriteRole failed for role={} page={}: {}", roleId, pageCode, e.getMessage());
+        }
 
         return ResponseEntity.ok(Map.of("ok", true, "roleId", roleId, "pageCode", pageCode,
-                "read", read, "write", write, "approve", approve, "delete", delete));
+                "read", read, "save", save, "edit", edit, "approve", approve, "delete", delete));
+    }
+
+    /**
+     * Convenience mirror of a role_page_permission grant/revoke onto the
+     * page's underlying entity's {@code entity_registry.write_role} — so an
+     * admin ticking "Save"/"Edit" for a role on a page here also closes the
+     * separate generic-entity-API door (see EntityWriteGuard / this
+     * conversation's "two doors" explanation) for that same entity, without
+     * having to visit a second screen.
+     *
+     * <p>Deliberately conservative in one direction: this NEVER turns an
+     * entity that's currently open to everyone ({@code write_role} null or
+     * {@code "*"}) into a restricted one. Doing that as a side effect of one
+     * role's page grant would silently cut off every OTHER role that
+     * currently writes that entity through the generic API — a much bigger,
+     * cross-cutting decision than "grant/revoke this one role" should make
+     * on its own. It only ever ADDS this role to an ALREADY-restricted list
+     * (on grant) or REMOVES it from one (on revoke), and if a revoke would
+     * empty the list out entirely, it leaves the list as-is rather than
+     * accidentally opening the entity to everyone (there's no "nobody"
+     * value in this column — blank/null means unrestricted).
+     *
+     * <p>No-ops silently when the page has no single {@code "entity"} in its
+     * body_json, or that entity isn't registered — same "nothing to enforce"
+     * convention as the rest of this RBAC layer.
+     */
+    private void syncEntityWriteRole(String pageCode, Long roleId, boolean write) {
+        String entityCode;
+        try {
+            entityCode = jdbc.queryForObject(
+                "SELECT JSON_UNQUOTE(JSON_EXTRACT(pv.body_json, '$.entity')) " +
+                "FROM page_definition pd JOIN page_version pv ON pv.id = pd.current_version_id " +
+                "WHERE pd.code = ? AND pd.tenant_id IN (?, -1) ORDER BY pd.tenant_id DESC LIMIT 1",
+                String.class, pageCode, TenantContext.get());
+        } catch (Exception e) {
+            return; // page not found, or has no current_version_id yet
+        }
+        if (entityCode == null || entityCode.isBlank() || "null".equalsIgnoreCase(entityCode)) return;
+
+        String roleName = roleNameCache.computeIfAbsent(roleId, this::loadRoleName);
+        if (roleName == null) return;
+
+        Map<String, Object> reg;
+        try {
+            reg = jdbc.queryForMap(
+                "SELECT tenant_id, write_role FROM entity_registry " +
+                "WHERE code = ? AND tenant_id IN (?, -1) ORDER BY tenant_id DESC LIMIT 1",
+                entityCode, TenantContext.get());
+        } catch (EmptyResultDataAccessException e) {
+            return; // entity not registered
+        }
+        String current = (String) reg.get("write_role");
+        if (current == null || current.isBlank() || "*".equals(current.trim())) return; // unrestricted -- leave it that way
+
+        List<String> names = new ArrayList<>();
+        for (String n : current.split(",")) {
+            String t = n.trim();
+            if (!t.isEmpty() && !t.equalsIgnoreCase(roleName)) names.add(t);
+        }
+        if (write) names.add(roleName);
+        if (names.isEmpty()) return; // never blank the column out to "unrestricted" as a side effect
+
+        Long regTenantId = ((Number) reg.get("tenant_id")).longValue();
+        jdbc.update("UPDATE entity_registry SET write_role = ? WHERE code = ? AND tenant_id = ?",
+                String.join(",", names), entityCode, regTenantId);
     }
 
     @PutMapping("/employee-permission")
@@ -266,17 +349,18 @@ boolean read = boolVal(body.get("read"));
         }
 
 boolean read = boolVal(body.get("read"));
-        boolean write = boolVal(body.get("write"));
+        boolean save = boolVal(body.get("save"));
+        boolean edit = boolVal(body.get("edit"));
         boolean approve = boolVal(body.get("approve"));
         boolean delete = boolVal(body.get("delete"));
         jdbc.update(
-                "INSERT INTO employee_page_permission (tenant_id, employee_id, page_code, can_read, can_write, can_approve, can_delete) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?) " +
-                "ON DUPLICATE KEY UPDATE can_read = VALUES(can_read), can_write = VALUES(can_write), can_approve = VALUES(can_approve), can_delete = VALUES(can_delete)",
-                TenantContext.get(), employeeId, pageCode, read, write, approve, delete);
+                "INSERT INTO employee_page_permission (tenant_id, employee_id, page_code, can_read, can_save, can_edit, can_approve, can_delete) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
+                "ON DUPLICATE KEY UPDATE can_read = VALUES(can_read), can_save = VALUES(can_save), can_edit = VALUES(can_edit), can_approve = VALUES(can_approve), can_delete = VALUES(can_delete)",
+                TenantContext.get(), employeeId, pageCode, read, save, edit, approve, delete);
 
         return ResponseEntity.ok(Map.of("ok", true, "employeeId", employeeId, "pageCode", pageCode,
-                "read", read, "write", write, "approve", approve, "delete", delete));
+                "read", read, "save", save, "edit", edit, "approve", approve, "delete", delete));
     }
 
     @DeleteMapping("/role-permission")
@@ -348,7 +432,8 @@ boolean read = boolVal(body.get("read"));
             row.put("category", pageCategory);
             row.put("visible", restricted ? visiblePages.contains(pageCode) : true);
             row.put("read", perm != null && perm.read());
-            row.put("write", perm != null && perm.write());
+            row.put("save", perm != null && perm.save());
+            row.put("edit", perm != null && perm.edit());
             row.put("approve", perm != null && perm.approve());
             row.put("delete", perm != null && perm.delete());
             out.add(row);
@@ -454,19 +539,19 @@ boolean read = boolVal(body.get("read"));
 
     // ---- Helpers ----------------------------------------------------------
 
-private record PermRow(boolean read, boolean write, boolean approve, boolean delete) {}
+private record PermRow(boolean read, boolean save, boolean edit, boolean approve, boolean delete) {}
 
     private Map<String, PermRow> fetchPermissionMap(String table, String keyColumn, Long keyValue) {
         // table/keyColumn are fixed literals passed by this class only — never
         // request-derived — so string-concat here carries no injection risk.
         List<Map<String, Object>> rows = jdbc.queryForList(
-                "SELECT page_code, can_read, can_write, can_approve, can_delete FROM " + table +
+                "SELECT page_code, can_read, can_save, can_edit, can_approve, can_delete FROM " + table +
                 " WHERE tenant_id IN (?, -1) AND " + keyColumn + " = ?",
                 TenantContext.get(), keyValue);
         Map<String, PermRow> out = new HashMap<>();
         for (Map<String, Object> row : rows) {
             out.put((String) row.get("page_code"), new PermRow(
-                    truthy(row.get("can_read")), truthy(row.get("can_write")),
+                    truthy(row.get("can_read")), truthy(row.get("can_save")), truthy(row.get("can_edit")),
                     truthy(row.get("can_approve")), truthy(row.get("can_delete"))));
         }
         return out;

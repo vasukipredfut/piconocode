@@ -56,6 +56,11 @@ public class ActionController {
                 .body(Map.of("error", "implementation_pending", "message", e.getMessage()));
     }
 
+    @ExceptionHandler(ActionDispatcher.ActionForbiddenException.class)
+    public ResponseEntity<Map<String, Object>> forbidden(ActionDispatcher.ActionForbiddenException e) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(e.getBody());
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<Map<String, Object>> bad(IllegalArgumentException e) {
         return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
