@@ -132,116 +132,69 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
                     written, lines.size(), instance.getId(), vehicleNo, triggeringPageCode);
         }
 
-        writeBillingTableRateRows(tenantId, instance, vehicleNo, gatePassNo, invoiceNosByLine(pageData));
+        writeBillingTableRateRows(tenantId, instance, vehicleNo, gatePassNo, pageData);
     }
 
     /**
-     * The "Billing Table" grid's own per-line {@code invoice_no} entry — the
-     * actual entry point (see class javadoc note above on why the grid used
-     * to be described as read-only-only: that changed once this column was
-     * added to it). Keyed by {@code order_id + " " + sku_code} so
-     * {@link #writeBillingTableRateRows} can look up a submitted value for
-     * each server-recomputed row.
-     */
-    private static Map<String, String> invoiceNosByLine(Map<String, Object> pageData) {
-        Object raw = pageData.get("billing_table");
-        if (!(raw instanceof List<?> rows)) return Map.of();
-        Map<String, String> out = new java.util.HashMap<>();
-        for (Object rowRaw : rows) {
-            if (!(rowRaw instanceof Map)) continue;
-            @SuppressWarnings("unchecked")
-            Map<String, Object> row = (Map<String, Object>) rowRaw;
-            String invoiceNo = str(row, "invoice_no");
-            if (invoiceNo == null) continue;
-            out.put(str(row, "order_id") + " " + str(row, "sku_code"), invoiceNo);
-        }
-        return out;
-    }
-
-    /**
-     * The page's "Billing Table" section (rate / GST tax / net rate / billed
-     * qty per order-SKU line) is otherwise entirely computed, not a form the
-     * operator fills in — so unlike {@code loaded_sku_details} above there is
-     * nothing else in the submitted bag to read for it. This recomputes those
-     * figures server-side from the same source tables the page's grid itself
-     * reads (OrderDispatchDetail joined to SkuMaster for the GST rate, summed
-     * against LoadingProgressDetailBay for the actually-loaded quantity), so
-     * the persisted figures come from authoritative data rather than a
-     * client-submitted (and therefore spoofable/stale) value.
+     * The "Billing Table" grid's rate/tax/net-rate/billed-qty/invoice_no
+     * figures, taken directly from the submitted {@code billing_table} rows
+     * — no join back to {@code m5_order_dispatch_detail} /
+     * {@code m5_sku_master} / {@code loading_progress_detail_bay}. The grid
+     * already carries {@code rd_code}, {@code rd_desc}, {@code sku_desc},
+     * {@code order_rate}, {@code gst_rate_pct} and {@code invoice_no} per
+     * row; loaded quantity is read from {@code loaded_qty} (falling back to
+     * the grid's existing {@code line_dispatch_qty}/{@code loading_qty}
+     * aliases for clients that haven't added the new key yet).
      *
-     * <p>The one field the grid DOES let the billing officer type into,
-     * per line, is Invoice No — {@code invoiceNosByLine} (see
-     * {@link #invoiceNosByLine}) carries whatever was submitted for it,
-     * looked up per row below and folded into the same upsert.
+     * <p>{@code tax_amount}/{@code net_rate} are still derived arithmetically
+     * from the row's own {@code order_rate}/{@code gst_rate_pct} rather than
+     * trusting whatever the client computed for those two, so rounding stays
+     * consistent with the rest of the GST math in this codebase — this is
+     * pure arithmetic on the row, not a lookup, so it doesn't reintroduce a
+     * join.
+     *
+     * <p>{@code order_qty} is intentionally left out of this upsert: it's
+     * already written by the {@code loaded_sku_details} insert above (same
+     * unique key), and this method has no reliable source for it now that
+     * the OrderDispatchDetail join is gone.
      */
+    @SuppressWarnings("unchecked")
     private void writeBillingTableRateRows(long tenantId, WorkflowInstance instance, String vehicleNo,
-                                            String gatePassNo, Map<String, String> invoiceNosByLine) {
+                                            String gatePassNo, Map<String, Object> pageData) {
         if (vehicleNo == null) return;
 
-        List<Map<String, Object>> rows;
-        try {
-            rows = jdbc.queryForList(
-                    "SELECT odd.order_id, odd.sku_code, odd.rd_code, odd.rd_desc, odd.sku_desc, "
-                            + "odd.order_rate, sm.gst_rate_pct, odd.line_dispatch_qty, odd.assign_qty, "
-                            + "COALESCE(SUM(lpb.processed_quantity), 0) AS processed_qty "
-                            + "FROM m5_order_dispatch_detail odd "
-                            + "LEFT JOIN m5_sku_master sm ON sm.tenant_id = odd.tenant_id "
-                            + "AND sm.sku_code = odd.sku_code COLLATE utf8mb4_general_ci "
-                            + "LEFT JOIN loading_progress_detail_bay lpb ON lpb.tenant_id = odd.tenant_id "
-                            + "AND lpb.workflow_instance_id = ? "
-                            + "AND lpb.sku_code = odd.sku_code COLLATE utf8mb4_general_ci "
-                            // order_id (V252) scopes the match to THIS order line -- without it, a vehicle
-                            // carrying two orders that share a SKU would double-count: every bay row for
-                            // that SKU on this instance would sum into BOTH orders' lines. NULL-safe (same
-                            // idiom as M10BayCompleteActionHandler:215) so bay rows opened before V252
-                            // (order_id NULL) still match a line whose order_id is also NULL. COLLATE
-                            // matches the sku_code joins above -- loading_progress_detail_bay.order_id and
-                            // m5_order_dispatch_detail.order_id can carry different collations (same class
-                            // of mismatch as sku_code), which throws "Illegal mix of collations" and takes
-                            // this whole billing-rate lookup down (caught below, but every workflow's
-                            // transition pays for it since this runs unconditionally -- see class javadoc).
-                            + "AND ((lpb.order_id IS NULL AND odd.order_id IS NULL) OR lpb.order_id = odd.order_id COLLATE utf8mb4_general_ci) "
-                            + "WHERE odd.tenant_id = ? AND odd.vehicle_no = ? AND odd.assign_qty >= 1 "
-                            + "GROUP BY odd.id, odd.order_id, odd.sku_code, odd.rd_code, odd.rd_desc, "
-                            + "odd.sku_desc, odd.order_rate, sm.gst_rate_pct, odd.line_dispatch_qty, odd.assign_qty",
-                    instance.getId(), tenantId, vehicleNo);
-        } catch (Exception e) {
-            log.warn("billing_order_details: billing-table rate lookup failed for instance {} (vehicle={}): {}",
-                    instance.getId(), vehicleNo, e.getMessage());
-            return;
-        }
-        if (rows.isEmpty()) return;
+        Object raw = pageData.get("billing_table");
+        if (!(raw instanceof List<?> rows) || rows.isEmpty()) return;
 
         int written = 0;
-        for (Map<String, Object> row : rows) {
+        for (Object rowRaw : rows) {
+            if (!(rowRaw instanceof Map)) continue;
+            Map<String, Object> row = (Map<String, Object>) rowRaw;
             try {
                 BigDecimal orderRate = num(row, "order_rate");
                 BigDecimal gstRatePct = num(row, "gst_rate_pct");
                 BigDecimal taxAmount = orderRate.multiply(gstRatePct)
                         .divide(BigDecimal.valueOf(100), 3, RoundingMode.HALF_UP);
                 BigDecimal netRate = orderRate.subtract(taxAmount);
-                BigDecimal processedQty = num(row, "processed_qty");
-                BigDecimal billedQty = processedQty.compareTo(BigDecimal.ZERO) > 0
-                        ? processedQty : num(row, "line_dispatch_qty");
+                BigDecimal billedQty = num(row, "loaded_qty", "line_dispatch_qty", "loading_qty");
                 String orderId = str(row, "order_id");
                 String skuCode = str(row, "sku_code");
-                String invoiceNo = invoiceNosByLine.get(orderId + " " + skuCode);
+                String invoiceNo = str(row, "invoice_no");
 
                 jdbc.update(
                         "INSERT INTO billing_order_details (tenant_id, workflow_instance_id, vehicle_no, "
-                                + "gate_pass_no, order_id, rd_code, rd_desc, sku_code, sku_desc, order_qty, loading_qty, order_rate, "
-                                + "gst_rate_pct, tax_amount, net_rate, billed_qty, invoice_no) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                                + "gate_pass_no, order_id, rd_code, rd_desc, sku_code, sku_desc, loading_qty, order_rate, "
+                                + "gst_rate_pct, tax_amount, net_rate, billed_qty, invoice_no) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                                 + "ON DUPLICATE KEY UPDATE rd_code = VALUES(rd_code), rd_desc = VALUES(rd_desc), "
-                                + "sku_desc = VALUES(sku_desc), order_qty = VALUES(order_qty), "
-                                // Takes the larger of the stored value and this recompute rather than only
+                                + "sku_desc = VALUES(sku_desc), "
+                                // Takes the larger of the stored value and this submission rather than only
                                 // filling in when still at the table default of 0 (V192/V253's original
                                 // guard) -- that froze loading_qty at whatever the skip-allocation write set
                                 // on the FIRST loading pass, so a LOAD_AGAIN reload (a second, cumulative
-                                // loading_progress_detail_bay session on the same instance/SKU) never grew it
-                                // past that first-pass figure even though the SUM(processed_quantity) behind
-                                // billed_qty on this very row correctly recomputed to the true, larger total.
-                                // GREATEST keeps that same accumulation for loading_qty instead of leaving it
-                                // stale, while still never overwriting it with something smaller.
+                                // loading session on the same instance/SKU) never grew it past that
+                                // first-pass figure. GREATEST keeps that same accumulation for loading_qty
+                                // instead of leaving it stale, while still never overwriting it with
+                                // something smaller.
                                 + "loading_qty = GREATEST(loading_qty, VALUES(loading_qty)), "
                                 + "order_rate = VALUES(order_rate), "
                                 + "gst_rate_pct = VALUES(gst_rate_pct), tax_amount = VALUES(tax_amount), "
@@ -250,7 +203,7 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
                                 + "updated_at = CURRENT_TIMESTAMP",
                         tenantId, instance.getId(), vehicleNo, gatePassNo,
                         orderId, str(row, "rd_code"), str(row, "rd_desc"),
-                        skuCode, str(row, "sku_desc"), num(row, "assign_qty"), billedQty,
+                        skuCode, str(row, "sku_desc"), billedQty,
                         orderRate, gstRatePct, taxAmount, netRate, billedQty, invoiceNo);
                 written++;
             } catch (Exception e) {
