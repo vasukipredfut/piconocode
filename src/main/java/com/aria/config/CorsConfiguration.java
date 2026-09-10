@@ -36,6 +36,12 @@ public class CorsConfiguration implements WebMvcConfigurer {
     @Override
     public void addCorsMappings(CorsRegistry registry) {
         registry.addMapping("/api/**").allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS");
+        // Uploaded documents (DocumentUploadController / AccountController avatar
+        // upload) are served back from /uploads/** via the resource handler below —
+        // without a CORS mapping here, a frontend on a different origin fetching
+        // that URL directly (preview/download via JS, not a plain <a>/<img> nav)
+        // gets blocked by the browser with no Access-Control-Allow-Origin header.
+        registry.addMapping("/uploads/**").allowedMethods("GET", "OPTIONS");
     }
 
     @Override

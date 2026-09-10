@@ -29,7 +29,7 @@ import static org.mockito.Mockito.when;
  * <p>{@code pendingSkus} returns the shared {@link DataSourceSpec.Response}
  * page envelope ({@code content}/{@code totalElements}/{@code totalPages}/
  * {@code number}/{@code size}), with {@code content} items shaped
- * {@code {"sku_code": ..., "sku_desc": ..., "order_qty": ..., "processed_qty": ...}}.
+ * {@code {"sku_code": ..., "sku_desc": ..., "order_qty": ..., "processed_qty": ..., "pending_routes": ...}}.
  * {@code skuStatus} returns a bare boolean for the whole vehicle.
  */
 class PendingSkuControllerTest {
@@ -56,25 +56,27 @@ class PendingSkuControllerTest {
         row1.put("sku_desc", "Widget A");
         row1.put("order_qty", new BigDecimal("50.000"));
         row1.put("processed_qty", new BigDecimal("30.000"));
+        row1.put("pending_routes", "ROU001");
         Map<String, Object> row2 = new LinkedHashMap<>();
         row2.put("sku_code", "SKU1220");
         row2.put("sku_desc", "Widget B");
         row2.put("order_qty", new BigDecimal("20.000"));
         row2.put("processed_qty", new BigDecimal("10.000"));
+        row2.put("pending_routes", "ROU002, ROU003");
         when(jdbc.queryForList(contains("loading_progress_detail_bay"), any(Long.class), any(String.class)))
                 .thenReturn(List.of(row1, row2));
 
         DataSourceSpec.Response result = controller.pendingSkus("TN01AB1234");
 
         assertThat(result.getContent()).containsExactly(
-                Map.of("sku_code", "SKU1024", "sku_desc", "Widget A", "order_qty", new BigDecimal("50.000"), "processed_qty", new BigDecimal("30.000")),
-                Map.of("sku_code", "SKU1220", "sku_desc", "Widget B", "order_qty", new BigDecimal("20.000"), "processed_qty", new BigDecimal("10.000")));
+                Map.of("sku_code", "SKU1024", "sku_desc", "Widget A", "order_qty", new BigDecimal("50.000"), "processed_qty", new BigDecimal("30.000"), "pending_routes", "ROU001"),
+                Map.of("sku_code", "SKU1220", "sku_desc", "Widget B", "order_qty", new BigDecimal("20.000"), "processed_qty", new BigDecimal("10.000"), "pending_routes", "ROU002, ROU003"));
         assertThat(result.getTotalElements()).isEqualTo(2);
         assertThat(result.getTotalPages()).isEqualTo(1);
         assertThat(result.getNumber()).isEqualTo(0);
         assertThat(result.getSize()).isEqualTo(500);
 
-        verify(jdbc).queryForList(contains("HAVING SUM(processed_qty) < SUM(target_qty)"),
+        verify(jdbc).queryForList(contains("HAVING SUM(CASE WHEN processed_qty < target_qty THEN 1 ELSE 0 END) > 0"),
                 eq(1L), eq("TN01AB1234"));
     }
 

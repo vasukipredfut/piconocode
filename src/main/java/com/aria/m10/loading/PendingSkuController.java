@@ -16,8 +16,14 @@ import java.util.Map;
  * {@code GET /api/m10/loading/{vehicleNo}/pending-skus} — read-only lookup:
  * for the given vehicle's currently OPEN loading transaction, which SKU
  * codes still have processed short of their target. Each content item
- * carries {@code sku_code}, {@code sku_desc}, {@code order_qty}, and
- * {@code processed_qty}.
+ * carries {@code sku_code}, {@code sku_desc}, {@code order_qty},
+ * {@code processed_qty}, and {@code pending_routes} — a comma-separated
+ * list of the {@code route_id}s (a SKU can span more than one route/order
+ * line for the same vehicle) whose OWN target is not yet fully processed.
+ * {@code order_qty}/{@code processed_qty} are scoped to those SAME pending
+ * route(s) only, NOT the SKU's grand total across every route — a route
+ * where this SKU is already done contributes to neither the quantities nor
+ * {@code pending_routes}, so the two stay consistent with each other.
  *
  * <p><b>Aggregation grain is {@code (route_id, sku_code)}, not raw
  * {@code loading_progress_detail_bay} rows.</b> One route/SKU pair is one
@@ -88,10 +94,13 @@ public class PendingSkuController {
                         + "WHERE b.tenant_id = ? AND d.vehicle_no = ? AND wi.status = 'OPEN' "
                         + "GROUP BY b.route_id, b.sku_code) "
                         + "SELECT sku_code, MAX(sku_desc) AS sku_desc, "
-                        + "SUM(target_qty) AS order_qty, SUM(processed_qty) AS processed_qty "
+                        + "SUM(CASE WHEN processed_qty < target_qty THEN target_qty ELSE 0 END) AS order_qty, "
+                        + "SUM(CASE WHEN processed_qty < target_qty THEN processed_qty ELSE 0 END) AS processed_qty, "
+                        + "GROUP_CONCAT(CASE WHEN processed_qty < target_qty THEN route_id END "
+                        + "ORDER BY route_id SEPARATOR ', ') AS pending_routes "
                         + "FROM line_targets "
                         + "GROUP BY sku_code "
-                        + "HAVING SUM(processed_qty) < SUM(target_qty) "
+                        + "HAVING SUM(CASE WHEN processed_qty < target_qty THEN 1 ELSE 0 END) > 0 "
                         + "ORDER BY sku_code",
                 tenantId, vehicleNo)
                 .stream()
@@ -101,6 +110,7 @@ public class PendingSkuController {
                     row.put("sku_desc", r.get("sku_desc"));
                     row.put("order_qty", r.get("order_qty"));
                     row.put("processed_qty", r.get("processed_qty"));
+                    row.put("pending_routes", r.get("pending_routes"));
                     return row;
                 })
                 .toList();
