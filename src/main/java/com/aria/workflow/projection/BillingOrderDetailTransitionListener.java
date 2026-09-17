@@ -153,10 +153,15 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
      * pure arithmetic on the row, not a lookup, so it doesn't reintroduce a
      * join.
      *
-     * <p>{@code order_qty} is intentionally left out of this upsert: it's
-     * already written by the {@code loaded_sku_details} insert above (same
-     * unique key), and this method has no reliable source for it now that
-     * the OrderDispatchDetail join is gone.
+     * <p>{@code order_qty}: confirmed live (2026-09-17) the {@code billing_table}
+     * grid's own rows already carry this under the key {@code assign_qty}
+     * (same underlying meaning as {@code loaded_sku_details}' own
+     * {@code assign_qty} -&gt; order_qty mapping above) — some products reach
+     * billing WITHOUT ever having a {@code loaded_sku_details} line for
+     * them, so their row is created fresh right here, and previously had
+     * nothing to fill {@code order_qty} with, silently leaving it at the
+     * column's {@code DEFAULT 0}. Now read straight off the row, same as
+     * every other field in this method — no join, no separate lookup.
      */
     @SuppressWarnings("unchecked")
     private void writeBillingTableRateRows(long tenantId, WorkflowInstance instance, String vehicleNo,
@@ -180,11 +185,12 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
                 String orderId = str(row, "order_id");
                 String skuCode = str(row, "sku_code");
                 String invoiceNo = str(row, "invoice_no");
+                BigDecimal orderQty = num(row, "assign_qty", "order_qty");
 
                 jdbc.update(
                         "INSERT INTO billing_order_details (tenant_id, workflow_instance_id, vehicle_no, "
-                                + "gate_pass_no, order_id, rd_code, rd_desc, sku_code, sku_desc, loading_qty, order_rate, "
-                                + "gst_rate_pct, tax_amount, net_rate, billed_qty, invoice_no) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                                + "gate_pass_no, order_id, rd_code, rd_desc, sku_code, sku_desc, order_qty, loading_qty, order_rate, "
+                                + "gst_rate_pct, tax_amount, net_rate, billed_qty, invoice_no) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                                 + "ON DUPLICATE KEY UPDATE rd_code = VALUES(rd_code), rd_desc = VALUES(rd_desc), "
                                 + "sku_desc = VALUES(sku_desc), "
                                 // Takes the larger of the stored value and this submission rather than only
@@ -194,8 +200,12 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
                                 // loading session on the same instance/SKU) never grew it past that
                                 // first-pass figure. GREATEST keeps that same accumulation for loading_qty
                                 // instead of leaving it stale, while still never overwriting it with
-                                // something smaller.
+                                // something smaller. order_qty gets the same GREATEST treatment: the
+                                // loaded_sku_details insert (above) may have already set it, and this
+                                // row's own assign_qty should agree -- GREATEST just means a row missing
+                                // assign_qty (0 here) never overwrites an already-correct value.
                                 + "loading_qty = GREATEST(loading_qty, VALUES(loading_qty)), "
+                                + "order_qty = GREATEST(order_qty, VALUES(order_qty)), "
                                 + "order_rate = VALUES(order_rate), "
                                 + "gst_rate_pct = VALUES(gst_rate_pct), tax_amount = VALUES(tax_amount), "
                                 + "net_rate = VALUES(net_rate), billed_qty = VALUES(billed_qty), "
@@ -203,7 +213,7 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
                                 + "updated_at = CURRENT_TIMESTAMP",
                         tenantId, instance.getId(), vehicleNo, gatePassNo,
                         orderId, str(row, "rd_code"), str(row, "rd_desc"),
-                        skuCode, str(row, "sku_desc"), billedQty,
+                        skuCode, str(row, "sku_desc"), orderQty, billedQty,
                         orderRate, gstRatePct, taxAmount, netRate, billedQty, invoiceNo);
                 written++;
             } catch (Exception e) {

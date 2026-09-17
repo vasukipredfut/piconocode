@@ -178,11 +178,13 @@ public class OrderDispatchDetailImportController {
                 if (assignQty == null || assignQty == 0) {
                     throw new IllegalArgumentException("assign_qty value required (null, empty, or 0 is not allowed)");
                 }
-                // route_id is column 24 per insertRow()'s positional mapping.
+                // route_id is column 24, vehicle_no is column 28, per insertRow()'s
+                // positional mapping.
                 String routeId = str(r, 24);
+                String vehicleNo = str(r, 28);
                 if (routeId != null) {
                     if (!clearedRoutes.contains(routeId) && !blockedRoutes.containsKey(routeId)) {
-                        String blockReason = blockReplaceReason(tenantId, routeId);
+                        String blockReason = blockReplaceReason(tenantId, routeId, vehicleNo);
                         if (blockReason != null) {
                             blockedRoutes.put(routeId, blockReason);
                         } else {
@@ -699,11 +701,12 @@ public class OrderDispatchDetailImportController {
 
     /**
      * Returns null if the route is safe to replace (new route, or has an
-     * existing {@code vehicle_status = 'active'} row and loading hasn't
-     * started), otherwise a human-readable reason the replace is blocked.
-     * See the class javadoc for the two block conditions.
+     * existing {@code vehicle_status = 'active'} row, for the SAME vehicle,
+     * and loading hasn't started), otherwise a human-readable reason the
+     * replace is blocked. See the class javadoc for the first two block
+     * conditions; the third (vehicle mismatch) is below.
      */
-    private String blockReplaceReason(Long tenantId, String routeId) {
+    private String blockReplaceReason(Long tenantId, String routeId, String newVehicleNo) {
         // loading_progress_detail (parent, one row per workflow instance) is
         // written at WEIGHMENT_1 -> LOADING_IN_PROGRESS, before "Start Bay" is
         // even clicked; loading_progress_detail_bay (child) only gets rows once
@@ -721,11 +724,22 @@ public class OrderDispatchDetailImportController {
             "SELECT COUNT(1) FROM m5_order_dispatch_detail WHERE tenant_id = ? AND route_id = ?",
             Integer.class, tenantId, routeId);
         if (existingRows != null && existingRows > 0) {
-            Integer activeRows = jdbc.queryForObject(
-                "SELECT COUNT(1) FROM m5_order_dispatch_detail WHERE tenant_id = ? AND route_id = ? AND vehicle_status = 'active'",
-                Integer.class, tenantId, routeId);
-            if (activeRows == null || activeRows == 0) {
+            List<String> activeVehicles = jdbc.queryForList(
+                "SELECT DISTINCT vehicle_no FROM m5_order_dispatch_detail " +
+                "WHERE tenant_id = ? AND route_id = ? AND vehicle_status = 'active'",
+                String.class, tenantId, routeId);
+            if (activeVehicles.isEmpty()) {
                 return "vehicle for this route is no longer active (already gated out)";
+            }
+            // Business rule (Dhivya, 2026-09-17): a route already active for one
+            // vehicle must not be silently reassigned to a different vehicle by
+            // a later import -- only a re-upload for the SAME vehicle (e.g. a
+            // corrected sheet) may replace it. Without this, two different
+            // trucks importing the same route_id would each wipe the other's
+            // rows in turn, with no record either driver ever had them.
+            if (newVehicleNo != null && activeVehicles.stream().noneMatch(newVehicleNo::equalsIgnoreCase)) {
+                return "route is already active for vehicle " + activeVehicles.get(0)
+                        + " — cannot import it for a different vehicle (" + newVehicleNo + ")";
             }
         }
         return null;
