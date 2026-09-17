@@ -103,7 +103,7 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
                     jdbc.update(
                             "INSERT INTO billing_order_details (tenant_id, workflow_instance_id, vehicle_no, "
                                     + "gate_pass_no, order_id, rd_code, rd_desc, sku_code, sku_desc, order_qty, "
-                                    + "loading_qty, skipped_quantity, reason, invoice_no) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                                    + "order_rate, loading_qty, skipped_quantity, reason, invoice_no) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                                     + "ON DUPLICATE KEY UPDATE vehicle_no = VALUES(vehicle_no), "
                                     + "gate_pass_no = VALUES(gate_pass_no), rd_code = VALUES(rd_code), "
                                     + "rd_desc = VALUES(rd_desc), sku_desc = VALUES(sku_desc), "
@@ -117,7 +117,12 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
                             // Confirmed off a live transition payload: this grid's line items carry the order
                             // quantity under "assign_qty" (the underlying OrderDispatchDetail column name),
                             // never a literal "order_qty" key -- that fallback always missed, writing 0.
-                            num(line, "assign_qty", "order_qty"), num(line, "loading_qty"), num(line, "skipped_quantity"),
+                            num(line, "assign_qty", "order_qty"),
+                            // This grid never carries a rate -- 0, not null, so two lines for the
+                            // same order+SKU here always compare equal on the (..., order_rate) unique
+                            // key (V324) and correctly collapse into one row, same as before that
+                            // migration. A real rate only ever comes from the Billing Table path below.
+                            num(line, "order_rate"), num(line, "loading_qty"), num(line, "skipped_quantity"),
                             str(line, "reason", "skip_reason"), str(line, "invoice_no"));
                     written++;
                 } catch (Exception e) {
