@@ -12,7 +12,7 @@
 -- reads at UNLOADING_COMPLETED, so no column is needed for them there.)
 
 ALTER TABLE m5_stock_balance
-  ADD COLUMN pc_qty_on_hand DECIMAL(14,3) NOT NULL DEFAULT 0.000;
+  ADD COLUMN IF NOT EXISTS pc_qty_on_hand DECIMAL(14,3) NOT NULL DEFAULT 0.000;
 
 -- entity_field_registry row so this field is Designer/entity-CRUD aware
 -- like every other field on StockBalance.
