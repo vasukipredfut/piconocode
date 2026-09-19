@@ -33,6 +33,12 @@ class BillingOrderDetailTransitionListenerTest {
     private void setUp() {
         jdbc = mock(JdbcTemplate.class);
         when(jdbc.update(anyString(), ArgumentMatchers.<Object[]>any())).thenReturn(1);
+        // Both write paths now try an UPDATE first (merge onto an existing row)
+        // before falling back to INSERT — default to "no existing row" (0) so
+        // tests see the INSERT they're asserting on, same as before this
+        // UPDATE-first change. Tests exercising the merge-onto-existing-row
+        // path override this explicitly.
+        when(jdbc.update(startsWith("UPDATE billing_order_details"), ArgumentMatchers.<Object[]>any())).thenReturn(0);
         listener = new BillingOrderDetailTransitionListener(jdbc);
     }
 
@@ -70,7 +76,8 @@ class BillingOrderDetailTransitionListenerTest {
 
         verify(jdbc).update(anyString(), eq(1L), eq(1567L), eq("TN86J8079"), eq("GP-1-1567"),
                 eq("ORD1"), isNull(), isNull(), eq("SKU1"), isNull(),
-                any(java.math.BigDecimal.class), any(java.math.BigDecimal.class), any(java.math.BigDecimal.class), isNull());
+                any(java.math.BigDecimal.class), any(java.math.BigDecimal.class), any(java.math.BigDecimal.class),
+                isNull(), isNull());
     }
 
     @Test
@@ -93,12 +100,21 @@ class BillingOrderDetailTransitionListenerTest {
         assertThat(sql).filteredOn(s -> s.contains("INSERT INTO billing_order_details")).hasSize(1);
         verify(jdbc).update(anyString(), eq(1L), eq(1776L), eq("TN86H0989"), eq("GP-1-118"),
                 eq("ORD30350983"), isNull(), isNull(), eq("SKU9269"), isNull(),
-                any(java.math.BigDecimal.class), any(java.math.BigDecimal.class), any(java.math.BigDecimal.class), isNull());
+                any(java.math.BigDecimal.class), any(java.math.BigDecimal.class), any(java.math.BigDecimal.class),
+                isNull(), isNull());
     }
 
     @Test
-    void insertUsesOnDuplicateKeyUpdate_forIdempotentResubmission() {
-        setUp();
+    void repeatSubmission_mergesOntoExistingRow_viaUpdate_insteadOfDuplicateInsert() {
+        // A resubmission for an order+SKU that already has a row (any rate --
+        // e.g. one the Billing Table grid already created) must land as an
+        // UPDATE onto that row, not a second INSERT. This is what replaced
+        // ON DUPLICATE KEY UPDATE for this write path (see class javadoc):
+        // matching on order_rate here would miss the Billing Table's row,
+        // since this grid never carries a rate.
+        jdbc = mock(JdbcTemplate.class);
+        when(jdbc.update(anyString(), any(Object[].class))).thenReturn(1);
+        listener = new BillingOrderDetailTransitionListener(jdbc);
         stubTriggeringPage("SKIPPED_ITEM_ALLOCATION", "PMT_CHECK_OK", "aria:skipped-item-allocation");
         WorkflowInstance wi = wi(1567L, "M10.FGLoading");
         Map<String, Object> pageData = Map.of(
@@ -106,8 +122,10 @@ class BillingOrderDetailTransitionListenerTest {
 
         listener.onTransition(wi, "SKIPPED_ITEM_ALLOCATION", Map.of("aria:skipped-item-allocation", pageData));
 
-        assertThat(capturedSql()).anyMatch(s -> s.contains("INSERT INTO billing_order_details")
-                && s.contains("ON DUPLICATE KEY UPDATE") && s.contains("skipped_quantity = VALUES(skipped_quantity)"));
+        List<String> sql = capturedSql();
+        assertThat(sql).anyMatch(s -> s.startsWith("UPDATE billing_order_details")
+                && s.contains("skipped_quantity = ?") && s.contains("WHERE tenant_id = ? AND workflow_instance_id = ? AND order_id = ? AND sku_code = ?"));
+        assertThat(sql).noneMatch(s -> s.contains("INSERT INTO billing_order_details"));
     }
 
     @Test
@@ -124,7 +142,7 @@ class BillingOrderDetailTransitionListenerTest {
         verify(jdbc).update(anyString(), eq(1L), eq(1567L), isNull(), isNull(),
                 eq("ORD1"), isNull(), isNull(), eq("SKU1"), isNull(),
                 any(java.math.BigDecimal.class), any(java.math.BigDecimal.class), any(java.math.BigDecimal.class),
-                eq("Vehicle capacity full"));
+                eq("Vehicle capacity full"), isNull());
     }
 
     @Test
@@ -184,9 +202,12 @@ class BillingOrderDetailTransitionListenerTest {
         List<String> sql = capturedSql();
         assertThat(sql).anyMatch(s -> s.contains("INSERT INTO billing_order_details")
                 && s.contains("net_rate") && s.contains("billed_qty"));
+        // Column order is (..., order_qty, loading_qty(=billed_qty), order_rate, ...) --
+        // this row's map has no assign_qty/order_qty key, so order_qty is 0; billed_qty
+        // (from loaded_qty) is the 40.0.
         verify(jdbc).update(anyString(), eq(1L), eq(1776L), eq("TN86H0989"), eq("GP-1-118"),
                 eq("ORD1"), eq("RD1"), eq("RD One"), eq("SKU1"), eq("SKU One"),
-                eq(java.math.BigDecimal.valueOf(40.0)),
+                eq(java.math.BigDecimal.ZERO), eq(java.math.BigDecimal.valueOf(40.0)),
                 eq(java.math.BigDecimal.valueOf(100.0)), eq(java.math.BigDecimal.valueOf(18.0)),
                 eq(new java.math.BigDecimal("18.000")), eq(new java.math.BigDecimal("82.000")),
                 eq(java.math.BigDecimal.valueOf(40.0)), eq("INV1"));
@@ -205,7 +226,7 @@ class BillingOrderDetailTransitionListenerTest {
 
         listener.onTransition(wi, "SEALING_DONE", Map.of("aria:billing-entry", pageData));
 
-        verify(jdbc).update(anyString(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+        verify(jdbc).update(anyString(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
                 eq(java.math.BigDecimal.valueOf(55.0)), any(), any(), any(), any(),
                 eq(java.math.BigDecimal.valueOf(55.0)), any());
     }
@@ -223,7 +244,7 @@ class BillingOrderDetailTransitionListenerTest {
 
         listener.onTransition(wi, "SEALING_DONE", Map.of("aria:billing-entry", pageData));
 
-        verify(jdbc).update(anyString(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+        verify(jdbc).update(anyString(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
                 eq(java.math.BigDecimal.valueOf(40.0)), any(), any(), any(), any(),
                 eq(java.math.BigDecimal.valueOf(40.0)), any());
     }

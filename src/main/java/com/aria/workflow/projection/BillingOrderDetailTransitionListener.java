@@ -100,30 +100,43 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
                 @SuppressWarnings("unchecked")
                 Map<String, Object> line = (Map<String, Object>) lineRaw;
                 try {
-                    jdbc.update(
-                            "INSERT INTO billing_order_details (tenant_id, workflow_instance_id, vehicle_no, "
-                                    + "gate_pass_no, order_id, rd_code, rd_desc, sku_code, sku_desc, order_qty, "
-                                    + "order_rate, loading_qty, skipped_quantity, reason, invoice_no) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-                                    + "ON DUPLICATE KEY UPDATE vehicle_no = VALUES(vehicle_no), "
-                                    + "gate_pass_no = VALUES(gate_pass_no), rd_code = VALUES(rd_code), "
-                                    + "rd_desc = VALUES(rd_desc), sku_desc = VALUES(sku_desc), "
-                                    + "order_qty = VALUES(order_qty), loading_qty = VALUES(loading_qty), "
-                                    + "skipped_quantity = VALUES(skipped_quantity), reason = VALUES(reason), "
-                                    + "invoice_no = COALESCE(VALUES(invoice_no), invoice_no), "
-                                    + "updated_at = CURRENT_TIMESTAMP",
-                            tenantId, instance.getId(), vehicleNo, gatePassNo,
-                            str(line, "order_id"), str(line, "rd_code"), str(line, "rd_desc"),
-                            str(line, "sku_code"), str(line, "sku_desc"),
-                            // Confirmed off a live transition payload: this grid's line items carry the order
-                            // quantity under "assign_qty" (the underlying OrderDispatchDetail column name),
-                            // never a literal "order_qty" key -- that fallback always missed, writing 0.
-                            num(line, "assign_qty", "order_qty"),
-                            // This grid never carries a rate -- 0, not null, so two lines for the
-                            // same order+SKU here always compare equal on the (..., order_rate) unique
-                            // key (V324) and correctly collapse into one row, same as before that
-                            // migration. A real rate only ever comes from the Billing Table path below.
-                            num(line, "order_rate"), num(line, "loading_qty"), num(line, "skipped_quantity"),
-                            str(line, "reason", "skip_reason"), str(line, "invoice_no"));
+                    String orderId = str(line, "order_id");
+                    String skuCode = str(line, "sku_code");
+                    BigDecimal orderQty = num(line, "assign_qty", "order_qty");
+                    BigDecimal loadingQty = num(line, "loading_qty");
+                    BigDecimal skippedQty = num(line, "skipped_quantity");
+                    String reason = str(line, "reason", "skip_reason");
+                    String rdCode = str(line, "rd_code");
+                    String rdDesc = str(line, "rd_desc");
+                    String skuDesc = str(line, "sku_desc");
+                    String invoiceNo = str(line, "invoice_no");
+
+                    // This grid never carries a rate, and the unique key includes
+                    // order_rate (V324, for the Billing Table grid's genuine
+                    // same-order+SKU-different-rate case). Matching by order_rate
+                    // here too used to insert a SEPARATE order_rate=0 row for every
+                    // line the Billing Table grid ALSO has (real rate) -- 4 skip
+                    // lines became 4 duplicate rows on top of the 23 real ones
+                    // (confirmed live: 23 SKUs became 27 rows). Skip info is a
+                    // per-order+SKU fact, not a per-rate one, so match on order+SKU
+                    // alone and merge into whichever row (any rate) already exists.
+                    int updated = jdbc.update(
+                            "UPDATE billing_order_details SET vehicle_no = ?, gate_pass_no = ?, "
+                                    + "rd_code = ?, rd_desc = ?, sku_desc = ?, order_qty = GREATEST(order_qty, ?), "
+                                    + "loading_qty = GREATEST(loading_qty, ?), skipped_quantity = ?, reason = ?, "
+                                    + "invoice_no = COALESCE(?, invoice_no), updated_at = CURRENT_TIMESTAMP "
+                                    + "WHERE tenant_id = ? AND workflow_instance_id = ? AND order_id = ? AND sku_code = ?",
+                            vehicleNo, gatePassNo, rdCode, rdDesc, skuDesc, orderQty, loadingQty,
+                            skippedQty, reason, invoiceNo, tenantId, instance.getId(), orderId, skuCode);
+
+                    if (updated == 0) {
+                        jdbc.update(
+                                "INSERT INTO billing_order_details (tenant_id, workflow_instance_id, vehicle_no, "
+                                        + "gate_pass_no, order_id, rd_code, rd_desc, sku_code, sku_desc, order_qty, "
+                                        + "order_rate, loading_qty, skipped_quantity, reason, invoice_no) VALUES (?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)",
+                                tenantId, instance.getId(), vehicleNo, gatePassNo, orderId, rdCode, rdDesc,
+                                skuCode, skuDesc, orderQty, loadingQty, skippedQty, reason, invoiceNo);
+                    }
                     written++;
                 } catch (Exception e) {
                     // One bad line must not sink the rest — insert what we can, log what we can't.
@@ -191,6 +204,25 @@ public class BillingOrderDetailTransitionListener implements WorkflowTransitionL
                 String skuCode = str(row, "sku_code");
                 String invoiceNo = str(row, "invoice_no");
                 BigDecimal orderQty = num(row, "assign_qty", "order_qty");
+
+                // If the skip-allocation step (above) already created a placeholder
+                // row for this order+SKU at order_rate=0, promote IT to the real
+                // rate instead of inserting a second row -- the unique key includes
+                // order_rate (V324), so a blind insert/merge keyed on the real rate
+                // would never match that 0-rate row and always duplicate it.
+                int retargeted = jdbc.update(
+                        "UPDATE billing_order_details SET rd_code = ?, rd_desc = ?, sku_desc = ?, "
+                                + "order_qty = GREATEST(order_qty, ?), loading_qty = GREATEST(loading_qty, ?), "
+                                + "order_rate = ?, gst_rate_pct = ?, tax_amount = ?, net_rate = ?, billed_qty = ?, "
+                                + "invoice_no = COALESCE(?, invoice_no), updated_at = CURRENT_TIMESTAMP "
+                                + "WHERE tenant_id = ? AND workflow_instance_id = ? AND order_id = ? AND sku_code = ? AND order_rate = 0",
+                        str(row, "rd_code"), str(row, "rd_desc"), str(row, "sku_desc"), orderQty, billedQty,
+                        orderRate, gstRatePct, taxAmount, netRate, billedQty, invoiceNo,
+                        tenantId, instance.getId(), orderId, skuCode);
+                if (retargeted > 0) {
+                    written++;
+                    continue;
+                }
 
                 jdbc.update(
                         "INSERT INTO billing_order_details (tenant_id, workflow_instance_id, vehicle_no, "
