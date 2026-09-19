@@ -346,6 +346,12 @@ public class GenericEntityController {
             // plant a row into another firm simply by naming its id. It is
             // stamped from the authenticated context below instead.
             if (e.getKey().equals("tenant_id")) continue;
+            // Same reasoning as update(): created_at/updated_at are
+            // server-managed (DEFAULT/ON UPDATE CURRENT_TIMESTAMP) -- a screen
+            // that duplicates a read row into a create payload must not be
+            // able to hand back its ISO datetime string, which MariaDB's
+            // TIMESTAMP columns reject.
+            if (e.getKey().equals("created_at") || e.getKey().equals("updated_at")) continue;
             if (declared.contains(e.getKey()) && tableHasColumn(table, e.getKey())) {
                 safe.put(e.getKey(), e.getValue());
             }
@@ -522,7 +528,13 @@ public class GenericEntityController {
         for (Map.Entry<String, Object> e : body.entrySet()) {
             if (!SAFE_IDENT.matcher(e.getKey()).matches()) continue;
             if (!declared.contains(e.getKey())) continue;
-            if (e.getKey().equals("id")) continue;
+            // id/created_at/updated_at are server-managed (updated_at carries
+            // ON UPDATE CURRENT_TIMESTAMP on every one of these tables) --
+            // never accept them from the client. A screen that round-trips a
+            // read row straight into its edit payload otherwise sends back
+            // updated_at as an ISO string ("...T...+05:30"), which MariaDB's
+            // TIMESTAMP column rejects outright.
+            if (e.getKey().equals("id") || e.getKey().equals("created_at") || e.getKey().equals("updated_at")) continue;
             safe.put(e.getKey(), e.getValue());
         }
         encryptSecretsInPlace(code, safe);
