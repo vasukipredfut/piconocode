@@ -89,10 +89,11 @@ public class ReturnStockOfficerItemTransitionListener implements WorkflowTransit
             try {
                 jdbc.update(
                         "INSERT INTO return_stock_officer_item (tenant_id, workflow_instance_id, vehicle_no, "
-                                + "gate_pass_no, batch_no, sku_code, sku_name, qty, good_stock_qty, expiry_stock_qty, "
+                                + "gate_pass_no, invoice_no, batch_no, sku_code, sku_name, qty, good_stock_qty, expiry_stock_qty, "
                                 + "packing_month, stock_type, box, pc, remarks) "
-                                + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         tenantId, instance.getId(), vehicleNo, gatePassNo,
+                        str(line, "invoice_no", "invoiceNo"),
                         str(line, "batch_no", "batchNo"), str(line, "sku_code", "skuCode"),
                         str(line, "sku_name", "skuName"), num(line, "qty"),
                         num(line, "good_stock_qty"), num(line, "expiry_stock_qty"),
