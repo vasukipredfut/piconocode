@@ -114,4 +114,72 @@ class ReturnStockBatchControllerTest {
                 contains("ref_type = 'DSP' AND ref_id = ? AND uom = 'BOX'"),
                 eq(1L), eq(42L), eq(1L), eq(42L));
     }
+
+    private static Map<String, Object> invoiceRow(String invoiceNo, String vendorName, String rdCode,
+                                                    String skuCode, String skuName,
+                                                    String orderBox, String orderPc, String unloaded) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("invoice_no", invoiceNo);
+        m.put("vendor_name", vendorName);
+        m.put("rd_code", rdCode);
+        m.put("sku_code", skuCode);
+        m.put("sku_name", skuName);
+        m.put("order_box_qty", new BigDecimal(orderBox));
+        m.put("order_pc_qty", new BigDecimal(orderPc));
+        m.put("unloaded_qty", new BigDecimal(unloaded));
+        return m;
+    }
+
+    @Test
+    void unloadingDetailsByInvoice_returnsInvoiceGroupedRows() {
+        Map<String, Object> inv1 = invoiceRow("INV-2001", "ABC Traders", "RD001", "SKU-1624", "Coconut Oil 100ml", "5", "3", "4");
+        Map<String, Object> inv2 = invoiceRow("INV-2002", "XYZ Distributors", "RD002", "SKU-1625", "Mustard Oil 1L", "10", "0", "10");
+        when(jdbc.queryForList(contains("dispatch_invoice_item"), any(Long.class), any(Long.class), any(Long.class), any(Long.class)))
+                .thenReturn(List.of(inv1, inv2));
+
+        DataSourceSpec.Response result = controller.unloadingDetailsByInvoice(101L);
+
+        assertThat(result.getContent()).hasSize(2);
+        assertThat(result.getContent().get(0)).containsEntry("invoice_no", "INV-2001")
+                .containsEntry("vendor_name", "ABC Traders")
+                .containsEntry("rd_code", "RD001");
+        assertThat(result.getContent().get(1)).containsEntry("invoice_no", "INV-2002");
+        assertThat(result.getTotalElements()).isEqualTo(2);
+    }
+
+    @Test
+    void unloadingDetailsByInvoice_lineWithNoInvoiceNo_stillIncludedUnderNullGroup() {
+        Map<String, Object> untyped = invoiceRow(null, null, null, "SKU-1627", "Groundnut Oil", "2", "0", "2");
+        when(jdbc.queryForList(contains("dispatch_invoice_item"), any(Long.class), any(Long.class), any(Long.class), any(Long.class)))
+                .thenReturn(List.of(untyped));
+
+        DataSourceSpec.Response result = controller.unloadingDetailsByInvoice(101L);
+
+        assertThat(result.getContent()).hasSize(1);
+        assertThat(result.getContent().get(0).get("invoice_no")).isNull();
+    }
+
+    @Test
+    void unloadingDetailsByInvoice_joinsDispatchInvoiceItemOnInvoiceNoAndSkuCode() {
+        when(jdbc.queryForList(any(String.class), any(Long.class), any(Long.class), any(Long.class), any(Long.class)))
+                .thenReturn(List.of());
+
+        controller.unloadingDetailsByInvoice(101L);
+
+        verify(jdbc).queryForList(
+                contains("dii.invoice_no = rsoi.invoice_no AND dii.sku_code = rsoi.sku_code"),
+                eq(1L), eq(101L), eq(1L), eq(101L));
+    }
+
+    @Test
+    void unloadingDetailsByInvoice_groupsByInvoiceAndSkuNotByLocation() {
+        when(jdbc.queryForList(any(String.class), any(Long.class), any(Long.class), any(Long.class), any(Long.class)))
+                .thenReturn(List.of());
+
+        controller.unloadingDetailsByInvoice(101L);
+
+        verify(jdbc).queryForList(
+                contains("GROUP BY rsoi.invoice_no, dii.vendor_name, dii.rd_code, rsoi.sku_code, rsoi.sku_name"),
+                eq(1L), eq(101L), eq(1L), eq(101L));
+    }
 }
