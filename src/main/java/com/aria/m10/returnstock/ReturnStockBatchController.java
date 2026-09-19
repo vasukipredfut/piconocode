@@ -17,13 +17,19 @@ import java.util.Map;
  * Read-only lookups for M10.ReturnStockIn's {@code aria:stock-checking-officer}
  * page: for a given workflow instance, how does what QC allocated to each
  * put-away location ({@code qc_processed_location.box_qty}, the "order"
- * quantity for that batch/bin) compare against what
- * {@code ReturnStockUnloadingStockPostingListener} actually posted for it at
- * {@code UNLOADING_COMPLETED} ({@code m5_stock_movement}, {@code ref_type='DSP'},
- * {@code ref_id=<instanceId>}, summed per {@code (item_code, lot_no, to_bin)},
- * BOX lines only — a piece-count shortfall isn't tracked at this stage, same
+ * quantity for that batch/bin) compare against what was actually posted to
+ * {@code m5_stock_movement} for it ({@code ref_type='DSP'}, {@code
+ * ref_id=<instanceId>}, summed per {@code (item_code, lot_no, to_bin)}, BOX
+ * lines only — a piece-count shortfall isn't tracked at this stage, same
  * scope as the page's own concrete example: "box quantity is 5 but there are
  * only 4 boxes").
+ *
+ * <p><b>Nothing currently writes those {@code m5_stock_movement} rows for
+ * this flow</b> — the listener that posted them at {@code
+ * UNLOADING_COMPLETED} was removed. Until a replacement exists, every
+ * {@code unloaded_qty} this controller returns reads as 0 (a genuine
+ * shortfall against whatever QC allocated), which is expected, not a bug in
+ * this controller.
  *
  * <p>Same bespoke-SQL rationale as {@link com.aria.m10.loading.PendingSkuController}:
  * comparing one column against an aggregate of a DIFFERENT table's rows,
