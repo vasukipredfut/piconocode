@@ -16,20 +16,32 @@ import java.util.Map;
 /**
  * Read-only lookups for M10.ReturnStockIn's {@code aria:stock-checking-officer}
  * page: for a given workflow instance, how does what QC allocated to each
- * put-away location ({@code qc_processed_location.box_qty}, the "order"
- * quantity for that batch/bin) compare against what was actually posted to
- * {@code m5_stock_movement} for it ({@code ref_type='DSP'}, {@code
- * ref_id=<instanceId>}, summed per {@code (item_code, lot_no, to_bin)}, BOX
- * lines only — a piece-count shortfall isn't tracked at this stage, same
- * scope as the page's own concrete example: "box quantity is 5 but there are
- * only 4 boxes").
+ * put-away location ({@code qc_processed_location.box_qty}/{@code pc_qty},
+ * the "order" quantity for that batch/bin) compare against what was actually
+ * confirmed on {@code aria:unloading-progress}, read from {@code
+ * return_stock_leakage_section} (summed per {@code (sku_code, batch_no,
+ * processed_area)}, split BOX vs PC by {@code line_type} — each {@code
+ * qc_processed_location} row is itself one or the other, never both).
  *
- * <p><b>Nothing currently writes those {@code m5_stock_movement} rows for
- * this flow</b> — the listener that posted them at {@code
- * UNLOADING_COMPLETED} was removed. Until a replacement exists, every
- * {@code unloaded_qty} this controller returns reads as 0 (a genuine
- * shortfall against whatever QC allocated), which is expected, not a bug in
- * this controller.
+ * <p>{@code return_stock_leakage_section} is written by {@link
+ * com.aria.workflow.projection.ReturnStockLeakageSectionTransitionListener}
+ * once the instance reaches {@code UNLOADING_COMPLETED} — see that class
+ * and {@code V331__return_stock_leakage_section_table.sql} for why it
+ * replaced the earlier {@code m5_stock_movement}-based approach (that
+ * listener was removed; this controller used to read the resulting
+ * always-empty ledger, so every {@code unloaded_qty} read as 0 regardless
+ * of what was actually confirmed — fixed by switching the read side over to
+ * the same table the write side now actually populates).
+ *
+ * <p>{@code qc_processed_location} itself already holds one row for a
+ * location's box line and a SEPARATE row for its pieces line (same
+ * batch_no+processed_area, one with {@code box_qty} set and {@code pc_qty}
+ * NULL, the other the reverse) — the page's own {@code dataSource.splitRows}
+ * mirrors this at display time rather than creating it. Both rows share the
+ * same (sku_code, batch_no, processed_area) key the leakage subquery joins
+ * on, so without {@code qpl.box_qty IS NOT NULL} on that join the one BOX
+ * leakage total would double-attach to both rows — inflating the invoice
+ * rollup and showing a phantom qty on the untracked pieces row.
  *
  * <p>Same bespoke-SQL rationale as {@link com.aria.m10.loading.PendingSkuController}:
  * comparing one column against an aggregate of a DIFFERENT table's rows,
@@ -93,7 +105,8 @@ public class ReturnStockBatchController {
                         "SELECT rsoi.invoice_no AS invoice_no, dii.vendor_name AS vendor_name, dii.rd_code AS rd_code, "
                                 + "rsoi.sku_code AS sku_code, rsoi.sku_name AS sku_name, "
                                 + "SUM(qpl.box_qty) AS order_box_qty, SUM(qpl.pc_qty) AS order_pc_qty, "
-                                + "SUM(COALESCE(sm.unloaded_qty, 0)) AS unloaded_qty "
+                                + "SUM(COALESCE(smb.unloaded_qty, 0)) AS unloaded_box_qty, "
+                                + "SUM(COALESCE(smp.unloaded_qty, 0)) AS unloaded_pc_qty "
                                 + "FROM qc_processed_location qpl "
                                 + "JOIN return_stock_officer_item rsoi "
                                 + "  ON rsoi.id = qpl.return_stock_officer_item_id AND rsoi.tenant_id = qpl.tenant_id "
@@ -101,15 +114,21 @@ public class ReturnStockBatchController {
                                 + "  ON dii.tenant_id = rsoi.tenant_id AND dii.workflow_instance_id = rsoi.workflow_instance_id "
                                 + "  AND dii.invoice_no = rsoi.invoice_no AND dii.sku_code = rsoi.sku_code "
                                 + "LEFT JOIN ( "
-                                + "  SELECT item_code, lot_no, to_bin, SUM(qty) AS unloaded_qty "
-                                + "  FROM m5_stock_movement "
-                                + "  WHERE tenant_id = ? AND ref_type = 'DSP' AND ref_id = ? AND uom = 'BOX' "
-                                + "  GROUP BY item_code, lot_no, to_bin "
-                                + ") sm ON sm.item_code = rsoi.sku_code AND sm.lot_no = rsoi.batch_no AND sm.to_bin = qpl.processed_area "
+                                + "  SELECT sku_code, batch_no, processed_area, SUM(unloading_qty) AS unloaded_qty "
+                                + "  FROM return_stock_leakage_section "
+                                + "  WHERE tenant_id = ? AND workflow_instance_id = ? AND line_type = 'BOX' "
+                                + "  GROUP BY sku_code, batch_no, processed_area "
+                                + ") smb ON smb.sku_code = rsoi.sku_code AND smb.batch_no = rsoi.batch_no AND smb.processed_area = qpl.processed_area AND qpl.box_qty IS NOT NULL "
+                                + "LEFT JOIN ( "
+                                + "  SELECT sku_code, batch_no, processed_area, SUM(unloading_qty) AS unloaded_qty "
+                                + "  FROM return_stock_leakage_section "
+                                + "  WHERE tenant_id = ? AND workflow_instance_id = ? AND line_type = 'PC' "
+                                + "  GROUP BY sku_code, batch_no, processed_area "
+                                + ") smp ON smp.sku_code = rsoi.sku_code AND smp.batch_no = rsoi.batch_no AND smp.processed_area = qpl.processed_area AND qpl.pc_qty IS NOT NULL "
                                 + "WHERE qpl.tenant_id = ? AND qpl.workflow_instance_id = ? "
                                 + "GROUP BY rsoi.invoice_no, dii.vendor_name, dii.rd_code, rsoi.sku_code, rsoi.sku_name "
                                 + "ORDER BY rsoi.invoice_no, rsoi.sku_code",
-                        tenantId, instanceId, tenantId, instanceId)
+                        tenantId, instanceId, tenantId, instanceId, tenantId, instanceId)
                 .stream()
                 .map(r -> {
                     Map<String, Object> row = new LinkedHashMap<>();
@@ -120,7 +139,8 @@ public class ReturnStockBatchController {
                     row.put("sku_name", r.get("sku_name"));
                     row.put("order_box_qty", r.get("order_box_qty"));
                     row.put("order_pc_qty", r.get("order_pc_qty"));
-                    row.put("unloaded_qty", r.get("unloaded_qty"));
+                    row.put("unloaded_qty", r.get("unloaded_box_qty"));
+                    row.put("unloaded_pc_qty", r.get("unloaded_pc_qty"));
                     return row;
                 })
                 .toList();
@@ -134,19 +154,28 @@ public class ReturnStockBatchController {
                                 + "rsoi.sku_code AS sku_code, rsoi.sku_name AS sku_name, "
                                 + "qpl.processed_area AS processed_area, "
                                 + "qpl.box_qty AS order_box_qty, qpl.pc_qty AS order_pc_qty, "
-                                + "COALESCE(sm.unloaded_qty, 0) AS unloaded_qty "
+                                // qpl is one row per BOX-or-PC line (never both) — the two LEFT
+                                // JOINs are each guarded to their own row type, so at most one of
+                                // smb/smp ever matches a given qpl row; COALESCE picks whichever did.
+                                + "COALESCE(smb.unloaded_qty, smp.unloaded_qty, 0) AS unloaded_qty "
                                 + "FROM qc_processed_location qpl "
                                 + "JOIN return_stock_officer_item rsoi "
                                 + "  ON rsoi.id = qpl.return_stock_officer_item_id AND rsoi.tenant_id = qpl.tenant_id "
                                 + "LEFT JOIN ( "
-                                + "  SELECT item_code, lot_no, to_bin, SUM(qty) AS unloaded_qty "
-                                + "  FROM m5_stock_movement "
-                                + "  WHERE tenant_id = ? AND ref_type = 'DSP' AND ref_id = ? AND uom = 'BOX' "
-                                + "  GROUP BY item_code, lot_no, to_bin "
-                                + ") sm ON sm.item_code = rsoi.sku_code AND sm.lot_no = rsoi.batch_no AND sm.to_bin = qpl.processed_area "
+                                + "  SELECT sku_code, batch_no, processed_area, SUM(unloading_qty) AS unloaded_qty "
+                                + "  FROM return_stock_leakage_section "
+                                + "  WHERE tenant_id = ? AND workflow_instance_id = ? AND line_type = 'BOX' "
+                                + "  GROUP BY sku_code, batch_no, processed_area "
+                                + ") smb ON smb.sku_code = rsoi.sku_code AND smb.batch_no = rsoi.batch_no AND smb.processed_area = qpl.processed_area AND qpl.box_qty IS NOT NULL "
+                                + "LEFT JOIN ( "
+                                + "  SELECT sku_code, batch_no, processed_area, SUM(unloading_qty) AS unloaded_qty "
+                                + "  FROM return_stock_leakage_section "
+                                + "  WHERE tenant_id = ? AND workflow_instance_id = ? AND line_type = 'PC' "
+                                + "  GROUP BY sku_code, batch_no, processed_area "
+                                + ") smp ON smp.sku_code = rsoi.sku_code AND smp.batch_no = rsoi.batch_no AND smp.processed_area = qpl.processed_area AND qpl.pc_qty IS NOT NULL "
                                 + "WHERE qpl.tenant_id = ? AND qpl.workflow_instance_id = ? "
                                 + "ORDER BY rsoi.batch_no, qpl.processed_area",
-                        tenantId, instanceId, tenantId, instanceId)
+                        tenantId, instanceId, tenantId, instanceId, tenantId, instanceId)
                 .stream()
                 .map(r -> {
                     Map<String, Object> row = new LinkedHashMap<>();
