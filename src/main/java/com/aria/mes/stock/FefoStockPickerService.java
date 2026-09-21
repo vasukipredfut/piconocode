@@ -36,15 +36,35 @@ public class FefoStockPickerService {
      * N picks (one per lot consumed) ordered by oldest-first.
      */
     public List<FefoPick> pick(long tenantId, String itemCode, String binCode, BigDecimal requestedQty) {
+        return pick(tenantId, itemCode, binCode, null, requestedQty);
+    }
+
+    /**
+     * Same as {@link #pick(long, String, String, BigDecimal)}, plus an
+     * optional {@code warehouse} (Godown) filter — when non-null, only lots
+     * sitting in that Godown are eligible, so a loading bay tied to a
+     * specific Godown can't draw stock physically sitting in a different one.
+     *
+     * <p>Filtered in Java on the rows {@link #findAvailableLots} returns,
+     * rather than pushed into that method's own SQL/signature, so the
+     * existing test hook there (subclassed to return canned rows without a
+     * real {@code JdbcTemplate}) keeps working unchanged for every caller
+     * that doesn't pass a warehouse.
+     */
+    public List<FefoPick> pick(long tenantId, String itemCode, String binCode, String warehouse, BigDecimal requestedQty) {
         if (itemCode == null || requestedQty == null || requestedQty.compareTo(BigDecimal.ZERO) <= 0) {
             return List.of();
         }
-        return pickFromRows(itemCode, findAvailableLots(tenantId, itemCode, binCode), requestedQty);
+        List<Map<String, Object>> rows = findAvailableLots(tenantId, itemCode, binCode);
+        if (warehouse != null) {
+            rows = rows.stream().filter(r -> warehouse.equals(r.get("warehouse"))).toList();
+        }
+        return pickFromRows(itemCode, rows, requestedQty);
     }
 
     /** Hook for tests: returns raw available-lot rows ordered oldest-first. */
     protected List<Map<String, Object>> findAvailableLots(long tenantId, String itemCode, String binCode) {
-        String sql = "SELECT lot_no, bin_code, uom, qty_on_hand, last_movement_at " +
+        String sql = "SELECT lot_no, bin_code, uom, qty_on_hand, last_movement_at, warehouse " +
                 "FROM m5_stock_balance " +
                 "WHERE tenant_id=? AND item_code=? AND qty_on_hand > 0" +
                 (binCode != null ? " AND bin_code=?" : "") +

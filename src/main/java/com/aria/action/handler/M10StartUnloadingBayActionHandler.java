@@ -162,6 +162,11 @@ public class M10StartUnloadingBayActionHandler implements ActionHandler {
 
         String vehicleNo = strOpt(formData, "vehicle_no");
         String gatePassNo = strOpt(formData, "gpNumber");
+        // Optional — the Plant/Godown pickers on this page are UI work still
+        // in flight; null here just means Bay Complete posts the received
+        // quantity without them, same as before these columns existed.
+        String godownCode = strOpt(formData, "godown_code");
+        String plantCode = strOpt(formData, "plant_code");
 
         // flow_variant_code/current_step aren't projected here automatically
         // (this table has no m0_workflow_projection row -- see V261), so read
@@ -196,9 +201,9 @@ public class M10StartUnloadingBayActionHandler implements ActionHandler {
         for (LineEntry e : parsed) {
             jdbc.update(
                     "INSERT INTO unloading_progress_detail_bay "
-                            + "(tenant_id, unloading_progress_detail_id, workflow_instance_id, route_id, order_id, sku_code, sku_desc, bay_name, quantity, processed_quantity, status) "
-                            + "VALUES (?,?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
-                    tenantId, parentId, instanceId, e.routeId, e.orderId, e.skuCode, e.skuDesc, bayName, e.quantity, e.unloadingQty);
+                            + "(tenant_id, unloading_progress_detail_id, workflow_instance_id, route_id, order_id, sku_code, sku_desc, bay_name, quantity, processed_quantity, godown_code, plant_code, status) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
+                    tenantId, parentId, instanceId, e.routeId, e.orderId, e.skuCode, e.skuDesc, bayName, e.quantity, e.unloadingQty, godownCode, plantCode);
 
             if ("WITHOUT_CONVEYOR".equals(e.conveyorMode) || "WITHOUT_BARCODE".equals(e.scanningStatus)) {
                 dispatchTasksSkipped++;

@@ -152,7 +152,7 @@ class M10StartUnloadingBayActionHandlerTest {
         assertThat(r.getData()).containsEntry("dispatchTasksSkipped", 0);
 
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
-                eq(1L), eq(777L), eq(1495L), eq("ROU028912"), isNull(), eq("SKU1215"), eq("SKU1215 desc"), eq("Bay1"), eq(new BigDecimal("20")), isNull());
+                eq(1L), eq(777L), eq(1495L), eq("ROU028912"), isNull(), eq("SKU1215"), eq("SKU1215 desc"), eq("Bay1"), eq(new BigDecimal("20")), isNull(), isNull(), isNull());
 
         // One dispatch_task row, type='UnLoading', stamped with the same
         // fixed conveyor workflow code as the loading side.

@@ -187,7 +187,17 @@ public class M10BayCompleteActionHandler implements ActionHandler {
                 return ActionResult.error("order_sku_line_items[" + i + "] (" + skuCode + ") balance_qty must be a number");
             }
 
-            List<FefoStockPickerService.FefoPick> picks = fefoPicker.pick(tenantId, skuCode, null, processedQty);
+            // Scope the FEFO pick to whichever Godown Start Bay recorded for
+            // this row (see M10StartBayActionHandler) -- null (older rows, or
+            // the Godown picker not yet used) falls back to picking across
+            // every Godown, same as before this column existed.
+            List<Map<String, Object>> bayRow = jdbc.queryForList(
+                    "SELECT godown_code FROM loading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
+                            + "((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'IN_PROGRESS'",
+                    tenantId, instanceId, routeId, orderId, orderId, skuCode);
+            String godownCode = bayRow.isEmpty() ? null : (String) bayRow.get(0).get("godown_code");
+
+            List<FefoStockPickerService.FefoPick> picks = fefoPicker.pick(tenantId, skuCode, null, godownCode, processedQty);
             BigDecimal residual = fefoPicker.residualQty(processedQty, picks);
             if (residual.signum() > 0) {
                 markRollbackOnly();

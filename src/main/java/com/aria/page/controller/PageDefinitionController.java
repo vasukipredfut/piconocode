@@ -162,6 +162,15 @@ public class PageDefinitionController {
                 .orElseThrow(() -> new PageNotFoundException("No published version for " + code));
     }
 
+    @PostMapping("/api/m0/pages/{code}/cache/evict")
+    @Operation(summary = "Drop the cached Redis entry for this page (every tenant). "
+            + "For when body_json was edited directly in the DB (bypassing publish/rollback), "
+            + "which leaves the 1-hour Redis cache serving the pre-edit page.")
+    public ResponseEntity<Void> evictCache(@PathVariable String code) {
+        renderer.evictAllTenants(code);
+        return ResponseEntity.noContent().build();
+    }
+
     @GetMapping("/api/m0/pages/{code}/draft")
     @Operation(summary = "Load the active draft version (404 if none).")
     public ResponseEntity<PageResponse> getDraft(@PathVariable String code) {

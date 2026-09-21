@@ -120,7 +120,7 @@ public class M10UnloadingBayCompleteActionHandler implements ActionHandler {
             }
 
             List<Map<String, Object>> rows = jdbc.queryForList(
-                    "SELECT id, bay_name FROM unloading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? "
+                    "SELECT id, bay_name, godown_code FROM unloading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? "
                             + "AND route_id = ? AND ((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'IN_PROGRESS'",
                     tenantId, instanceId, routeId, orderId, orderId, skuCode);
             if (rows.isEmpty()) {
@@ -128,18 +128,27 @@ public class M10UnloadingBayCompleteActionHandler implements ActionHandler {
                 return ActionResult.error("no open unload bay row found for route_id=" + routeId + " order_id=" + orderId + " sku_code=" + skuCode);
             }
             String binCode = (String) rows.get(0).get("bay_name");
+            // Godown Start Bay recorded for this row (see
+            // M10StartUnloadingBayActionHandler) -- null (older rows, or the
+            // Godown picker not yet used) posts the receipt without one, same
+            // as before this column existed.
+            String godownCode = (String) rows.get(0).get("godown_code");
 
             if (qty.signum() > 0) {
                 String uom = lookupUom(tenantId, skuCode);
                 int updated = jdbc.update(
-                        "UPDATE m5_stock_balance SET qty_on_hand = qty_on_hand + ?, last_movement_at = CURRENT_TIMESTAMP "
+                        // COALESCE, not a plain overwrite: a null godownCode
+                        // (older row, or Godown picker not used this time)
+                        // must not blank out a warehouse an earlier receipt
+                        // already set on this same bin.
+                        "UPDATE m5_stock_balance SET qty_on_hand = qty_on_hand + ?, warehouse = COALESCE(?, warehouse), last_movement_at = CURRENT_TIMESTAMP "
                                 + "WHERE tenant_id = ? AND item_code = ? AND lot_no IS NULL AND bin_code = ?",
-                        qty, tenantId, skuCode, binCode);
+                        qty, godownCode, tenantId, skuCode, binCode);
                 if (updated == 0) {
                     jdbc.update(
-                            "INSERT INTO m5_stock_balance (tenant_id, item_code, lot_no, bin_code, uom, qty_on_hand, last_movement_at) "
-                                    + "VALUES (?,?,NULL,?,?,?,CURRENT_TIMESTAMP)",
-                            tenantId, skuCode, binCode, uom, qty);
+                            "INSERT INTO m5_stock_balance (tenant_id, item_code, lot_no, bin_code, warehouse, uom, qty_on_hand, last_movement_at) "
+                                    + "VALUES (?,?,NULL,?,?,?,?,CURRENT_TIMESTAMP)",
+                            tenantId, skuCode, binCode, godownCode, uom, qty);
                 }
                 jdbc.update(
                         "INSERT INTO m5_stock_movement (tenant_id, kind, item_code, to_bin, qty, uom, "

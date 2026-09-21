@@ -172,6 +172,12 @@ public class M10StartBayActionHandler implements ActionHandler {
             }
         }
 
+        // Optional — the Plant/Godown pickers on this page are UI work still
+        // in flight; null here just means Bay Complete falls back to its
+        // previous any-Godown FEFO pick for this bay's rows.
+        String godownCode = strOpt(formData, "godown_code");
+        String plantCode = strOpt(formData, "plant_code");
+
         Object linesObj = formData.get("order_sku_line_items");
         if (!(linesObj instanceof List) || ((List<?>) linesObj).isEmpty()) {
             return ActionResult.error("formData.order_sku_line_items must be a non-empty array");
@@ -300,9 +306,9 @@ public class M10StartBayActionHandler implements ActionHandler {
             LineEntry e = parsed.get(i);
             jdbc.update(
                     "INSERT INTO loading_progress_detail_bay "
-                            + "(tenant_id, loading_progress_detail_id, workflow_instance_id, route_id, order_id, sku_code, sku_desc, bay_name, quantity, status) "
-                            + "VALUES (?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
-                    tenantId, parentId, instanceId, e.routeId, e.orderId, e.skuCode, e.skuDesc, bayName, e.quantity);
+                            + "(tenant_id, loading_progress_detail_id, workflow_instance_id, route_id, order_id, sku_code, sku_desc, bay_name, quantity, godown_code, plant_code, status) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
+                    tenantId, parentId, instanceId, e.routeId, e.orderId, e.skuCode, e.skuDesc, bayName, e.quantity, godownCode, plantCode);
 
             if ("WITHOUT_CONVEYOR".equals(e.conveyorMode) || "WITHOUT_BARCODE".equals(e.scanningStatus)) {
                 dispatchTasksSkipped++;
