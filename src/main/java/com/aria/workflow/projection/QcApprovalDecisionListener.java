@@ -45,7 +45,7 @@ import java.util.Set;
 public class QcApprovalDecisionListener implements WorkflowTransitionListener {
 
     private static final Logger log = LoggerFactory.getLogger(QcApprovalDecisionListener.class);
-    private static final Set<String> WORKFLOW_CODES = Set.of("M10.TankerInbound", "M10.ReturnStockIn", "M10.PackUnload", "M10.FGUnloading");
+    private static final Set<String> WORKFLOW_CODES = Set.of("M10.TankerInbound", "M10.ReturnStockIn", "M10.PackUnload", "M10.FGUnloading", "M10.StockInward");
     private static final Set<String> QC_PREVIOUS_STATES = Set.of("DISPATCH_QUEUED", "DISPATCH_VEHICLE_ENTRY", "RETURN_STOCK_OFFICER");
 
     private final JdbcTemplate jdbc;

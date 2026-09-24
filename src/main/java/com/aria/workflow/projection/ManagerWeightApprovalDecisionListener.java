@@ -35,6 +35,13 @@ import java.util.Map;
  * gate below checks (workflowCode, previousState) as a pair, not one shared
  * state name.
  *
+ * <p>M10.FGUnloading/M10.StockInward added later — this page was previously
+ * uncaptured for both (a pre-existing gap, not introduced by StockInward
+ * being cloned from FGUnloading). Both use TankerInbound's 3-weighment
+ * column semantics (weight_difference_display = W2−W3), fire from either
+ * WEIGHMENT_3 (first attempt) or WEIGHT_APPROVAL_PENDING (retry after a
+ * REJECTED decision) — see the gate below.
+ *
  * <p>Kept OUT of WorkflowProjectionListener's generic field_map_json on
  * purpose, same reasoning as the other dedicated listeners in this package:
  * "variance_reason"/"status" are reused by aria:reconciliation and
@@ -64,8 +71,19 @@ public class ManagerWeightApprovalDecisionListener implements WorkflowTransition
         // named to mirror WEIGHMENT_1 rather than describe the pending-manager
         // semantics, per explicit request to make the state list show a
         // distinct "second weighment" checkpoint.
+        //
+        // M10.FGUnloading/M10.StockInward (3 weighments, like TankerInbound)
+        // route aria:manager-weight-approval submissions from EITHER
+        // WEIGHMENT_3 (first attempt) or WEIGHT_APPROVAL_PENDING (a retry
+        // after a prior REJECTED decision) — both must fire this listener, or
+        // a retry's decision would silently stop being captured. This page
+        // was previously uncaptured for both workflows (gap predates this
+        // clone; confirmed neither this listener nor PmtSharedReasonListener
+        // covered FGUnloading).
         boolean fires = ("M10.TankerInbound".equals(instance.getWorkflowCode()) && "WEIGHT_DIFF_PENDING_MANAGER".equals(previousState))
-                || ("M10.ReturnStockIn".equals(instance.getWorkflowCode()) && "WEIGHMENT_2".equals(previousState));
+                || ("M10.ReturnStockIn".equals(instance.getWorkflowCode()) && "WEIGHMENT_2".equals(previousState))
+                || (("M10.FGUnloading".equals(instance.getWorkflowCode()) || "M10.StockInward".equals(instance.getWorkflowCode()))
+                        && ("WEIGHMENT_3".equals(previousState) || "WEIGHT_APPROVAL_PENDING".equals(previousState)));
         if (bag == null || !fires) {
             return;
         }

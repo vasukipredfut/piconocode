@@ -135,6 +135,14 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
                 // empty and the upsert is skipped, same as before this case
                 // existed.
                 case "WEIGHMENT_2":
+                // RELOAD_WEIGHMENT_2: the RELOAD_LOADING_PLANNING sub-cycle's
+                // counterpart to WEIGHMENT_2 (M10.FGLoading/M10.StockOutward)
+                // -- same aria:manager-qty-approval submission, same columns;
+                // was missing from this switch entirely, so a reload cycle's
+                // manager decision/reason/queue_reason/time_taken were
+                // silently dropped even though WEIGHMENT_2's own first pass
+                // already captured them correctly.
+                case "RELOAD_WEIGHMENT_2":
                 case "SEALING_DONE":
                 case "PMT_CHECK_PENDING_MANAGER":
                 case "WEIGHT_DIFF_PENDING_MANAGER": {

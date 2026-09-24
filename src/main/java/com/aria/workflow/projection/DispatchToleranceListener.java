@@ -115,7 +115,7 @@ public class DispatchToleranceListener implements WorkflowTransitionListener {
      *  direction workflows (FGLoading/PackLoading/TankerOutbound) never touch
      *  unloading_qty — same reasoning as loaded_weight_kg being the wrong
      *  concept for them to duplicate into a second column. */
-    private static final Set<String> UNLOADING_DIRECTION_WORKFLOWS = Set.of("M10.PackUnload", "M10.FGUnloading");
+    private static final Set<String> UNLOADING_DIRECTION_WORKFLOWS = Set.of("M10.PackUnload", "M10.FGUnloading", "M10.StockInward");
 
     private void computeVerdict(Map<String, Object> cfg, Long instanceId, Long tenantId, String workflowCode) {
         // Only gate_pass is wired today; guard the identifier defensively anyway.

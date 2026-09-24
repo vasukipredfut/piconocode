@@ -26,3 +26,18 @@ INSERT INTO entity_field_registry (tenant_id, entity_code, field_code, display_l
 SELECT -1, 'UnloadingProgressDetailBay', 'godown_code', 'Godown', 'STRING', 1, 1, 0, 0, 'entity-ref', 'PlantGodown', '{"entity":"PlantGodown","valueField":"godown_code","labelField":"godown_name"}'
 WHERE EXISTS (SELECT 1 FROM entity_registry WHERE code = 'UnloadingProgressDetailBay')
   AND NOT EXISTS (SELECT 1 FROM entity_field_registry WHERE entity_code = 'UnloadingProgressDetailBay' AND field_code = 'godown_code');
+
+  
+  
+ALTER TABLE loading_progress_detail_bay ADD COLUMN IF NOT EXISTS plant_code VARCHAR(20) DEFAULT NULL;
+
+INSERT INTO entity_field_registry (tenant_id, entity_code, field_code, display_label, data_type, filterable, sortable, searchable, required, widget_kind, relation_entity, options_json)
+SELECT -1, 'LoadingProgressDetailBay', 'plant_code', 'Plant', 'STRING', 1, 1, 0, 0, 'entity-ref', 'Plant', '{"entity":"Plant","valueField":"plant_code","labelField":"plant_name"}'
+WHERE NOT EXISTS (SELECT 1 FROM entity_field_registry WHERE entity_code = 'LoadingProgressDetailBay' AND field_code = 'plant_code');
+
+ALTER TABLE unloading_progress_detail_bay ADD COLUMN IF NOT EXISTS plant_code VARCHAR(20) DEFAULT NULL;
+
+INSERT INTO entity_field_registry (tenant_id, entity_code, field_code, display_label, data_type, filterable, sortable, searchable, required, widget_kind, relation_entity, options_json)
+SELECT -1, 'UnloadingProgressDetailBay', 'plant_code', 'Plant', 'STRING', 1, 1, 0, 0, 'entity-ref', 'Plant', '{"entity":"Plant","valueField":"plant_code","labelField":"plant_name"}'
+WHERE EXISTS (SELECT 1 FROM entity_registry WHERE code = 'UnloadingProgressDetailBay')
+  AND NOT EXISTS (SELECT 1 FROM entity_field_registry WHERE entity_code = 'UnloadingProgressDetailBay' AND field_code = 'plant_code');

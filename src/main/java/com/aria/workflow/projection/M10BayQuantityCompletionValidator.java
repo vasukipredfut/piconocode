@@ -42,7 +42,7 @@ import java.util.Set;
 public class M10BayQuantityCompletionValidator implements WorkflowTransitionValidator {
 
     private static final Set<String> SCOPED_WORKFLOWS =
-            Set.of("M10.FGLoading", "M10.PackLoading");
+            Set.of("M10.FGLoading", "M10.PackLoading", "M10.StockOutward");
     private static final Set<String> GATED_TO_STATES =
             Set.of("WEIGHMENT_2", "RELOAD_WEIGHMENT_2");
 

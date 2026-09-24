@@ -160,6 +160,11 @@ public class M10StartUnloadBayActionHandler implements ActionHandler {
 
         String vehicleNo = strOpt(formData, "vehicle_no");
         String gatePassNo = strOpt(formData, "gpNumber");
+        // Optional — same Plant/Godown pickers as the regular unloading side
+        // (M10StartUnloadingBayActionHandler); this reject-flow unload shares
+        // the same unloading_progress_detail_bay table and columns.
+        String godownCode = strOpt(formData, "godown_code");
+        String plantCode = strOpt(formData, "plant_code");
 
         // flow_variant_code/current_step aren't projected here automatically
         // (this table has no m0_workflow_projection row -- see V261), so read
@@ -188,9 +193,9 @@ public class M10StartUnloadBayActionHandler implements ActionHandler {
         for (LineEntry e : parsed) {
             jdbc.update(
                     "INSERT INTO unloading_progress_detail_bay "
-                            + "(tenant_id, unloading_progress_detail_id, workflow_instance_id, route_id, order_id, vendor_name, rd_code, sku_code, sku_desc, bay_name, quantity, processed_quantity, status) "
-                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
-                    tenantId, parentId, instanceId, e.routeId, e.orderId, e.vendorName, e.rdCode, e.skuCode, e.skuDesc, bayName, e.quantity, e.unloadingQty);
+                            + "(tenant_id, unloading_progress_detail_id, workflow_instance_id, route_id, order_id, vendor_name, rd_code, sku_code, sku_desc, bay_name, quantity, processed_quantity, godown_code, plant_code, status) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
+                    tenantId, parentId, instanceId, e.routeId, e.orderId, e.vendorName, e.rdCode, e.skuCode, e.skuDesc, bayName, e.quantity, e.unloadingQty, godownCode, plantCode);
 
             int flagged = jdbc.update(
                     "UPDATE loading_progress_detail_bay SET status = 'UNLOAD_IN_PROGRESS' "

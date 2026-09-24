@@ -174,7 +174,7 @@ class M10StartUnloadBayActionHandlerTest {
         // quantity (col 11) comes from the "quantity" key; processed_quantity (col 12)
         // stays NULL here since the line doesn't send a separate "unloading_qty".
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
-                eq(1L), eq(777L), eq(1495L), eq("ROU028912"), isNull(), isNull(), isNull(), eq("SKU1215"), eq("SKU1215 desc"), eq("Bay1"), eq(new BigDecimal("20")), isNull());
+                eq(1L), eq(777L), eq(1495L), eq("ROU028912"), isNull(), isNull(), isNull(), eq("SKU1215"), eq("SKU1215 desc"), eq("Bay1"), eq(new BigDecimal("20")), isNull(), isNull(), isNull());
         verify(jdbc).update(
                 eq("UPDATE loading_progress_detail_bay SET status = 'UNLOAD_IN_PROGRESS' "
                         + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
@@ -196,7 +196,7 @@ class M10StartUnloadBayActionHandlerTest {
 
         assertThat(r.isOk()).isTrue();
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
-                eq(1L), eq(777L), eq(1495L), eq("ROU028912"), isNull(), isNull(), isNull(), eq("SKU1215"), eq("SKU1215 desc"), eq("Bay1"), eq(new BigDecimal("20")), eq(new BigDecimal("15")));
+                eq(1L), eq(777L), eq(1495L), eq("ROU028912"), isNull(), isNull(), isNull(), eq("SKU1215"), eq("SKU1215 desc"), eq("Bay1"), eq(new BigDecimal("20")), eq(new BigDecimal("15")), isNull(), isNull());
     }
 
     @Test
@@ -217,9 +217,9 @@ class M10StartUnloadBayActionHandlerTest {
 
         // one INSERT per SKU line, each carrying its own quantity
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
-                eq(1L), eq(777L), eq(1495L), eq("ROU028912"), isNull(), isNull(), isNull(), eq("SKU1215"), eq("SKU1215 desc"), eq("Bay1"), eq(new BigDecimal("20")), isNull());
+                eq(1L), eq(777L), eq(1495L), eq("ROU028912"), isNull(), isNull(), isNull(), eq("SKU1215"), eq("SKU1215 desc"), eq("Bay1"), eq(new BigDecimal("20")), isNull(), isNull(), isNull());
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
-                eq(1L), eq(777L), eq(1495L), eq("ROU028912"), isNull(), isNull(), isNull(), eq("SKU1461"), eq("SKU1461 desc"), eq("Bay1"), eq(new BigDecimal("30")), isNull());
+                eq(1L), eq(777L), eq(1495L), eq("ROU028912"), isNull(), isNull(), isNull(), eq("SKU1461"), eq("SKU1461 desc"), eq("Bay1"), eq(new BigDecimal("30")), isNull(), isNull(), isNull());
 
         // parent row upsert receives the SUMMED total (50), not either line alone
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail"),
@@ -241,7 +241,7 @@ class M10StartUnloadBayActionHandlerTest {
 
         assertThat(r.isOk()).isTrue();
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
-                eq(1L), eq(777L), eq(1495L), eq("ROU028912"), isNull(), eq("RD One"), eq("RD1"), eq("SKU1215"), eq("SKU1215 desc"), eq("Bay1"), eq(new BigDecimal("20")), isNull());
+                eq(1L), eq(777L), eq(1495L), eq("ROU028912"), isNull(), eq("RD One"), eq("RD1"), eq("SKU1215"), eq("SKU1215 desc"), eq("Bay1"), eq(new BigDecimal("20")), isNull(), isNull(), isNull());
     }
 
     @Test
@@ -258,7 +258,7 @@ class M10StartUnloadBayActionHandlerTest {
 
         assertThat(r.isOk()).isTrue();
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
-                eq(1L), eq(777L), eq(1495L), eq("ROU028912"), isNull(), eq("RD One"), isNull(), eq("SKU1215"), eq("SKU1215 desc"), eq("Bay1"), eq(new BigDecimal("20")), isNull());
+                eq(1L), eq(777L), eq(1495L), eq("ROU028912"), isNull(), eq("RD One"), isNull(), eq("SKU1215"), eq("SKU1215 desc"), eq("Bay1"), eq(new BigDecimal("20")), isNull(), isNull(), isNull());
     }
 
     private ActionInvocation baseInvocation(Map<String, Object> extraFormData) {
