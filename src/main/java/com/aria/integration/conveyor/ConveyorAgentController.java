@@ -71,8 +71,38 @@ public class ConveyorAgentController {
         if (matches.isEmpty()) {
             action = "REJECT_DIVERT"; reason = "UNAUTHORIZED_BARCODE";
         } else {
-            Map<String, Object> chosen = matches.get(0);
-            if (!"ACTIVE".equalsIgnoreCase(String.valueOf(chosen.get("status")))) {
+            Map<String, Object> chosen;
+            if (matches.size() == 1) {
+                chosen = matches.get(0);
+            } else {
+                // Same barcode, several offer-variant rows (e.g. a festive
+                // combo pack reusing a standard pack's barcode) -- unlike the
+                // manual/handheld-scanner path (M5PackScanActionHandler),
+                // there is no operator here to ask mid-stream, so this MUST
+                // be resolved from the line's own pre-set expectation
+                // (m11_agent_acceptance_scope.expected_offer, set once when
+                // the run starts) rather than silently guessing. Previously
+                // this just took matches.get(0) regardless -- risked packing
+                // the wrong offer variant onto every box for that barcode
+                // whenever more than one was on file.
+                String expectedOffer = null;
+                try {
+                    expectedOffer = jdbc.queryForObject(
+                        "SELECT expected_offer FROM m11_agent_acceptance_scope " +
+                        "WHERE tenant_id=? AND active=1 AND expected_offer IS NOT NULL " +
+                        "  AND agent_id IN (SELECT agent_id FROM m11_agent WHERE tenant_id=? AND line_id=?) " +
+                        "LIMIT 1",
+                        String.class, tenantId, tenantId, lineId);
+                } catch (Exception ignored) { /* no scope row / no line match */ }
+
+                final String expected = expectedOffer;
+                chosen = expected == null ? null : matches.stream()
+                        .filter(m -> expected.equals(m.get("offer_variant")))
+                        .findFirst().orElse(null);
+            }
+            if (chosen == null) {
+                action = "REJECT_DIVERT"; reason = "AMBIGUOUS_OFFER_NOT_CONFIGURED";
+            } else if (!"ACTIVE".equalsIgnoreCase(String.valueOf(chosen.get("status")))) {
                 action = "REJECT_DIVERT"; reason = "SKU_BLOCKED_OR_DISCONTINUED";
             } else {
                 matchedSku = String.valueOf(chosen.get("sku_code"));
