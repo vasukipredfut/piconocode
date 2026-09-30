@@ -123,7 +123,7 @@ public final class GatePassSatelliteJoin {
             "pcvd.camera_photo, pcvd.issue_identified, pcvd.camera_variance_reason, " +
             "dvd.broker_name, dvd.broker_number, dvd.invoice_qty, dvd.oil_rm_item, dvd.transport_name, " +
             "dvd.po_numbers, dvd.po_attachment, dvd.party_name, " +
-            "dvd.invoice_return_count, dvd.box_weight_kg, " +
+            "dvd.invoice_return_count, dvd.box_weight_kg, dvd.vendor_location, " +
             "lpd.route_id, " +
             "gpc.seal_verified, gpc.invoice_count_verified, gpc.qc_clearance, gpc.weighment_verified, " +
             "gpc.order_recon_done, gpc.within_tolerance, gpc.closure_note, gpc.closed_at AS closure_closed_at, " +
