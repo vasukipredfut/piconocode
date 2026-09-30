@@ -62,8 +62,10 @@ import java.util.regex.Pattern;
  * malformed row.
  *
  * <p>{@code POST /api/m5/order-dispatch-detail/import} — multipart
- * {@code file} (csv/tsv/xlsx/xls/pdf), bulk-inserts one row per data line
- * into {@code m5_order_dispatch_detail}: a point-in-time reconciliation
+ * {@code file} (csv/tsv/xlsx/xls/pdf) — one or more files under that same
+ * field name in a single request are all accepted and imported
+ * independently (see {@link #importCsv}) — bulk-inserts one row per data
+ * line into {@code m5_order_dispatch_detail}: a point-in-time reconciliation
  * snapshot.
  * Re-uploading for a route that's already been imported doesn't duplicate
  * lines: for every distinct {@code route_id} seen in the file, the first row
@@ -138,82 +140,129 @@ public class OrderDispatchDetailImportController {
         this.jdbc = jdbc;
     }
 
+    /**
+     * Accepts one or more files under the same {@code file} form field (the
+     * browser side just calls {@code fd.append('file', f)} once per picked
+     * file — Spring binds every part sharing that name into this array, so a
+     * single-file upload still works unchanged). Each file is parsed and
+     * imported independently with the SAME per-row logic the single-file
+     * version always had; only the route-replace bookkeeping
+     * ({@code clearedRoutes}/{@code blockedRoutes}) is shared ACROSS every
+     * file in the request, not reset per file — so if the same
+     * {@code route_id} appears in two files of one batch, the second file
+     * sees the first file's already-cleared (or already-blocked) decision
+     * for it rather than re-querying and possibly disagreeing mid-request.
+     */
     @PostMapping(value = "/import", consumes = "multipart/form-data")
-    public ResponseEntity<?> importCsv(@RequestParam("file") MultipartFile file) {
+    public ResponseEntity<?> importCsv(@RequestParam("file") MultipartFile[] files) {
         ResponseEntity<?> denied = checkWriteRole();
         if (denied != null) return denied;
-        if (file == null || file.isEmpty())
+        if (files == null || files.length == 0 || Arrays.stream(files).allMatch(f -> f == null || f.isEmpty()))
             return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "no file"));
 
         Long tenantId = TenantContext.get();
-        String sourceFile = file.getOriginalFilename();
-        List<List<String>> rows;
-        try {
-            rows = parseRows(file);
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", e.getMessage()));
-        } catch (IOException e) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                .body(Map.of("ok", false, "error", "Could not read file: " + e.getMessage()));
-        }
-        if (rows.isEmpty())
-            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "empty file"));
 
         List<String> errors = new ArrayList<>();
         Set<String> clearedRoutes = new HashSet<>();
         Map<String, String> blockedRoutes = new HashMap<>();
         int imported = 0;
         int replaced = 0;
+        List<Map<String, Object>> perFile = new ArrayList<>();
 
-        int rowNum = 0;
-        boolean headerSkipped = false;
-        for (List<String> r : rows) {
-            rowNum++;
-            if (!headerSkipped) { headerSkipped = true; continue; }
+        for (MultipartFile file : files) {
+            if (file == null || file.isEmpty()) continue;
+            String sourceFile = file.getOriginalFilename();
+            List<List<String>> rows;
             try {
-                // assign_qty is column 26 per insertRow()'s positional mapping.
-                // Validated before the route_id delete below runs, so a bad
-                // row fails without first wiping that route's existing data.
-                Integer assignQty = intVal(r, 26);
-                if (assignQty == null || assignQty == 0) {
-                    throw new IllegalArgumentException("assign_qty value required (null, empty, or 0 is not allowed)");
-                }
-                // route_id is column 24, vehicle_no is column 28, per insertRow()'s
-                // positional mapping.
-                String routeId = str(r, 24);
-                String vehicleNo = str(r, 28);
-                if (routeId != null) {
-                    if (!clearedRoutes.contains(routeId) && !blockedRoutes.containsKey(routeId)) {
-                        String blockReason = blockReplaceReason(tenantId, routeId, vehicleNo);
+                rows = parseRows(file);
+            } catch (IllegalArgumentException e) {
+                perFile.add(fileResult(sourceFile, 0, 0, List.of(e.getMessage())));
+                errors.add(sourceFile + " — " + e.getMessage());
+                continue;
+            } catch (IOException e) {
+                String msg = "Could not read file: " + e.getMessage();
+                perFile.add(fileResult(sourceFile, 0, 0, List.of(msg)));
+                errors.add(sourceFile + " — " + msg);
+                continue;
+            }
+            if (rows.isEmpty()) {
+                perFile.add(fileResult(sourceFile, 0, 0, List.of("empty file")));
+                errors.add(sourceFile + " — empty file");
+                continue;
+            }
+
+            List<String> fileErrors = new ArrayList<>();
+            int fileImported = 0;
+            int fileReplaced = 0;
+
+            int rowNum = 0;
+            boolean headerSkipped = false;
+            for (List<String> r : rows) {
+                rowNum++;
+                if (!headerSkipped) { headerSkipped = true; continue; }
+                try {
+                    // assign_qty is column 26 per insertRow()'s positional mapping.
+                    // Validated before the route_id delete below runs, so a bad
+                    // row fails without first wiping that route's existing data.
+                    Integer assignQty = intVal(r, 26);
+                    if (assignQty == null || assignQty == 0) {
+                        throw new IllegalArgumentException("assign_qty value required (null, empty, or 0 is not allowed)");
+                    }
+                    // route_id is column 24, vehicle_no is column 28, per insertRow()'s
+                    // positional mapping.
+                    String routeId = str(r, 24);
+                    String vehicleNo = str(r, 28);
+                    if (routeId != null) {
+                        if (!clearedRoutes.contains(routeId) && !blockedRoutes.containsKey(routeId)) {
+                            String blockReason = blockReplaceReason(tenantId, routeId, vehicleNo);
+                            if (blockReason != null) {
+                                blockedRoutes.put(routeId, blockReason);
+                            } else {
+                                clearedRoutes.add(routeId);
+                                int del = jdbc.update(
+                                    "DELETE FROM m5_order_dispatch_detail " +
+                                    "WHERE tenant_id = ? AND route_id = ? AND vehicle_status = 'active'",
+                                    tenantId, routeId);
+                                replaced += del;
+                                fileReplaced += del;
+                            }
+                        }
+                        String blockReason = blockedRoutes.get(routeId);
                         if (blockReason != null) {
-                            blockedRoutes.put(routeId, blockReason);
-                        } else {
-                            clearedRoutes.add(routeId);
-                            replaced += jdbc.update(
-                                "DELETE FROM m5_order_dispatch_detail " +
-                                "WHERE tenant_id = ? AND route_id = ? AND vehicle_status = 'active'",
-                                tenantId, routeId);
+                            throw new IllegalArgumentException("Route " + routeId + " cannot be replaced — " + blockReason);
                         }
                     }
-                    String blockReason = blockedRoutes.get(routeId);
-                    if (blockReason != null) {
-                        throw new IllegalArgumentException("Route " + routeId + " cannot be replaced — " + blockReason);
-                    }
+                    insertRow(tenantId, r, sourceFile);
+                    imported++;
+                    fileImported++;
+                } catch (Exception rowEx) {
+                    String msg = "Row " + rowNum + ": " + rowEx.getMessage();
+                    errors.add(sourceFile + " — " + msg);
+                    fileErrors.add(msg);
                 }
-                insertRow(tenantId, r, sourceFile);
-                imported++;
-            } catch (Exception rowEx) {
-                errors.add("Row " + rowNum + ": " + rowEx.getMessage());
             }
+            perFile.add(fileResult(sourceFile, fileImported, fileReplaced, fileErrors));
         }
 
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("ok", true);
+        body.put("filesProcessed", perFile.size());
         body.put("rowsImported", imported);
         body.put("rowsReplaced", replaced);
         body.put("rowsFailed", errors.size());
         body.put("errors", errors);
+        body.put("perFile", perFile);
         return ResponseEntity.ok(body);
+    }
+
+    private static Map<String, Object> fileResult(String fileName, int imported, int replaced, List<String> errors) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("file", fileName);
+        m.put("rowsImported", imported);
+        m.put("rowsReplaced", replaced);
+        m.put("rowsFailed", errors.size());
+        m.put("errors", errors);
+        return m;
     }
 
     /**
@@ -707,17 +756,7 @@ public class OrderDispatchDetailImportController {
      * conditions; the third (vehicle mismatch) is below.
      */
     private String blockReplaceReason(Long tenantId, String routeId, String newVehicleNo) {
-        // loading_progress_detail (parent, one row per workflow instance) is
-        // written at WEIGHMENT_1 -> LOADING_IN_PROGRESS, before "Start Bay" is
-        // even clicked; loading_progress_detail_bay (child) only gets rows once
-        // Start Bay runs (-> BAY_ASSIGNED). Checking only the child table would
-        // miss a route that's already LOADING_IN_PROGRESS but not yet bay-assigned.
-        Integer loadingStarted = jdbc.queryForObject(
-            "SELECT " +
-            "(SELECT COUNT(1) FROM loading_progress_detail WHERE tenant_id = ? AND route_id = ?) + " +
-            "(SELECT COUNT(1) FROM loading_progress_detail_bay WHERE tenant_id = ? AND route_id = ?)",
-            Integer.class, tenantId, routeId, tenantId, routeId);
-        if (loadingStarted != null && loadingStarted > 0) {
+        if (isLoadingStarted(tenantId, routeId)) {
             return "loading has already started for this route";
         }
         Integer existingRows = jdbc.queryForObject(
@@ -743,6 +782,73 @@ public class OrderDispatchDetailImportController {
             }
         }
         return null;
+    }
+
+    /**
+     * {@code loading_progress_detail} (parent, one row per workflow
+     * instance) is written at WEIGHMENT_1 -&gt; LOADING_IN_PROGRESS, before
+     * "Start Bay" is even clicked; {@code loading_progress_detail_bay}
+     * (child) only gets rows once Start Bay runs (-&gt; BAY_ASSIGNED).
+     * Checking only the child table would miss a route that's already
+     * LOADING_IN_PROGRESS but not yet bay-assigned.
+     */
+    private boolean isLoadingStarted(Long tenantId, String routeId) {
+        Integer loadingStarted = jdbc.queryForObject(
+            "SELECT " +
+            "(SELECT COUNT(1) FROM loading_progress_detail WHERE tenant_id = ? AND route_id = ?) + " +
+            "(SELECT COUNT(1) FROM loading_progress_detail_bay WHERE tenant_id = ? AND route_id = ?)",
+            Integer.class, tenantId, routeId, tenantId, routeId);
+        return loadingStarted != null && loadingStarted > 0;
+    }
+
+    /**
+     * {@code POST /api/m5/order-dispatch-detail/delete-active} —
+     * {@code {"vehicleNo": "..."}}. HARD-deletes every {@code active} row
+     * for this vehicle from {@code m5_order_dispatch_detail} — unlike
+     * {@link #gateOut}, which only soft-flips {@code vehicle_status} to
+     * {@code inactive} (the vehicle actually gated out, data stays for
+     * audit), this is for the "wrong sheet uploaded by mistake" case: the
+     * import itself was bad and its rows need to be genuinely gone, not
+     * just marked stale.
+     *
+     * <p>Blocked (nothing deleted, 409) if loading has already started for
+     * any route among this vehicle's active rows — same guard
+     * {@link #blockReplaceReason} applies to a re-upload, since destroying
+     * rows a workflow is already mid-flight against would leave that
+     * workflow referencing data that no longer exists.
+     */
+    @PostMapping("/delete-active")
+    public ResponseEntity<?> deleteActive(@RequestBody Map<String, Object> body) {
+        ResponseEntity<?> denied = checkWriteRole();
+        if (denied != null) return denied;
+        String vehicleNo = body == null ? null : str(body.get("vehicleNo"));
+        if (vehicleNo == null || vehicleNo.isBlank())
+            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "vehicleNo required"));
+
+        Long tenantId = TenantContext.get();
+
+        List<String> routeIds = jdbc.queryForList(
+            "SELECT DISTINCT route_id FROM m5_order_dispatch_detail " +
+            "WHERE tenant_id = ? AND vehicle_no = ? AND vehicle_status = 'active'",
+            String.class, tenantId, vehicleNo);
+
+        List<String> blockedRoutes = new ArrayList<>();
+        for (String routeId : routeIds) {
+            if (routeId != null && isLoadingStarted(tenantId, routeId)) {
+                blockedRoutes.add(routeId);
+            }
+        }
+        if (!blockedRoutes.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
+                "ok", false,
+                "error", "cannot delete — loading has already started for route(s): " + String.join(", ", blockedRoutes)));
+        }
+
+        int deleted = jdbc.update(
+            "DELETE FROM m5_order_dispatch_detail WHERE tenant_id = ? AND vehicle_no = ? AND vehicle_status = 'active'",
+            tenantId, vehicleNo);
+
+        return ResponseEntity.ok(Map.of("ok", true, "vehicleNo", vehicleNo, "rowsDeleted", deleted));
     }
 
     private static String str(Object v) {
@@ -825,8 +931,9 @@ public class OrderDispatchDetailImportController {
             "#result{margin-top:16px;white-space:pre-wrap;font-family:monospace;font-size:12px}" +
             ".err{color:#b00020}.ok{color:#0a7d28}</style></head><body>" +
             "<h2>Import Order Dispatch Detail</h2>" +
-            "<p>Select the OrderApp order-vs-dispatch export (35 columns) — CSV, TSV, Excel, or PDF.</p>" +
-            "<input type='file' id='f' accept='.csv,.tsv,.txt,.xlsx,.xls,.pdf'/>" +
+            "<p>Select the OrderApp order-vs-dispatch export (35 columns) — CSV, TSV, Excel, or PDF. " +
+            "Multiple files (multiple route/order sheets) can be picked and uploaded together.</p>" +
+            "<input type='file' id='f' accept='.csv,.tsv,.txt,.xlsx,.xls,.pdf' multiple/>" +
             "<button id='go'>Upload</button>" +
             "<div id='result'></div>" +
             "<script>" +
@@ -834,9 +941,10 @@ public class OrderDispatchDetailImportController {
             "document.getElementById('go').onclick = async function() {" +
             "  const fileInput = document.getElementById('f');" +
             "  const out = document.getElementById('result');" +
-            "  if (!fileInput.files.length) { out.textContent = 'Pick a file first.'; return; }" +
-            "  const fd = new FormData(); fd.append('file', fileInput.files[0]);" +
-            "  out.textContent = 'Uploading...';" +
+            "  if (!fileInput.files.length) { out.textContent = 'Pick at least one file first.'; return; }" +
+            "  const fd = new FormData();" +
+            "  for (const f of fileInput.files) fd.append('file', f);" +
+            "  out.textContent = 'Uploading ' + fileInput.files.length + ' file(s)...';" +
             "  try {" +
             "    const resp = await fetch('/api/m5/order-dispatch-detail/import', {" +
             "      method: 'POST', headers: { 'Authorization': 'Bearer ' + TOKEN }, body: fd });" +
