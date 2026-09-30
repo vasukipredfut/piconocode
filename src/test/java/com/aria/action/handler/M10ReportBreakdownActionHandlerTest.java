@@ -132,13 +132,17 @@ class M10ReportBreakdownActionHandlerTest {
     }
 
     @Test
-    void loadedRowsChecked_includesUnloadInProgressStatus() {
+    void loadedRowsChecked_requiresDoneWithNonZeroQtyOrUnloadInProgress() {
         stubInstance("M10.FGLoading", "BAY_ASSIGNED", "OPEN");
         // Simulate the loaded-rows count query itself so we can assert the
-        // status list it filters on, rather than just stubbing a count.
+        // exact condition it filters on, rather than just stubbing a count —
+        // a DONE bay closed at zero quantity never actually took stock off
+        // the vehicle, so it must NOT count as "loaded" on its own; an open
+        // UNLOAD_IN_PROGRESS session must always count, regardless of qty.
         when(jdbc.queryForObject(argThat(sql -> sql != null
                         && sql.contains("loading_progress_detail_bay")
-                        && sql.contains("'DONE','UNLOAD_IN_PROGRESS'")),
+                        && sql.contains("status = 'DONE' AND processed_quantity != 0")
+                        && sql.contains("status = 'UNLOAD_IN_PROGRESS'")),
                 eq(Integer.class), any(Object[].class)))
                 .thenReturn(0);
 

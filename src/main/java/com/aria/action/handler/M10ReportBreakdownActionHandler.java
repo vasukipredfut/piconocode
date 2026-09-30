@@ -26,7 +26,12 @@ import java.util.Map;
  * table every loading-direction workflow — including M10.StockOutward's own
  * dedicated bay handlers — writes to):
  * <ul>
- *   <li><b>Nothing loaded yet</b> (no row {@code status IN ('DONE','UNLOAD_IN_PROGRESS')}):
+ *   <li><b>Nothing loaded yet</b> (no row {@code status = 'DONE'} with a
+ *       non-zero {@code processed_quantity} — a bay closed at zero quantity
+ *       never actually took stock off the vehicle, so it doesn't count as
+ *       "loaded" here — and no row {@code status = 'UNLOAD_IN_PROGRESS'}, an
+ *       open unload session that must be closed regardless of quantity
+ *       before breakdown can be reported):
  *       closes the gate pass directly — {@link WorkflowEngineService#cancel}
  *       (the existing admin escape hatch, works from any state) marks
  *       {@code workflow_instance.status = 'CANCELLED'}, then this handler
@@ -85,7 +90,8 @@ public class M10ReportBreakdownActionHandler implements ActionHandler {
 
         Integer loadedRows = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM loading_progress_detail_bay "
-                        + "WHERE tenant_id = ? AND workflow_instance_id = ? AND status IN ('DONE','UNLOAD_IN_PROGRESS')",
+                        + "WHERE tenant_id = ? AND workflow_instance_id = ? "
+                        + "AND ((status = 'DONE' AND processed_quantity != 0) OR status = 'UNLOAD_IN_PROGRESS')",
                 Integer.class, tenantId, instanceId);
         if (loadedRows != null && loadedRows > 0) {
             return ActionResult.error("stock is already loaded on this vehicle — use Start Bay / Stop Bay "
