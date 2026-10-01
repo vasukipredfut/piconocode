@@ -38,6 +38,24 @@ import java.util.Map;
  * {@code TankerWeighmentSkuCaptureActionHandler}, which must echo the same
  * value back to close it.
  *
+ * <p><b>Multiple tank locations per product:</b> the page's "Order Details —
+ * Tank Allocation" section is a {@code BatchAllocationTable} — {@code
+ * tankAllocation} (this method's {@code linesObj}) carries the PARENT rows
+ * (one per OrderDispatchDetail line, each with its own {@code id}), and a
+ * SEPARATE sibling list, {@code tankLocationAllocations}, carries the child
+ * allocation rows: {@code order_dispatch_detail_id} (the parent's {@code id}
+ * — {@code allocationParentField}), {@code tank_location}, {@code alloc_qty}
+ * (confirmed off a live transition payload; NOT {@code qty} — that key
+ * belongs to the parent's own, whole-line order quantity). Allocations are
+ * grouped by {@code order_dispatch_detail_id} (string-compared, since a JSON
+ * id can deserialize as Integer/Long/String depending on what submitted it)
+ * and matched back to each parent line by its own {@code id}; one {@code
+ * loading_progress_detail_bay} row is written per matched allocation. A
+ * parent line with no matching allocations falls back to its own single
+ * {@code tank_location}/{@code bay_name} + whole-line quantity (the
+ * pre-BatchAllocationTable shape) unchanged — so an older/unmigrated
+ * submission still seeds correctly.
+ *
  * <p>This workflow has no Start Bay / LOADING_IN_PROGRESS / BAY_ASSIGNED step
  * (M10StartBayActionHandler's flow) — QC_PRELOAD_APPROVED goes straight to
  * LOADING_COMPLETED via aria:weighment-capture — so this listener is the only
@@ -90,16 +108,52 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
             Object linesObj = firstNonNull(page.get("tankAllocation"), page.get("order_sku_line_items"));
             if (!(linesObj instanceof List) || ((List<?>) linesObj).isEmpty()) return;
 
+            // Child allocation rows, grouped by their parent's id (string-keyed
+            // — see class javadoc on why). Absent/empty allocationsRaw simply
+            // yields an empty map, so every line falls back to its own
+            // single-location fields below (pre-BatchAllocationTable shape).
+            Map<String, List<Map<String, Object>>> allocationsByParentId = new java.util.HashMap<>();
+            Object allocationsRaw = page.get("tankLocationAllocations");
+            if (allocationsRaw instanceof List<?> allocList) {
+                for (Object allocRaw : allocList) {
+                    if (!(allocRaw instanceof Map)) continue;
+                    Map<String, Object> alloc = (Map<String, Object>) allocRaw;
+                    String parentId = str(alloc.get("order_dispatch_detail_id"));
+                    if (parentId == null) continue;
+                    allocationsByParentId.computeIfAbsent(parentId, k -> new ArrayList<>()).add(alloc);
+                }
+            }
+
             List<LineEntry> parsed = new ArrayList<>();
             BigDecimal totalQty = BigDecimal.ZERO;
             for (Object raw : (List<?>) linesObj) {
                 if (!(raw instanceof Map)) continue;
                 Map<String, Object> line = (Map<String, Object>) raw;
                 String skuCode = str(line.get("sku_code"));
+                if (skuCode == null) continue;
+                String routeId = str(line.get("route_id"));
+                String orderId = str(line.get("order_id"));
+                String skuDesc = str(line.get("sku_desc"));
+
+                String lineId = str(line.get("id"));
+                List<Map<String, Object>> lineAllocations = lineId == null
+                        ? List.of() : allocationsByParentId.getOrDefault(lineId, List.of());
+
+                if (!lineAllocations.isEmpty()) {
+                    for (Map<String, Object> alloc : lineAllocations) {
+                        String allocTank = firstNonBlank(str(alloc.get("tank_location")), str(alloc.get("bay_name")));
+                        if (allocTank == null) continue;
+                        BigDecimal allocQty = toBig(firstNonNull(alloc.get("alloc_qty"), alloc.get("qty"), alloc.get("quantity")));
+                        parsed.add(new LineEntry(routeId, orderId, skuCode, skuDesc, allocTank, allocQty));
+                        totalQty = totalQty.add(allocQty);
+                    }
+                    continue;
+                }
+
                 String tankLocation = firstNonBlank(str(line.get("tank_location")), str(line.get("bay_name")));
-                if (skuCode == null || tankLocation == null) continue; // this line wasn't allocated a tank — skip
+                if (tankLocation == null) continue; // this line wasn't allocated a tank — skip
                 BigDecimal qty = toBig(firstNonNull(line.get("load_wgt"), line.get("quantity"), line.get("order_qty")));
-                parsed.add(new LineEntry(str(line.get("route_id")), str(line.get("order_id")), skuCode, str(line.get("sku_desc")), tankLocation, qty));
+                parsed.add(new LineEntry(routeId, orderId, skuCode, skuDesc, tankLocation, qty));
                 totalQty = totalQty.add(qty);
             }
             if (parsed.isEmpty()) return;

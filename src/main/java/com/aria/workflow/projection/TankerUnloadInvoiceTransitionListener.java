@@ -21,6 +21,16 @@ import java.util.Map;
  * unloading_progress_detail_bay} (child) at {@code IN_PROGRESS}, the moment
  * QC approval is submitted.
  *
+ * <p><b>Multiple tank locations per product:</b> a line may split its qty
+ * across more than one tank — carried as a nested {@code tank_allocations}
+ * array per line, {@code [{"tank_location":"ROT-1","qty":60}, {"tank_location":"ROT-2","qty":40}]}.
+ * When present (non-empty), one {@code unloading_progress_detail_bay} row is
+ * written per allocation entry (each with its own {@code bay_name}/{@code
+ * quantity}) instead of one row for the whole line. A line with no {@code
+ * tank_allocations} falls back to the original single {@code tank_location}
+ * + whole-line {@code qty} behavior unchanged — existing submissions that
+ * never adopt the nested shape keep working exactly as before.
+ *
  * <p>Shares these two tables with the FG/PackLoading Reject Flow Unload
  * process ({@code M10StartUnloadBayActionHandler} / {@code
  * M10UnloadBayCompleteActionHandler}) rather than a dedicated table pair —
@@ -102,14 +112,36 @@ public class TankerUnloadInvoiceTransitionListener implements WorkflowTransition
         for (Object lineRaw : lines) {
             if (!(lineRaw instanceof Map)) continue;
             Map<String, Object> line = (Map<String, Object>) lineRaw;
-            BigDecimal qty = num(line, "qty");
-            rows.add(new Object[]{
-                    str(line, "invoice_no", "invoiceNo"), str(line, "order_id", "orderId"),
-                    str(line, "vendor_name", "vendorName"), str(line, "rd_code", "rdCode"),
-                    str(line, "sku_code", "skuCode"), str(line, "sku_name", "skuName"),
-                    str(line, "tank_location", "tankLocation"), qty
-            });
-            totalQty = totalQty.add(qty);
+            Object invoiceNo = str(line, "invoice_no", "invoiceNo");
+            Object orderId = str(line, "order_id", "orderId");
+            Object vendorName = str(line, "vendor_name", "vendorName");
+            Object rdCode = str(line, "rd_code", "rdCode");
+            Object skuCode = str(line, "sku_code", "skuCode");
+            Object skuName = str(line, "sku_name", "skuName");
+
+            // Multiple tank locations for one product: a nested allocations
+            // array overrides the line's own single tank_location/qty, one
+            // output row per allocation entry (see class javadoc).
+            Object allocationsRaw = line.get("tank_allocations");
+            if (allocationsRaw instanceof List<?> allocations && !allocations.isEmpty()) {
+                for (Object allocRaw : allocations) {
+                    if (!(allocRaw instanceof Map)) continue;
+                    Map<String, Object> alloc = (Map<String, Object>) allocRaw;
+                    BigDecimal allocQty = num(alloc, "qty");
+                    rows.add(new Object[]{
+                            invoiceNo, orderId, vendorName, rdCode, skuCode, skuName,
+                            str(alloc, "tank_location", "tankLocation"), allocQty
+                    });
+                    totalQty = totalQty.add(allocQty);
+                }
+            } else {
+                BigDecimal qty = num(line, "qty");
+                rows.add(new Object[]{
+                        invoiceNo, orderId, vendorName, rdCode, skuCode, skuName,
+                        str(line, "tank_location", "tankLocation"), qty
+                });
+                totalQty = totalQty.add(qty);
+            }
         }
 
         jdbc.update(
