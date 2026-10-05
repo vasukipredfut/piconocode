@@ -31,7 +31,11 @@ import java.util.Map;
  * <p><b>Which lot/bin gets the stock back:</b> rather than picking an
  * arbitrary bin, this reverses the SAME lots/bins the original Bay Complete
  * (loading) consumed for this exact (instance, sku) — read back from their
- * {@code m5_stock_movement} CONSUME rows ({@code ref_type='BAY'}), oldest
+ * {@code m5_stock_movement} CONSUME rows ({@code ref_type IN ('BAY','TANKER')}
+ * — {@code BAY} for FG/PackLoading's Start Bay/Bay Complete, {@code TANKER}
+ * for {@code TankerWeighmentSkuCaptureActionHandler}'s per-SKU tank
+ * consumption — both record the source bin in {@code from_bin} the same way,
+ * so reversal is identical regardless of which produced it), oldest
  * first, capped per row at what that row actually took. If the unload qty
  * exceeds what was ever recorded as consumed here (shouldn't happen — can't
  * unload more than was loaded — but data can be messy), the residual goes
@@ -228,7 +232,7 @@ public class M10UnloadBayCompleteActionHandler implements ActionHandler {
     private List<ReturnTarget> returnTargets(long tenantId, Long instanceId, String skuCode, BigDecimal unloadQty) {
         List<Map<String, Object>> consumed = jdbc.queryForList(
                 "SELECT lot_no, from_bin, uom, qty FROM m5_stock_movement "
-                        + "WHERE tenant_id = ? AND kind = 'CONSUME' AND ref_type = 'BAY' AND ref_id = ? AND item_code = ? "
+                        + "WHERE tenant_id = ? AND kind = 'CONSUME' AND ref_type IN ('BAY','TANKER') AND ref_id = ? AND item_code = ? "
                         + "ORDER BY id ASC",
                 tenantId, instanceId, skuCode);
 
