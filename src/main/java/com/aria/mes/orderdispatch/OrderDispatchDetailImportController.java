@@ -871,8 +871,9 @@ public class OrderDispatchDetailImportController {
             "order_qty, cancel_qty, dispatch_qty, remaining_qty, status, vehicle_status, detained, sku_group, sku_code, sku_desc, " +
             "sku_active_on, staged_on, staged_rate, order_rate, stock_qty, line_order_qty, line_cancel_qty, " +
             "line_remaining_qty, route_id, line_dispatch_qty, assign_qty, dispatched_on, vehicle_no, driver_name, " +
-            "driver_phone, dispatch_by, load_wgt, dispatch_wgt, reason, source_file) " +
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "driver_phone, dispatch_by, load_wgt, dispatch_wgt, reason, source_file, " +
+            "po_execution, payment_type, loading_type, delivery_datetime, remark, tax) " +
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             tenantId,
             str(r, 0), str(r, 1), str(r, 2), str(r, 3),
             dateVal(r, 4), dateVal(r, 5), dateVal(r, 6),
@@ -881,7 +882,31 @@ public class OrderDispatchDetailImportController {
             dateVal(r, 16), dateVal(r, 17), decVal(r, 18), decVal(r, 19), intVal(r, 20),
             intVal(r, 21), intVal(r, 22), intVal(r, 23), str(r, 24), intVal(r, 25), intVal(r, 26),
             dateVal(r, 27), str(r, 28), str(r, 29), str(r, 30), str(r, 31),
-            decVal(r, 32), decVal(r, 33), str(r, 34), sourceFile);
+            decVal(r, 32), decVal(r, 33), str(r, 34), sourceFile,
+            // Tanker-flow extras (V351), columns 35..40 -- all optional; a plain
+            // 35-column sheet (or the PDF path) leaves them null.
+            str(r, 35), str(r, 36), str(r, 37), flexDateVal(r, 38), str(r, 39), decVal(r, 40));
+    }
+
+    private static final List<DateTimeFormatter> FLEX_DATE_FORMATS = List.of(
+        SOURCE_DATE,
+        DateTimeFormatter.ofPattern("dd-MM-yyyy HH:mm:ss", Locale.ENGLISH),
+        DateTimeFormatter.ofPattern("dd-MM-yyyy HH:mm", Locale.ENGLISH),
+        DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss", Locale.ENGLISH),
+        DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm", Locale.ENGLISH),
+        DateTimeFormatter.ofPattern("dd/MM/yyyy hh:mm:ss a", Locale.ENGLISH),
+        DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", Locale.ENGLISH),
+        DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.ENGLISH),
+        DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+
+    /** Delivery Date & Time is typed by hand on the sheet, so accept the common layouts, not just the export's own. */
+    private static LocalDateTime flexDateVal(List<String> r, int i) {
+        String v = str(r, i);
+        if (v == null) return null;
+        for (DateTimeFormatter f : FLEX_DATE_FORMATS) {
+            try { return LocalDateTime.parse(v, f); } catch (Exception ignored) { /* try next */ }
+        }
+        return null;
     }
 
     private static String str(List<String> r, int i) {

@@ -123,6 +123,50 @@ class OrderDispatchDetailImportControllerTest {
         verify(jdbc, times(1)).update(startsWith("DELETE FROM m5_order_dispatch_detail"), any(Object[].class));
     }
 
+    @Test
+    void tankerExtraColumns_35to40_areImported() {
+        String[] hdr = new String[41];
+        String[] row = new String[41];
+        for (int i = 0; i < 41; i++) { hdr[i] = "col" + i; row[i] = ""; }
+        row[24] = "ROU1"; row[26] = "10"; row[28] = "TN01AA1111";
+        row[35] = "PO-EXEC"; row[36] = "CREDIT"; row[37] = "TANKER"; row[38] = "05/10/2026 14:30"; row[39] = "handle with care"; row[40] = "18.5";
+        MultipartFile f = new MockMultipartFile("file", "tanker.csv", "text/csv",
+                (String.join(",", hdr) + "\n" + String.join(",", row) + "\n").getBytes(StandardCharsets.UTF_8));
+
+        ResponseEntity<?> r = controller.importCsv(new MultipartFile[]{f});
+
+        assertThat((Map<String, Object>) r.getBody()).containsEntry("rowsImported", 1).containsEntry("rowsFailed", 0);
+        Object[] args = insertArgs();
+        assertThat(args).hasSize(45);
+        assertThat(args[39]).isEqualTo("PO-EXEC");
+        assertThat(args[40]).isEqualTo("CREDIT");
+        assertThat(args[41]).isEqualTo("TANKER");
+        assertThat(args[42]).isEqualTo(java.time.LocalDateTime.of(2026, 10, 5, 14, 30));
+        assertThat(args[43]).isEqualTo("handle with care");
+        assertThat(args[44]).isEqualTo(new java.math.BigDecimal("18.5"));
+    }
+
+    /** Args (varargs already expanded) of the single INSERT INTO m5_order_dispatch_detail call. */
+    private Object[] insertArgs() {
+        return mockingDetails(jdbc).getInvocations().stream()
+                .filter(i -> i.getMethod().getName().equals("update")
+                        && i.getArguments().length > 0
+                        && String.valueOf(i.getArguments()[0]).startsWith("INSERT INTO m5_order_dispatch_detail"))
+                .findFirst().orElseThrow()
+                .getArguments();
+    }
+
+    @Test
+    void plain35ColumnSheet_leavesTankerExtrasNull() {
+        MultipartFile f = csvFile("plain.csv", csvRow("ROU1", "10", "TN01AA1111"));
+
+        controller.importCsv(new MultipartFile[]{f});
+
+        Object[] args = insertArgs();
+        assertThat(args).hasSize(45);
+        for (int i = 39; i <= 44; i++) assertThat(args[i]).isNull();
+    }
+
     // ---- deleteActive ---------------------------------------------------
 
     @Test
