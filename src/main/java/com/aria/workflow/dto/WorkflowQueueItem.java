@@ -63,4 +63,8 @@ public class WorkflowQueueItem {
      * there's no gate_pass row yet, or no reason was ever recorded.
      */
     private String queueReason;
+
+    /** From {@code gate_pass.vehicle_category} / {@code gate_pass.loading_type} (same lookup as {@link #queueReason}); null when no gate_pass row or never set. */
+    private String vehicleCategory;
+    private String loadingType;
 }

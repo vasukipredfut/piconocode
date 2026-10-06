@@ -126,6 +126,7 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
 
             List<LineEntry> parsed = new ArrayList<>();
             BigDecimal totalQty = BigDecimal.ZERO;
+            java.util.Set<String> consumedParentIds = new java.util.HashSet<>();
             for (Object raw : (List<?>) linesObj) {
                 if (!(raw instanceof Map)) continue;
                 Map<String, Object> line = (Map<String, Object>) raw;
@@ -140,6 +141,7 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
                         ? List.of() : allocationsByParentId.getOrDefault(lineId, List.of());
 
                 if (!lineAllocations.isEmpty()) {
+                    consumedParentIds.add(lineId);
                     for (Map<String, Object> alloc : lineAllocations) {
                         String allocTank = firstNonBlank(str(alloc.get("tank_location")), str(alloc.get("bay_name")));
                         if (allocTank == null) continue;
@@ -156,7 +158,44 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
                 parsed.add(new LineEntry(routeId, orderId, skuCode, skuDesc, tankLocation, qty));
                 totalQty = totalQty.add(qty);
             }
-            if (parsed.isEmpty()) return;
+            // Child allocations no parent line claimed by id. The live page's
+            // tankAllocation parent lines carry only sku_code/order_id/order_qty
+            // (no id, no route_id), so nothing above can match them -- the
+            // child row's own order_dispatch_detail_id is the one reliable key,
+            // so resolve route_id/order_id/sku_code/sku_desc from that
+            // m5_order_dispatch_detail row directly.
+            for (Map.Entry<String, List<Map<String, Object>>> e : allocationsByParentId.entrySet()) {
+                if (consumedParentIds.contains(e.getKey())) continue;
+                Map<String, Object> detail = orderDispatchDetail(tenantId, e.getKey());
+                if (detail == null) {
+                    log.warn("qc-preload tank allocation: instance={} order_dispatch_detail_id={} not found -- its {} allocation(s) skipped",
+                            instanceId, e.getKey(), e.getValue().size());
+                    continue;
+                }
+                String skuCode = str(detail.get("sku_code"));
+                if (skuCode == null) continue;
+                for (Map<String, Object> alloc : e.getValue()) {
+                    String allocTank = firstNonBlank(str(alloc.get("tank_location")), str(alloc.get("bay_name")));
+                    if (allocTank == null) continue;
+                    BigDecimal allocQty = toBig(firstNonNull(alloc.get("alloc_qty"), alloc.get("qty"), alloc.get("quantity")));
+                    parsed.add(new LineEntry(str(detail.get("route_id")), str(detail.get("order_id")), skuCode,
+                            str(detail.get("sku_desc")), allocTank, allocQty));
+                    totalQty = totalQty.add(allocQty);
+                }
+            }
+
+            if (parsed.isEmpty()) {
+                // Lines arrived but none yielded a tank -- say why, since the only
+                // other symptom is an empty loading_progress_detail_bay.
+                log.warn("qc-preload tank allocation: instance={} got {} tankAllocation line(s) and {} tankLocationAllocations "
+                                + "row(s) but seeded nothing. First line keys={}, first line id={}, allocation parent ids={}",
+                        instanceId, ((List<?>) linesObj).size(),
+                        allocationsRaw instanceof List<?> al ? al.size() : 0,
+                        ((List<?>) linesObj).get(0) instanceof Map<?, ?> m0 ? m0.keySet() : "n/a",
+                        ((List<?>) linesObj).get(0) instanceof Map<?, ?> m1 ? m1.get("id") : "n/a",
+                        allocationsByParentId.keySet());
+                return;
+            }
 
             // One-time seed — this edge fires once per instance, but guard
             // anyway rather than risk duplicate bay rows on a re-delivered event.
@@ -200,6 +239,16 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
             }
         } catch (Exception e) {
             log.warn("qc-preload tank allocation seeding failed for instance={}: {}", instanceId, e.getMessage());
+        }
+    }
+
+    private Map<String, Object> orderDispatchDetail(Long tenantId, String id) {
+        try {
+            return jdbc.queryForMap(
+                    "SELECT route_id, order_id, sku_code, sku_desc FROM m5_order_dispatch_detail WHERE tenant_id = ? AND id = ?",
+                    tenantId, Long.parseLong(id.trim()));
+        } catch (Exception e) {
+            return null;
         }
     }
 

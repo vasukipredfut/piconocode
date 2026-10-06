@@ -155,66 +155,83 @@ public class TankerWeighmentSkuCaptureActionHandler implements ActionHandler {
             // have enough, the line fails rather than silently pulling from
             // some other bin.
             List<Map<String, Object>> bayRows = jdbc.queryForList(
-                    "SELECT bay_name FROM loading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? "
-                            + "AND route_id = ? AND ((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'IN_PROGRESS'",
+                    "SELECT id, bay_name, quantity FROM loading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? "
+                            + "AND route_id = ? AND ((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'IN_PROGRESS' ORDER BY id",
                     tenantId, instanceId, routeId, orderId, orderId, skuCode);
             if (bayRows.isEmpty()) {
                 markRollbackOnly();
                 return ActionResult.error("no open bay row found for route_id=" + routeId + " order_id=" + orderId + " sku_code=" + skuCode);
             }
-            String tankLocation = (String) bayRows.get(0).get("bay_name");
-            if (tankLocation == null || tankLocation.isBlank()) {
-                markRollbackOnly();
-                return ActionResult.error("tankerSkuWeights[" + i + "] (" + skuCode + ") has no tank location recorded — allocate one before weighing");
-            }
 
-            List<FefoStockPickerService.FefoPick> picks = fefoPicker.pick(tenantId, skuCode, tankLocation, loadWgt);
-            BigDecimal residual = fefoPicker.residualQty(loadWgt, picks);
-            if (residual.signum() > 0) {
-                markRollbackOnly();
-                log.warn("action.tanker-weighment-capture.insufficient-stock tenantId={} instanceId={} routeId={} skuCode={} tankLocation={} requestedQty={} availableQty={}",
-                        tenantId, instanceId, routeId, skuCode, tankLocation, loadWgt, loadWgt.subtract(residual));
-                return ActionResult.error("tankerSkuWeights[" + i + "] (" + skuCode + ") insufficient stock in tank " + tankLocation + ": "
-                        + "requested " + loadWgt + ", available " + loadWgt.subtract(residual));
-            }
+            // One tank allocated -> the whole weighed qty comes from it (original
+            // behavior). Several tanks (multi-location split, see
+            // QcPreloadTankAllocationListener) -> the weighed qty is divided across
+            // them in proportion to each row's allocated quantity.
+            List<TankShare> shares = splitByAllocation(bayRows, loadWgt);
 
-            for (FefoStockPickerService.FefoPick pick : picks) {
-                int deducted = jdbc.update(
-                        "UPDATE m5_stock_balance SET qty_on_hand = qty_on_hand - ?, last_movement_at = CURRENT_TIMESTAMP "
-                                + "WHERE tenant_id = ? AND item_code = ? AND "
-                                + "((lot_no IS NULL AND ? IS NULL) OR lot_no = ?) AND bin_code = ? AND qty_on_hand >= ?",
-                        pick.qty(), tenantId, skuCode, pick.lotNo(), pick.lotNo(), pick.binCode(), pick.qty());
-                if (deducted == 0) {
+            for (TankShare share : shares) {
+                String tankLocation = share.tank();
+                if (tankLocation == null || tankLocation.isBlank()) {
                     markRollbackOnly();
-                    log.warn("action.tanker-weighment-capture.stock-race tenantId={} instanceId={} routeId={} skuCode={} lotNo={} binCode={} qty={}",
-                            tenantId, instanceId, routeId, skuCode, pick.lotNo(), pick.binCode(), pick.qty());
-                    return ActionResult.error("tankerSkuWeights[" + i + "] (" + skuCode + ") stock changed "
-                            + "concurrently — lot " + pick.lotNo() + "/bin " + pick.binCode()
-                            + " no longer has enough qty_on_hand, retry");
+                    return ActionResult.error("tankerSkuWeights[" + i + "] (" + skuCode + ") has no tank location recorded — allocate one before weighing");
                 }
-                jdbc.update(
-                        "INSERT INTO m5_stock_movement (tenant_id, kind, item_code, lot_no, from_bin, qty, uom, "
-                                + "ref_type, ref_id, ref_number) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                        tenantId, "CONSUME", skuCode, pick.lotNo(), pick.binCode(), pick.qty(), pick.uom(),
-                        "TANKER", instanceId, routeId);
-                log.info("action.tanker-weighment-capture.stock-issue tenantId={} instanceId={} routeId={} skuCode={} lotNo={} binCode={} qty={} uom={}",
-                        tenantId, instanceId, routeId, skuCode, pick.lotNo(), pick.binCode(), pick.qty(), pick.uom());
-            }
 
-            int n = jdbc.update(
-                    "UPDATE loading_progress_detail_bay SET processed_quantity = ?, status = 'DONE' "
-                            + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
-                            + "((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'IN_PROGRESS'",
-                    loadWgt, tenantId, instanceId, routeId, orderId, orderId, skuCode);
-            if (n == 0) {
-                markRollbackOnly();
-                log.warn("action.tanker-weighment-capture.bay-row-missing tenantId={} instanceId={} routeId={} orderId={} skuCode={}",
-                        tenantId, instanceId, routeId, orderId, skuCode);
-                return ActionResult.error("no open bay row found for route_id=" + routeId + " order_id=" + orderId + " sku_code=" + skuCode);
-            }
+                List<FefoStockPickerService.FefoPick> picks = fefoPicker.pick(tenantId, skuCode, tankLocation, share.qty());
+                BigDecimal residual = fefoPicker.residualQty(share.qty(), picks);
+                if (residual.signum() > 0) {
+                    markRollbackOnly();
+                    log.warn("action.tanker-weighment-capture.insufficient-stock tenantId={} instanceId={} routeId={} skuCode={} tankLocation={} requestedQty={} availableQty={}",
+                            tenantId, instanceId, routeId, skuCode, tankLocation, share.qty(), share.qty().subtract(residual));
+                    return ActionResult.error("tankerSkuWeights[" + i + "] (" + skuCode + ") insufficient stock in tank " + tankLocation + ": "
+                            + "requested " + share.qty() + ", available " + share.qty().subtract(residual));
+                }
 
-            log.info("action.tanker-weighment-capture.bay-row-closed tenantId={} instanceId={} routeId={} skuCode={} loadWgt={}",
-                    tenantId, instanceId, routeId, skuCode, loadWgt);
+                for (FefoStockPickerService.FefoPick pick : picks) {
+                    int deducted = jdbc.update(
+                            "UPDATE m5_stock_balance SET qty_on_hand = qty_on_hand - ?, last_movement_at = CURRENT_TIMESTAMP "
+                                    + "WHERE tenant_id = ? AND item_code = ? AND "
+                                    + "((lot_no IS NULL AND ? IS NULL) OR lot_no = ?) AND bin_code = ? AND qty_on_hand >= ?",
+                            pick.qty(), tenantId, skuCode, pick.lotNo(), pick.lotNo(), pick.binCode(), pick.qty());
+                    if (deducted == 0) {
+                        markRollbackOnly();
+                        log.warn("action.tanker-weighment-capture.stock-race tenantId={} instanceId={} routeId={} skuCode={} lotNo={} binCode={} qty={}",
+                                tenantId, instanceId, routeId, skuCode, pick.lotNo(), pick.binCode(), pick.qty());
+                        return ActionResult.error("tankerSkuWeights[" + i + "] (" + skuCode + ") stock changed "
+                                + "concurrently — lot " + pick.lotNo() + "/bin " + pick.binCode()
+                                + " no longer has enough qty_on_hand, retry");
+                    }
+                    jdbc.update(
+                            "INSERT INTO m5_stock_movement (tenant_id, kind, item_code, lot_no, from_bin, qty, uom, "
+                                    + "ref_type, ref_id, ref_number) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                            tenantId, "CONSUME", skuCode, pick.lotNo(), pick.binCode(), pick.qty(), pick.uom(),
+                            "TANKER", instanceId, routeId);
+                    log.info("action.tanker-weighment-capture.stock-issue tenantId={} instanceId={} routeId={} skuCode={} lotNo={} binCode={} qty={} uom={}",
+                            tenantId, instanceId, routeId, skuCode, pick.lotNo(), pick.binCode(), pick.qty(), pick.uom());
+                }
+
+                int n;
+                if (shares.size() == 1) {
+                    n = jdbc.update(
+                            "UPDATE loading_progress_detail_bay SET processed_quantity = ?, status = 'DONE' "
+                                    + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
+                                    + "((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'IN_PROGRESS'",
+                            share.qty(), tenantId, instanceId, routeId, orderId, orderId, skuCode);
+                } else {
+                    n = jdbc.update(
+                            "UPDATE loading_progress_detail_bay SET processed_quantity = ?, status = 'DONE' "
+                                    + "WHERE tenant_id = ? AND id = ? AND status = 'IN_PROGRESS'",
+                            share.qty(), tenantId, share.rowId());
+                }
+                if (n == 0) {
+                    markRollbackOnly();
+                    log.warn("action.tanker-weighment-capture.bay-row-missing tenantId={} instanceId={} routeId={} orderId={} skuCode={}",
+                            tenantId, instanceId, routeId, orderId, skuCode);
+                    return ActionResult.error("no open bay row found for route_id=" + routeId + " order_id=" + orderId + " sku_code=" + skuCode);
+                }
+
+                log.info("action.tanker-weighment-capture.bay-row-closed tenantId={} instanceId={} routeId={} skuCode={} tank={} loadWgt={}",
+                        tenantId, instanceId, routeId, skuCode, tankLocation, share.qty());
+            }
 
             totalProcessed = totalProcessed.add(loadWgt);
             Map<String, Object> row = new HashMap<>();
@@ -239,6 +256,52 @@ public class TankerWeighmentSkuCaptureActionHandler implements ActionHandler {
                 .message(closed.size() + " SKU line(s) weighed, " + totalProcessed + " kg total issued from stock")
                 .data(Map.of("closed", closed, "totalProcessed", totalProcessed))
                 .build();
+    }
+
+    /** One tank's portion of a weighed SKU line; rowId is the loading_progress_detail_bay row it closes. */
+    private record TankShare(Long rowId, String tank, BigDecimal qty) {}
+
+    /**
+     * Divides the weighed qty across this SKU's open bay rows in proportion to
+     * each row's allocated {@code quantity} (the planned per-tank split from
+     * the tank-allocation grid). A single row takes everything. If every
+     * allocated quantity is zero/missing the split is equal. Each share is
+     * rounded to 3 dp; the LAST row takes the remainder so shares always sum
+     * exactly to the weighed qty.
+     */
+    private static List<TankShare> splitByAllocation(List<Map<String, Object>> bayRows, BigDecimal loadWgt) {
+        List<TankShare> out = new ArrayList<>();
+        if (bayRows.size() == 1) {
+            Map<String, Object> only = bayRows.get(0);
+            out.add(new TankShare(asLong(only.get("id")), (String) only.get("bay_name"), loadWgt));
+            return out;
+        }
+        BigDecimal total = BigDecimal.ZERO;
+        for (Map<String, Object> r : bayRows) total = total.add(asDecimal(r.get("quantity")));
+        BigDecimal assigned = BigDecimal.ZERO;
+        for (int k = 0; k < bayRows.size(); k++) {
+            Map<String, Object> r = bayRows.get(k);
+            BigDecimal share;
+            if (k == bayRows.size() - 1) {
+                share = loadWgt.subtract(assigned);
+            } else if (total.signum() > 0) {
+                share = loadWgt.multiply(asDecimal(r.get("quantity"))).divide(total, 3, java.math.RoundingMode.HALF_UP);
+            } else {
+                share = loadWgt.divide(BigDecimal.valueOf(bayRows.size()), 3, java.math.RoundingMode.HALF_UP);
+            }
+            assigned = assigned.add(share);
+            out.add(new TankShare(asLong(r.get("id")), (String) r.get("bay_name"), share));
+        }
+        return out;
+    }
+
+    private static BigDecimal asDecimal(Object v) {
+        if (v == null) return BigDecimal.ZERO;
+        try { return new BigDecimal(v.toString()); } catch (NumberFormatException e) { return BigDecimal.ZERO; }
+    }
+
+    private static Long asLong(Object v) {
+        return v instanceof Number n ? n.longValue() : null;
     }
 
     /** Same rollback-only guard as {@link M10BayCompleteActionHandler} — see its javadoc. */

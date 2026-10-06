@@ -453,7 +453,7 @@ public class WorkflowEngineService {
      */
     private List<WorkflowQueueItem> plainGatePassQueueItems(Long tenantId) {
         return jdbc.queryForList(
-                "SELECT id, gp_number, vehicle_no, status, updated_at, queue_reason FROM gate_pass " +
+                "SELECT id, gp_number, vehicle_no, status, updated_at, queue_reason, vehicle_category, loading_type FROM gate_pass " +
                 "WHERE tenant_id=? AND workflow_instance_id IS NULL AND status='GATE_PASS_CREATED' " +
                 "AND (loading_type IS NULL OR loading_type <> 'OTHERS') " +
                 "ORDER BY updated_at ASC",
@@ -466,6 +466,8 @@ public class WorkflowEngineService {
                     .updatedAt(toInstant(row.get("updated_at")))
                     .orderSheetUploaded(orderSheetUploadedFor(tenantId, (String) row.get("vehicle_no")))
                     .queueReason((String) row.get("queue_reason"))
+                    .vehicleCategory((String) row.get("vehicle_category"))
+                    .loadingType((String) row.get("loading_type"))
                     .build())
             .toList();
     }
@@ -480,7 +482,7 @@ public class WorkflowEngineService {
      */
     private List<WorkflowQueueItem> otherVehicleGatePassQueueItems(Long tenantId) {
         return jdbc.queryForList(
-                "SELECT id, gp_number, vehicle_no, status, updated_at, queue_reason FROM gate_pass " +
+                "SELECT id, gp_number, vehicle_no, status, updated_at, queue_reason, vehicle_category, loading_type FROM gate_pass " +
                 "WHERE tenant_id=? AND workflow_instance_id IS NULL AND status='GATE_PASS_CREATED' " +
                 "AND loading_type='OTHERS' " +
                 "ORDER BY updated_at ASC",
@@ -493,6 +495,8 @@ public class WorkflowEngineService {
                     .updatedAt(toInstant(row.get("updated_at")))
                     .orderSheetUploaded(orderSheetUploadedFor(tenantId, (String) row.get("vehicle_no")))
                     .queueReason((String) row.get("queue_reason"))
+                    .vehicleCategory((String) row.get("vehicle_category"))
+                    .loadingType((String) row.get("loading_type"))
                     .build())
             .toList();
     }
@@ -642,6 +646,8 @@ public class WorkflowEngineService {
                 .gpNumber(gatePass == null ? null : (String) gatePass.get("gp_number"))
                 .orderSheetUploaded(orderSheetUploadedFor(i.getTenantId(), vehicleNo))
                 .queueReason(gatePass == null ? null : (String) gatePass.get("queue_reason"))
+                .vehicleCategory(gatePass == null ? null : (String) gatePass.get("vehicle_category"))
+                .loadingType(gatePass == null ? null : (String) gatePass.get("loading_type"))
                 .build();
     }
 
@@ -654,7 +660,7 @@ public class WorkflowEngineService {
      */
     private Map<String, Object> gatePassFor(Long tenantId, Long instanceId) {
         List<Map<String, Object>> rows = jdbc.queryForList(
-                "SELECT gp_number, vehicle_no, queue_reason FROM gate_pass " +
+                "SELECT gp_number, vehicle_no, queue_reason, vehicle_category, loading_type FROM gate_pass " +
                 "WHERE tenant_id=? AND workflow_instance_id=?",
                 tenantId, instanceId);
         return rows.isEmpty() ? null : rows.get(0);

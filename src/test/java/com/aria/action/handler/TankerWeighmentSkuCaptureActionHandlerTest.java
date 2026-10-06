@@ -50,7 +50,7 @@ class TankerWeighmentSkuCaptureActionHandlerTest {
         // javadoc. FakeFefoStockPickerService ignores the bin argument
         // entirely, so the exact tank code here doesn't affect any of the
         // stock-picking assertions below.
-        when(jdbc.queryForList(contains("SELECT bay_name FROM loading_progress_detail_bay"), any(Object[].class)))
+        when(jdbc.queryForList(contains("SELECT id, bay_name, quantity FROM loading_progress_detail_bay"), any(Object[].class)))
                 .thenReturn(List.of(Map.of("bay_name", "DOT8")));
         fefoPicker = new FakeFefoStockPickerService();
         handler = new TankerWeighmentSkuCaptureActionHandler();
@@ -244,6 +244,70 @@ class TankerWeighmentSkuCaptureActionHandlerTest {
         verify(jdbc, never()).update(startsWith("UPDATE loading_progress_detail SET"), any(Object[].class));
     }
 
+    // ---- multi-tank split (allocation ratio) --------------------------------
+
+    private static Map<String, Object> bayRow(long id, String tank, String allocated) {
+        Map<String, Object> m = new HashMap<>();
+        m.put("id", id);
+        m.put("bay_name", tank);
+        m.put("quantity", new BigDecimal(allocated));
+        return m;
+    }
+
+    @Test
+    void multipleTanks_weighedQtySplitByAllocationRatio_andEachBayRowClosedById() {
+        when(jdbc.queryForList(contains("SELECT id, bay_name, quantity FROM loading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(bayRow(11, "ROT-1", "60"), bayRow(12, "ROT-2", "40")));
+        fefoPicker.seed("SKU1215", lotRow("LOT-A", "BIN-A", "KG", "1000"));
+
+        // Weighed 50 (not the planned 100) -> 30 from ROT-1, 20 from ROT-2.
+        ActionResult r = handler.handle(invocationWithLines(List.of(line("ROU028912", "SKU1215", 50))));
+
+        assertThat(r.isOk()).isTrue();
+        verify(jdbc).update(startsWith("INSERT INTO m5_stock_movement"),
+                eq(1L), eq("CONSUME"), eq("SKU1215"), eq("LOT-A"), eq("BIN-A"),
+                eq(new BigDecimal("30.000")), eq("KG"), eq("TANKER"), eq(1495L), eq("ROU028912"));
+        verify(jdbc).update(startsWith("INSERT INTO m5_stock_movement"),
+                eq(1L), eq("CONSUME"), eq("SKU1215"), eq("LOT-A"), eq("BIN-A"),
+                eq(new BigDecimal("20.000")), eq("KG"), eq("TANKER"), eq(1495L), eq("ROU028912"));
+        verify(jdbc).update(startsWith("UPDATE loading_progress_detail_bay"),
+                eq(new BigDecimal("30.000")), eq(1L), eq(11L));
+        verify(jdbc).update(startsWith("UPDATE loading_progress_detail_bay"),
+                eq(new BigDecimal("20.000")), eq(1L), eq(12L));
+        // parent rolls up the TOTAL weighed qty once, not once per tank.
+        verify(jdbc).update(startsWith("UPDATE loading_progress_detail SET processed_quantity"),
+                eq(new BigDecimal("50")), eq(1L), eq(1495L));
+    }
+
+    @Test
+    void multipleTanks_lastTankTakesRoundingRemainder_sharesSumExactly() {
+        when(jdbc.queryForList(contains("SELECT id, bay_name, quantity FROM loading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(bayRow(11, "ROT-1", "1"), bayRow(12, "ROT-2", "1"), bayRow(13, "ROT-3", "1")));
+        fefoPicker.seed("SKU1215", lotRow("LOT-A", "BIN-A", "KG", "1000"));
+
+        handler.handle(invocationWithLines(List.of(line("ROU028912", "SKU1215", 10))));
+
+        // 10/3 -> 3.333, 3.333, remainder 3.334
+        verify(jdbc, times(2)).update(startsWith("UPDATE loading_progress_detail_bay"),
+                eq(new BigDecimal("3.333")), eq(1L), anyLong());
+        verify(jdbc).update(startsWith("UPDATE loading_progress_detail_bay"),
+                eq(new BigDecimal("3.334")), eq(1L), eq(13L));
+    }
+
+    @Test
+    void multipleTanks_oneTankShort_failsWholeLineBeforeClosingAnyRow() {
+        when(jdbc.queryForList(contains("SELECT id, bay_name, quantity FROM loading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(bayRow(11, "ROT-1", "60"), bayRow(12, "ROT-2", "40")));
+        // only 25 on hand: ROT-1's 30 share can't be met.
+        fefoPicker.seed("SKU1215", lotRow("LOT-A", "BIN-A", "KG", "25"));
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(line("ROU028912", "SKU1215", 50))));
+
+        assertThat(r.isOk()).isFalse();
+        assertThat(r.getMessage()).contains("insufficient stock in tank ROT-1");
+        verify(jdbc, never()).update(startsWith("UPDATE loading_progress_detail_bay"), any(Object[].class));
+    }
+
     // ---- stock deduction ----------------------------------------------------
 
     @Test
@@ -338,7 +402,7 @@ class TankerWeighmentSkuCaptureActionHandlerTest {
 
     @Test
     void noTankAllocationRowFound_errorsBeforeFefoPick() {
-        when(jdbc.queryForList(contains("SELECT bay_name FROM loading_progress_detail_bay"), any(Object[].class)))
+        when(jdbc.queryForList(contains("SELECT id, bay_name, quantity FROM loading_progress_detail_bay"), any(Object[].class)))
                 .thenReturn(List.of());
 
         ActionResult r = handler.handle(invocationWithLines(List.of(line("ROU028912", "SKU1215", 45))));
@@ -352,7 +416,7 @@ class TankerWeighmentSkuCaptureActionHandlerTest {
     void tankAllocationRowHasNoBayName_errors() {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("bay_name", null);
-        when(jdbc.queryForList(contains("SELECT bay_name FROM loading_progress_detail_bay"), any(Object[].class)))
+        when(jdbc.queryForList(contains("SELECT id, bay_name, quantity FROM loading_progress_detail_bay"), any(Object[].class)))
                 .thenReturn(List.of(row));
 
         ActionResult r = handler.handle(invocationWithLines(List.of(line("ROU028912", "SKU1215", 45))));
