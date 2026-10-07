@@ -72,7 +72,7 @@ class QcPreloadTankAllocationListenerTest {
 
         verify(jdbc).update(contains("INSERT INTO loading_progress_detail_bay"),
                 eq(1L), eq(777L), eq(1495L), eq("ROU1"), eq("ORD1"), eq("SKU1"), eq("SKU1 Desc"),
-                eq("ROT-1"), eq(new BigDecimal("20")));
+                eq("ROT-1"), eq(new BigDecimal("20")), isNull(), isNull());
     }
 
     @Test
@@ -90,10 +90,10 @@ class QcPreloadTankAllocationListenerTest {
 
         verify(jdbc).update(contains("INSERT INTO loading_progress_detail_bay"),
                 eq(1L), eq(777L), eq(1495L), eq("ROU1"), eq("ORD1"), eq("SKU1"), eq("SKU1 Desc"),
-                eq("ROT-1"), eq(new BigDecimal("60")));
+                eq("ROT-1"), eq(new BigDecimal("60")), isNull(), isNull());
         verify(jdbc).update(contains("INSERT INTO loading_progress_detail_bay"),
                 eq(1L), eq(777L), eq(1495L), eq("ROU1"), eq("ORD1"), eq("SKU1"), eq("SKU1 Desc"),
-                eq("ROT-2"), eq(new BigDecimal("40")));
+                eq("ROT-2"), eq(new BigDecimal("40")), isNull(), isNull());
         // head row's total_quantity must reflect the sum of allocations (100).
         verify(jdbc).update(contains("INSERT INTO loading_progress_detail"),
                 eq(1L), eq(1495L), any(), any(), any(), any(), eq(new BigDecimal("100")));
@@ -116,7 +116,7 @@ class QcPreloadTankAllocationListenerTest {
 
         verify(jdbc).update(contains("INSERT INTO loading_progress_detail_bay"),
                 eq(1L), eq(777L), eq(1495L), eq("ROU1"), eq("ORD1"), eq("SKU1"), eq("SKU1 Desc"),
-                eq("ROT-3"), eq(new BigDecimal("25")));
+                eq("ROT-3"), eq(new BigDecimal("25")), isNull(), isNull());
     }
 
     @Test
@@ -134,7 +134,7 @@ class QcPreloadTankAllocationListenerTest {
 
         verify(jdbc).update(contains("INSERT INTO loading_progress_detail_bay"),
                 eq(1L), eq(777L), eq(1495L), eq("ROU1"), eq("ORD1"), eq("SKU1"), eq("SKU1 Desc"),
-                eq("ROT-1"), eq(new BigDecimal("20")));
+                eq("ROT-1"), eq(new BigDecimal("20")), isNull(), isNull());
     }
 
     @Test
@@ -160,13 +160,13 @@ class QcPreloadTankAllocationListenerTest {
 
         verify(jdbc).update(contains("INSERT INTO loading_progress_detail_bay"),
                 eq(1L), eq(777L), eq(1495L), eq("ROU-A"), eq("ORD110642116"), eq("SKU1393"), eq("REF RICE BRAN OIL"),
-                eq("COT-1"), eq(new BigDecimal("1000")));
+                eq("COT-1"), eq(new BigDecimal("1000")), isNull(), isNull());
         verify(jdbc).update(contains("INSERT INTO loading_progress_detail_bay"),
                 eq(1L), eq(777L), eq(1495L), eq("ROU-A"), eq("ORD110642116"), eq("SKU1393"), eq("REF RICE BRAN OIL"),
-                eq("COT-4"), eq(new BigDecimal("1000")));
+                eq("COT-4"), eq(new BigDecimal("1000")), isNull(), isNull());
         verify(jdbc).update(contains("INSERT INTO loading_progress_detail_bay"),
                 eq(1L), eq(777L), eq(1495L), eq("ROU-A"), eq("ORD110871116"), eq("SKU1325"), eq("SF ACID OIL"),
-                eq("COT-5"), eq(new BigDecimal("1000")));
+                eq("COT-5"), eq(new BigDecimal("1000")), isNull(), isNull());
         verify(jdbc).update(contains("INSERT INTO loading_progress_detail"),
                 eq(1L), eq(1495L), any(), any(), any(), any(), eq(new BigDecimal("3000")));
     }
@@ -184,6 +184,38 @@ class QcPreloadTankAllocationListenerTest {
         listener.onTransition(inst, "DISPATCH_LOADING_PLANNING", bag);
 
         verify(jdbc, never()).update(contains("INSERT INTO loading_progress_detail_bay"), any(Object[].class));
+    }
+
+    @Test
+    void diffAndReason_onParentLine_savedOnEveryTankRowOfThatSku() {
+        WorkflowInstance inst = instance("M10.TankerOutbound", "QC_PRELOAD_APPROVED");
+        Map<String, Object> p1 = new HashMap<>();
+        p1.put("sku_code", "SKU1393"); p1.put("order_id", "ORD1");
+        p1.put("diff_box", "-50"); p1.put("diff_reason", "Short in tank");
+        Map<String, Object> p2 = new HashMap<>();
+        p2.put("sku_code", "SKU1325"); p2.put("order_id", "ORD2");
+        p2.put("diff_box", ""); p2.put("diff_reason", ""); // untouched -> no diff
+        Map<String, Object> bag = bagWith(List.of(p1, p2));
+        pageData(bag).put("tankLocationAllocations", List.of(
+                Map.of("order_dispatch_detail_id", 1, "tank_location", "COT-1", "alloc_qty", "10"),
+                Map.of("order_dispatch_detail_id", 1, "tank_location", "COT-4", "alloc_qty", "20"),
+                Map.of("order_dispatch_detail_id", 2, "tank_location", "COT-5", "alloc_qty", "30")));
+        when(jdbc.queryForMap(contains("FROM m5_order_dispatch_detail"), eq(1L), eq(1L)))
+                .thenReturn(Map.of("route_id", "R", "order_id", "ORD1", "sku_code", "SKU1393", "sku_desc", "d1"));
+        when(jdbc.queryForMap(contains("FROM m5_order_dispatch_detail"), eq(1L), eq(2L)))
+                .thenReturn(Map.of("route_id", "R", "order_id", "ORD2", "sku_code", "SKU1325", "sku_desc", "d2"));
+
+        listener.onTransition(inst, "DISPATCH_LOADING_PLANNING", bag);
+
+        verify(jdbc).update(contains("INSERT INTO loading_progress_detail_bay"),
+                eq(1L), eq(777L), eq(1495L), eq("R"), eq("ORD1"), eq("SKU1393"), eq("d1"),
+                eq("COT-1"), eq(new BigDecimal("10")), eq(new BigDecimal("-50")), eq("Short in tank"));
+        verify(jdbc).update(contains("INSERT INTO loading_progress_detail_bay"),
+                eq(1L), eq(777L), eq(1495L), eq("R"), eq("ORD1"), eq("SKU1393"), eq("d1"),
+                eq("COT-4"), eq(new BigDecimal("20")), eq(new BigDecimal("-50")), eq("Short in tank"));
+        verify(jdbc).update(contains("INSERT INTO loading_progress_detail_bay"),
+                eq(1L), eq(777L), eq(1495L), eq("R"), eq("ORD2"), eq("SKU1325"), eq("d2"),
+                eq("COT-5"), eq(new BigDecimal("30")), isNull(), isNull());
     }
 
     @Test

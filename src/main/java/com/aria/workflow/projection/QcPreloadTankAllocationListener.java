@@ -124,6 +124,20 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
                 }
             }
 
+            // Diff / Diff Reason are typed once per SKU line on the parent grid row;
+            // every tank row seeded for that SKU carries the same values.
+            Map<String, Diff> diffByOrderSku = new java.util.HashMap<>();
+            Map<String, Diff> diffBySku = new java.util.HashMap<>();
+            for (Object raw : (List<?>) linesObj) {
+                if (!(raw instanceof Map)) continue;
+                Map<String, Object> pl = (Map<String, Object>) raw;
+                String sku = str(pl.get("sku_code"));
+                Diff d = diffOf(pl);
+                if (sku == null || d == null) continue;
+                diffByOrderSku.put(str(pl.get("order_id")) + "|" + sku, d);
+                diffBySku.put(sku, d);
+            }
+
             List<LineEntry> parsed = new ArrayList<>();
             BigDecimal totalQty = BigDecimal.ZERO;
             java.util.Set<String> consumedParentIds = new java.util.HashSet<>();
@@ -231,11 +245,13 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
                     Long.class, tenantId, instanceId);
 
             for (LineEntry e : parsed) {
+                Diff diff = diffByOrderSku.getOrDefault(e.orderId() + "|" + e.skuCode(), diffBySku.get(e.skuCode()));
                 jdbc.update(
                         "INSERT INTO loading_progress_detail_bay " +
-                                "(tenant_id, loading_progress_detail_id, workflow_instance_id, route_id, order_id, sku_code, sku_desc, bay_name, quantity, status) " +
-                                "VALUES (?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
-                        tenantId, parentId, instanceId, e.routeId, e.orderId, e.skuCode, e.skuDesc, e.tankLocation, e.quantity);
+                                "(tenant_id, loading_progress_detail_id, workflow_instance_id, route_id, order_id, sku_code, sku_desc, bay_name, quantity, status, diff_qty, diff_reason) " +
+                                "VALUES (?,?,?,?,?,?,?,?,?, 'IN_PROGRESS', ?, ?)",
+                        tenantId, parentId, instanceId, e.routeId, e.orderId, e.skuCode, e.skuDesc, e.tankLocation, e.quantity,
+                        diff == null ? null : diff.qty(), diff == null ? null : diff.reason());
             }
         } catch (Exception e) {
             log.warn("qc-preload tank allocation seeding failed for instance={}: {}", instanceId, e.getMessage());
@@ -263,6 +279,19 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
     }
 
     private record LineEntry(String routeId, String orderId, String skuCode, String skuDesc, String tankLocation, BigDecimal quantity) {}
+
+    private record Diff(BigDecimal qty, String reason) {}
+
+    /** diff_box (the grid's "Diff") + diff_reason off a parent line; null when neither was filled in. */
+    private static Diff diffOf(Map<String, Object> line) {
+        String raw = str(line.get("diff_box"));
+        BigDecimal qty = null;
+        if (raw != null) {
+            try { qty = new BigDecimal(raw.trim()); } catch (RuntimeException ignored) { /* non-numeric -> no qty */ }
+        }
+        String reason = str(line.get("diff_reason"));
+        return (qty == null && reason == null) ? null : new Diff(qty, reason);
+    }
 
     private static String str(Object o) {
         return (o == null || o.toString().isBlank()) ? null : o.toString();

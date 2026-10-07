@@ -74,6 +74,12 @@ import java.util.Map;
  * either identifier depending on how that tank-allocation grid grouped its
  * lines; whatever it stored must be echoed back here unchanged.
  *
+ * <p><b>Multi-tank SKUs:</b> a line without {@code tank_location} carries the SKU's TOTAL
+ * weight, divided across its open tank rows in proportion to each row's allocated
+ * quantity. A line WITH {@code tank_location} (or {@code bay_name}) weighs just that
+ * tank: the whole {@code load_wgt} is issued from it and only its row closes, the
+ * SKU's other tanks stay IN_PROGRESS for a later weighment.
+ *
  * <p>Payload shape (formData.tankerSkuWeights — the grid's current rows,
  * the weight already edited by the officer from the scale reading;
  * {@code loading_qty} is accepted as well as {@code load_wgt} — the grid's
@@ -129,6 +135,8 @@ public class TankerWeighmentSkuCaptureActionHandler implements ActionHandler {
             String routeId = str(line, "route_id");
             String orderId = str(line, "order_id");
             String skuCode = str(line, "sku_code");
+            // Optional: weigh ONE tank of a multi-tank SKU on its own (see class javadoc).
+            String onlyTank = str(line, "tank_location") != null ? str(line, "tank_location") : str(line, "bay_name");
             if (routeId == null || skuCode == null) {
                 markRollbackOnly();
                 return ActionResult.error("tankerSkuWeights[" + i + "] is missing route_id or sku_code");
@@ -161,6 +169,21 @@ public class TankerWeighmentSkuCaptureActionHandler implements ActionHandler {
             if (bayRows.isEmpty()) {
                 markRollbackOnly();
                 return ActionResult.error("no open bay row found for route_id=" + routeId + " order_id=" + orderId + " sku_code=" + skuCode);
+            }
+
+            // A line naming a tank closes only that tank's row(s); the SKU's other
+            // tanks stay IN_PROGRESS for a later weighment. Rows are then closed by id
+            // whenever the SKU has more than one open row, so a single-tank weighment
+            // can never close its siblings.
+            boolean multiRowSku = bayRows.size() > 1;
+            if (onlyTank != null) {
+                final String wanted = onlyTank.trim();
+                bayRows = bayRows.stream().filter(r -> wanted.equals(r.get("bay_name"))).toList();
+                if (bayRows.isEmpty()) {
+                    markRollbackOnly();
+                    return ActionResult.error("tankerSkuWeights[" + i + "] (" + skuCode + ") has no open tank row for " + wanted
+                            + " (already weighed, or not allocated to that tank)");
+                }
             }
 
             // One tank allocated -> the whole weighed qty comes from it (original
@@ -210,7 +233,7 @@ public class TankerWeighmentSkuCaptureActionHandler implements ActionHandler {
                 }
 
                 int n;
-                if (shares.size() == 1) {
+                if (!multiRowSku) {
                     n = jdbc.update(
                             "UPDATE loading_progress_detail_bay SET processed_quantity = ?, status = 'DONE' "
                                     + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "

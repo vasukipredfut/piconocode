@@ -295,6 +295,56 @@ class TankerWeighmentSkuCaptureActionHandlerTest {
     }
 
     @Test
+    void tankLocationGiven_weighsOnlyThatTank_siblingsLeftOpen() {
+        when(jdbc.queryForList(contains("SELECT id, bay_name, quantity FROM loading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(bayRow(11, "ROT-1", "60"), bayRow(12, "ROT-2", "40")));
+        fefoPicker.seed("SKU1215", lotRow("LOT-A", "BIN-A", "KG", "1000"));
+        Map<String, Object> l = line("ROU028912", "SKU1215", 55);
+        l.put("tank_location", "ROT-2");
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(l)));
+
+        assertThat(r.isOk()).isTrue();
+        // whole weighed qty from ROT-2 only, ROT-2's row closed by id, ROT-1 untouched.
+        verify(jdbc, times(1)).update(startsWith("INSERT INTO m5_stock_movement"),
+                eq(1L), eq("CONSUME"), eq("SKU1215"), eq("LOT-A"), eq("BIN-A"),
+                eq(new BigDecimal("55")), eq("KG"), eq("TANKER"), eq(1495L), eq("ROU028912"));
+        verify(jdbc, times(1)).update(startsWith("UPDATE loading_progress_detail_bay"), any(Object[].class));
+        verify(jdbc).update(startsWith("UPDATE loading_progress_detail_bay"), eq(new BigDecimal("55")), eq(1L), eq(12L));
+        verify(jdbc).update(startsWith("UPDATE loading_progress_detail SET processed_quantity"),
+                eq(new BigDecimal("55")), eq(1L), eq(1495L));
+    }
+
+    @Test
+    void tankLocationGiven_butNoOpenRowForIt_errors() {
+        when(jdbc.queryForList(contains("SELECT id, bay_name, quantity FROM loading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(bayRow(11, "ROT-1", "60")));
+        Map<String, Object> l = line("ROU028912", "SKU1215", 10);
+        l.put("tank_location", "ROT-9");
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(l)));
+
+        assertThat(r.isOk()).isFalse();
+        assertThat(r.getMessage()).contains("no open tank row for ROT-9");
+        verify(jdbc, never()).update(startsWith("INSERT INTO m5_stock_movement"), any(Object[].class));
+    }
+
+    @Test
+    void secondPerTankWeighment_afterFirstClosed_closesRemainingTank() {
+        // First tank already DONE (no longer IN_PROGRESS) -> only ROT-1 is returned as open.
+        when(jdbc.queryForList(contains("SELECT id, bay_name, quantity FROM loading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(bayRow(11, "ROT-1", "60")));
+        fefoPicker.seed("SKU1215", lotRow("LOT-A", "BIN-A", "KG", "1000"));
+        Map<String, Object> l = line("ROU028912", "SKU1215", 30);
+        l.put("tank_location", "ROT-1");
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(l)));
+
+        assertThat(r.isOk()).isTrue();
+        verify(jdbc).update(startsWith("UPDATE loading_progress_detail_bay"), any(Object[].class));
+    }
+
+    @Test
     void multipleTanks_oneTankShort_failsWholeLineBeforeClosingAnyRow() {
         when(jdbc.queryForList(contains("SELECT id, bay_name, quantity FROM loading_progress_detail_bay"), any(Object[].class)))
                 .thenReturn(List.of(bayRow(11, "ROT-1", "60"), bayRow(12, "ROT-2", "40")));
