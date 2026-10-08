@@ -37,9 +37,10 @@ import java.util.Map;
  * the rows, exactly as {@code TankerUnloadInvoiceTransitionListener} only
  * opens Inbound's.
  *
- * <p>One-time seed per instance (this edge fires once per reject cycle in
- * the current design) — guarded on no unloading rows existing yet for this
- * instance, same reasoning as {@link QcPreloadTankAllocationListener}.
+ * <p>Seeds once per reject cycle — guarded on no <i>open</i> (IN_PROGRESS)
+ * unloading rows existing for this instance, so a re-delivered event does not
+ * double-seed while a second reject cycle (earlier cycle's rows already DONE)
+ * still seeds its freshly loaded tanks.
  */
 @Component
 public class TankerOutboundUnloadSeedListener implements WorkflowTransitionListener {
@@ -65,7 +66,7 @@ public class TankerOutboundUnloadSeedListener implements WorkflowTransitionListe
 
         try {
             Integer alreadySeeded = jdbc.queryForObject(
-                    "SELECT COUNT(*) FROM unloading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ?",
+                    "SELECT COUNT(*) FROM unloading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? AND status = 'IN_PROGRESS'",
                     Integer.class, tenantId, instanceId);
             if (alreadySeeded != null && alreadySeeded > 0) return;
 
