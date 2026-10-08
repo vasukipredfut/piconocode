@@ -175,6 +175,15 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
                     if (queueReason != null) cols.put("queue_reason", queueReason);
                     if (timeTaken != null) cols.put("time_taken", timeTaken);
                     if (grnStatus != null) cols.put("grn_status", grnStatus);
+                    // manager_name (V358): the approving manager's name, sent by the UI.
+                    // Tanker flows only -- the other workflows' page doesn't send it.
+                    if (TANKER_OUTBOUND_WORKFLOW.equals(instance.getWorkflowCode())) {
+                        String managerName = firstNonBlank(str(page, "manager_name"), str(page, "managerName"));
+                        if (managerName != null) cols.put("manager_name", managerName);
+                        String managerContact = firstNonBlank(str(page, "manager_contact"), str(page, "managerContact"),
+                                str(page, "manager_contact_no"), str(page, "managerContactNo"));
+                        if (managerContact != null) cols.put("manager_contact", managerContact);
+                    }
                     // TankerOutbound only: since aria:weight-diff-entry was retired
                     // from the UI (V264), aria:manager-qty-approval is now the ONLY
                     // place these 4 tolerance columns get submitted for this workflow

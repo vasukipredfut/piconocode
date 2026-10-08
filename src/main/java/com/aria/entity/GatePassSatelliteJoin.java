@@ -58,6 +58,10 @@ public final class GatePassSatelliteJoin {
             // only ever reachable via workflow_instance.submitted_data_json or a direct
             // read of the satellite table itself, never through a plain GatePass read.
             " LEFT JOIN qc_final_outbound_detail qfod ON qfod.workflow_instance_id = gp.workflow_instance_id AND qfod.tenant_id = gp.tenant_id" +
+            // aria:qc-officer-final-check / aria:dispatch-officer-verification (V357) -- the Dispatch
+            // Officer page lists the QC officer's uploaded files via the plain GatePass lookup.
+            " LEFT JOIN qc_officer_final_check_detail qofc ON qofc.workflow_instance_id = gp.workflow_instance_id AND qofc.tenant_id = gp.tenant_id" +
+            " LEFT JOIN dispatch_officer_verification_detail dov ON dov.workflow_instance_id = gp.workflow_instance_id AND dov.tenant_id = gp.tenant_id" +
             // Vehicle Category master (V39/V299) — gate_pass.vehicle_category
             // stores the master's `code` (e.g. "TANKER"), not its id, same
             // lookup-by-code convention as loading_type. Joined so a plain
@@ -97,7 +101,7 @@ public final class GatePassSatelliteJoin {
             // workflow_definition transitions); the later step is the more final assignment,
             // so it wins when both are set.
             "COALESCE(ladeemp.employeename, qpdemp.employeename) AS loading_supervisor_name, " +
-            "gpw.w1_weight_kg, gpw.w2_weight_kg, gpw.w3_weight_kg, gpw.weight_officer, gpw.weight_entry_at, " +
+            "gpw.w1_weight_kg, gpw.w2_weight_kg, gpw.w3_weight_kg, gpw.weight_officer, gpw.weight_officer_contact, gpw.weight_entry_at, " +
             "spd.sealing_no, spd.sealing_supervisor, spd.seal_lock_status, spd.sealing_status, spd.sealing_started_at, spd.sealing_finished_at, " +
             // expected_weight_kg/loaded_weight_kg/pmt_variance_pct/pmt_within_tolerance
             // moved off pwd (pmt_weight_diff_detail) onto mqad (manager_qty_approval_detail)
@@ -109,7 +113,7 @@ public final class GatePassSatelliteJoin {
             // here before (see QUEUE_REASON_SELECT above); a plain GatePass-by-gp_number
             // read now also surfaces the actual approve/reject/skip decision and reason,
             // same treatment mwad already got below.
-            "mqad.manager_decision, mqad.manager_qty_reason, " +
+            "mqad.manager_decision, mqad.manager_qty_reason, mqad.manager_name, mqad.manager_contact, " +
             // unloading_qty (server-computed by DispatchToleranceListener, M10.PackUnload/
             // M10.FGUnloading only) and grn_status (PmtSharedReasonListener, same two
             // workflows' aria:manager-qty-approval submission) were saving to
@@ -126,8 +130,8 @@ public final class GatePassSatelliteJoin {
             "dvd.invoice_return_count, dvd.box_weight_kg, dvd.vendor_location, " +
             "lpd.route_id, " +
             "gpc.seal_verified, gpc.invoice_count_verified, gpc.qc_clearance, gpc.weighment_verified, " +
-            "gpc.order_recon_done, gpc.within_tolerance, gpc.closure_note, gpc.closed_at AS closure_closed_at, " +
-            "be.invoice_numbers, be.invoice_number_count, be.checking_officer, " +
+            "gpc.order_recon_done, gpc.within_tolerance, gpc.closure_note, gpc.new_seal_no, gpc.closed_at AS closure_closed_at, " +
+            "be.invoice_numbers, be.invoice_number_count, be.checking_officer, be.billing_documents, " +
             "CASE WHEN be.invoice_numbers IS NULL OR be.invoice_numbers = '[]' THEN NULL " +
             "ELSE REPLACE(REPLACE(REPLACE(be.invoice_numbers, '\",\"', ', '), '[\"', ''), '\"]', '') END AS invoice_no, " +
             "qua.item_category, qua.sample_jar_id, qua.qc_officer_id, " +
@@ -153,5 +157,6 @@ public final class GatePassSatelliteJoin {
             // a different QC step) since both satellites use the same bare column names.
             "qfod.qc_notes AS qc_final_outbound_notes, qfod.status AS qc_final_outbound_status, " +
             "qfod.qc_sample_test, " +
+            "qofc.qc_final_files, qofc.qc_final_remarks, dov.dispatch_verify_remarks, " +
             "mvc.image_url AS vehicle_category_image_url";
 }

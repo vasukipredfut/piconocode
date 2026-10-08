@@ -338,6 +338,21 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
                     }
                     continue;
                 }
+                // billing_documents on billing_entry (V356): several uploaded files per
+                // billing capture. Unlike the attachment columns above (which flatten each
+                // file object to its Map.toString()), the file objects are kept as real
+                // JSON objects here -- [{"url":..,"doc_no":..,"sha256":..,"size_kb":..}, ...].
+                // qc_final_files on qc_officer_final_check_detail (V357) takes the same path.
+                if (("billing_entry".equals(table) && "billing_documents".equals(e.getKey()))
+                        || ("qc_officer_final_check_detail".equals(table) && "qc_final_files".equals(e.getKey()))) {
+                    Object raw = pluckRaw(bag, (List<String>) e.getValue());
+                    if (raw instanceof List<?> l && !l.isEmpty()) {
+                        cols.put(ident(e.getKey()), MAPPER.writeValueAsString(l));
+                    } else if (raw != null && !raw.toString().isBlank()) {
+                        cols.put(ident(e.getKey()), MAPPER.writeValueAsString(List.of(raw)));
+                    }
+                    continue;
+                }
                 // qc_sample_test on qc_final_outbound_detail (V250): same
                 // repeater/array shape as po_attachment above -- a sample
                 // sign-off can carry more than one attached file.
@@ -490,6 +505,20 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
         }
         return List.of();
     }
+
+    /** First non-null value for any of {@code keys}, top level of the bag first, then inside each page's own map -- values returned as-is (no stringifying). */
+    @SuppressWarnings("unchecked")
+    private Object pluckRaw(Map<String, Object> bag, List<String> keys) {
+        if (bag == null) return null;
+        for (String k : keys) if (bag.get(k) != null) return bag.get(k);
+        for (Object v : bag.values()) {
+            if (v instanceof Map<?, ?> m) {
+                for (String k : keys) if (((Map<String, Object>) m).get(k) != null) return ((Map<String, Object>) m).get(k);
+            }
+        }
+        return null;
+    }
+
 
     private List<String> listOf(Object v) {
         if (v == null) return null;

@@ -66,6 +66,12 @@ public class ManagerQtyApprovalDecisionListener implements WorkflowTransitionLis
             putIfPresent(cols, "manager_qty_reason", page, "variance_reason");
             putIfPresent(cols, "manager_decision", page, "status");
             putIfPresent(cols, "grn_status", page, "grn_status");
+            // manager_name (V358): the approving manager's name, sent by the UI.
+            String managerName = firstNonBlank(str(page, "manager_name"), str(page, "managerName"));
+            if (managerName != null) cols.put("manager_name", managerName);
+            String managerContact = firstNonBlank(str(page, "manager_contact"), str(page, "managerContact"),
+                    str(page, "manager_contact_no"), str(page, "managerContactNo"));
+            if (managerContact != null) cols.put("manager_contact", managerContact);
             putIfPresent(cols, "time_taken", page, "time_taken");
             // queue_reason (V290): every other workflow's own manager-qty-
             // approval capture (PmtSharedReasonListener) has always saved this;
