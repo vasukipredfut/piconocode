@@ -28,9 +28,10 @@ import java.util.Map;
  * Separate from {@link M10UnloadBayCompleteActionHandler} (FG/PackLoading's Stop Bay),
  * which is deliberately left alone.
  *
- * <p>No Start/Stop: {@code TankerOutboundUnloadSeedListener} opens one
- * {@code unloading_progress_detail_bay} row (IN_PROGRESS) per loaded tank row when the
- * vehicle enters UNLOADING_WEIGHMENT. This handler closes them, tank by tank:
+ * <p>No Start/Stop: on the first Save for a SKU this handler itself opens one
+ * {@code unloading_progress_detail_bay} row (IN_PROGRESS) per loaded tank row of that SKU
+ * (the {@code loading_progress_detail_bay} rows still DONE, flagged UNLOAD_IN_PROGRESS),
+ * then closes them, tank by tank:
  * <ul>
  *   <li>the SKU's {@code unloading_qty} is divided across its open tank rows in
  *       proportion to what each tank actually gave (net of anything already returned);
@@ -42,7 +43,7 @@ import java.util.Map;
  *   <li>when a tank has taken back everything it gave -- or the line carries
  *       {@code "final": true}, for a weighbridge reading a little under the loaded figure --
  *       its unload row closes (DONE) and its {@code loading_progress_detail_bay} row is
- *       set REVERSED so TankerOutboundReloadReseedListener can reload it. A smaller
+ *       set REVERSED. A smaller
  *       unload leaves the tank open for another weighing.</li>
  * </ul>
  * Once every loading row of the instance is REVERSED the parent {@code loading_progress_detail}
@@ -123,9 +124,18 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
                             + "AND route_id = ? AND ((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'IN_PROGRESS' ORDER BY id",
                     tenantId, instanceId, routeId, orderId, orderId, skuCode);
             if (openRows == null || openRows.isEmpty()) {
+                // First Save for this SKU: open its unload rows from what is loaded.
+                if (seedFromLoadedRows(tenantId, instanceId, routeId, orderId, skuCode) > 0) {
+                    openRows = jdbc.queryForList(
+                            "SELECT id, bay_name, quantity FROM unloading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? "
+                                    + "AND route_id = ? AND ((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'IN_PROGRESS' ORDER BY id",
+                            tenantId, instanceId, routeId, orderId, orderId, skuCode);
+                }
+            }
+            if (openRows == null || openRows.isEmpty()) {
                 markRollbackOnly();
-                return ActionResult.error("no open unload row found for route_id=" + routeId + " order_id=" + orderId + " sku_code=" + skuCode
-                        + " (already unloaded, or the vehicle is not in the unloading step)");
+                return ActionResult.error("nothing loaded to unload for route_id=" + routeId + " order_id=" + orderId + " sku_code=" + skuCode
+                        + " (already unloaded, or this SKU was never loaded)");
             }
             if (onlyTank != null) {
                 final String wanted = onlyTank.trim();
@@ -238,6 +248,62 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
                 .message(closed.size() + " tank(s) unloaded, " + totalReturned + " returned to stock")
                 .data(Map.of("unloaded", closed, "totalReturned", totalReturned))
                 .build();
+    }
+
+    /**
+     * Opens the unload rows for one SKU line: one IN_PROGRESS {@code unloading_progress_detail_bay}
+     * row per loaded ({@code DONE}) {@code loading_progress_detail_bay} row, which is flagged
+     * UNLOAD_IN_PROGRESS. Creates/updates the {@code unloading_progress_detail} parent first.
+     *
+     * @return number of unload rows opened
+     */
+    private int seedFromLoadedRows(long tenantId, Long instanceId, String routeId, String orderId, String skuCode) {
+        List<Map<String, Object>> loaded = jdbc.queryForList(
+                "SELECT sku_desc, bay_name, quantity FROM loading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? "
+                        + "AND route_id = ? AND ((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'DONE' ORDER BY id",
+                tenantId, instanceId, routeId, orderId, orderId, skuCode);
+        if (loaded == null || loaded.isEmpty()) return 0;
+
+        List<Map<String, Object>> parent = jdbc.queryForList(
+                "SELECT vehicle_no, gate_pass_no FROM loading_progress_detail WHERE tenant_id = ? AND workflow_instance_id = ?",
+                tenantId, instanceId);
+        Object vehicleNo = parent.isEmpty() ? null : parent.get(0).get("vehicle_no");
+        Object gatePassNo = parent.isEmpty() ? null : parent.get(0).get("gate_pass_no");
+        String currentStep = jdbc.queryForObject(
+                "SELECT current_state FROM workflow_instance WHERE id = ? AND tenant_id = ?", String.class, instanceId, tenantId);
+
+        BigDecimal totalQty = BigDecimal.ZERO;
+        for (Map<String, Object> r : loaded) totalQty = totalQty.add(asDecimal(r.get("quantity")));
+
+        jdbc.update(
+                "INSERT INTO unloading_progress_detail (tenant_id, workflow_instance_id, flow_variant_code, current_step, vehicle_no, gate_pass_no, total_quantity, processed_quantity, status) "
+                        + "VALUES (?,?,?,?,?,?,?,0,'IN_PROGRESS') "
+                        + "ON DUPLICATE KEY UPDATE "
+                        + "flow_variant_code = COALESCE(unloading_progress_detail.flow_variant_code, VALUES(flow_variant_code)), "
+                        + "current_step = VALUES(current_step), "
+                        + "vehicle_no = COALESCE(VALUES(vehicle_no), vehicle_no), "
+                        + "gate_pass_no = COALESCE(VALUES(gate_pass_no), gate_pass_no), "
+                        + "total_quantity = total_quantity + VALUES(total_quantity)",
+                tenantId, instanceId, "M10.TankerOutbound", currentStep, vehicleNo, gatePassNo, totalQty);
+        Long parentId = jdbc.queryForObject(
+                "SELECT id FROM unloading_progress_detail WHERE tenant_id = ? AND workflow_instance_id = ?",
+                Long.class, tenantId, instanceId);
+
+        for (Map<String, Object> r : loaded) {
+            jdbc.update(
+                    "INSERT INTO unloading_progress_detail_bay "
+                            + "(tenant_id, unloading_progress_detail_id, workflow_instance_id, route_id, order_id, sku_code, sku_desc, bay_name, quantity, status) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
+                    tenantId, parentId, instanceId, routeId, orderId, skuCode, r.get("sku_desc"), r.get("bay_name"), r.get("quantity"));
+        }
+        jdbc.update(
+                "UPDATE loading_progress_detail_bay SET status = 'UNLOAD_IN_PROGRESS' "
+                        + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
+                        + "((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'DONE'",
+                tenantId, instanceId, routeId, orderId, orderId, skuCode);
+        log.info("action.tanker-unload-capture.seeded tenantId={} instanceId={} routeId={} skuCode={} rows={} totalQty={}",
+                tenantId, instanceId, routeId, skuCode, loaded.size(), totalQty);
+        return loaded.size();
     }
 
     /** Per lot: what loading drew from {@code tank} for this SKU, minus what earlier unloads put back. */

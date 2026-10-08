@@ -182,7 +182,27 @@ class TankerUnloadCaptureActionHandlerTest {
     void noOpenUnloadRow_errors() {
         ActionResult r = unload(line(100, "COT-9"));
         assertThat(r.isOk()).isFalse();
-        assertThat(r.getMessage()).contains("no open unload row found");
+        assertThat(r.getMessage()).contains("nothing loaded to unload");
+    }
+
+    @Test
+    void firstSave_opensUnloadRowsFromLoadedRows_thenUnloads() {
+        // no unload row yet -> handler seeds from the loaded (DONE) tank rows, then re-reads them
+        when(jdbc.queryForList(contains("FROM unloading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of())
+                .thenReturn(List.of(row("id", 11L, "bay_name", "COT-9", "quantity", new BigDecimal("2000"))));
+        when(jdbc.queryForList(contains("FROM loading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(row("sku_desc", "Oil", "bay_name", "COT-9", "quantity", new BigDecimal("2000"))));
+        when(jdbc.queryForObject(contains("SELECT id FROM unloading_progress_detail"), eq(Long.class), any(Object[].class))).thenReturn(7L);
+        consumed(Map.of("COT-9", "2000"));
+
+        ActionResult r = unload(line(2000, "COT-9"));
+
+        assertThat(r.isOk()).isTrue();
+        assertThat(updates("INSERT INTO unloading_progress_detail_bay")).hasSize(1);
+        assertThat(updates("SET status = 'UNLOAD_IN_PROGRESS'")).hasSize(1);
+        assertThat(updates("INSERT INTO m5_stock_movement")).hasSize(1);
+        assertThat(updates("SET status = 'REVERSED'")).hasSize(1);
     }
 
     @Test
