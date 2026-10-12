@@ -235,7 +235,7 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
                 + "WHERE tenant_id = ? AND workflow_instance_id = ?", totalReturned, currentStep, tenantId, instanceId);
 
         Integer stillActive = jdbc.queryForObject(
-                "SELECT COUNT(*) FROM loading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? AND status NOT IN ('REVERSED')",
+                "SELECT COUNT(*) FROM loading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? AND status NOT IN ('REVERSED','REJECTED')",
                 Integer.class, tenantId, instanceId);
         if (stillActive != null && stillActive == 0) {
             jdbc.update("UPDATE loading_progress_detail SET status = 'REVERSED' WHERE tenant_id = ? AND workflow_instance_id = ?",
