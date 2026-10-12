@@ -14,6 +14,7 @@ import org.springframework.transaction.interceptor.TransactionAspectSupport;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -51,6 +52,13 @@ import java.util.Map;
  * tank_location column, same precedent as {@code M10StartBayActionHandler}'s
  * M10.TankerOutbound handling), not from this action's payload — one source
  * of truth, can't drift from what QC actually picked.
+ *
+ * <p><b>Multiple tank locations per product:</b> when QC Approval split a SKU across several
+ * tanks it has one open row per tank. A line WITHOUT {@code tank_location} (SKU-wise) carries
+ * the SKU's total weight, divided across those tanks in proportion to each row's planned
+ * quantity; a line WITH {@code tank_location} (or {@code bay_name}) (location-wise) receipts
+ * just that tank and leaves the others open for a later weighing. Each tank's share is posted
+ * to that tank's own bin.
  *
  * <p>Payload shape:
  * <pre>
@@ -118,55 +126,80 @@ public class M10TankerUnloadReceiptActionHandler implements ActionHandler {
                 return ActionResult.error("unload_receipt_items[" + i + "] (" + skuCode + ") needs weight >= 0");
             }
 
-            List<Map<String, Object>> rows = jdbc.queryForList(
-                    "SELECT id, bay_name FROM unloading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? "
-                            + "AND invoice_no = ? AND ((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND status = 'IN_PROGRESS'",
-                    tenantId, instanceId, invoiceNo, orderId, orderId, skuCode);
+            // order_id is only a narrowing filter: QC Approval stores whatever order_id the invoice line
+            // carried, so a receipt that omits it must still find the row (invoice_no + sku_code identify it).
+            List<Map<String, Object>> rows = orderId == null
+                    ? jdbc.queryForList(
+                            "SELECT id, bay_name, quantity FROM unloading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? "
+                                    + "AND invoice_no = ? AND sku_code = ? AND status = 'IN_PROGRESS' ORDER BY id",
+                            tenantId, instanceId, invoiceNo, skuCode)
+                    : jdbc.queryForList(
+                            "SELECT id, bay_name, quantity FROM unloading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? "
+                                    + "AND invoice_no = ? AND order_id = ? AND sku_code = ? AND status = 'IN_PROGRESS' ORDER BY id",
+                            tenantId, instanceId, invoiceNo, orderId, skuCode);
             if (rows.isEmpty()) {
                 markRollbackOnly();
                 return ActionResult.error("no open unload row found for invoice_no=" + invoiceNo + " order_id=" + orderId + " sku_code=" + skuCode);
             }
-            String tankLocation = (String) rows.get(0).get("bay_name");
-            if (tankLocation == null || tankLocation.isBlank()) {
-                markRollbackOnly();
-                return ActionResult.error("unload_receipt_items[" + i + "] (" + skuCode + ") has no tank location recorded — pick one on QC Approval before receipting");
-            }
 
-            if (weight.signum() > 0) {
-                String uom = lookupUom(tenantId, skuCode);
-                int updated = jdbc.update(
-                        "UPDATE m5_stock_balance SET qty_on_hand = qty_on_hand + ?, last_movement_at = CURRENT_TIMESTAMP "
-                                + "WHERE tenant_id = ? AND item_code = ? AND lot_no IS NULL AND bin_code = ?",
-                        weight, tenantId, skuCode, tankLocation);
-                if (updated == 0) {
-                    jdbc.update(
-                            "INSERT INTO m5_stock_balance (tenant_id, item_code, lot_no, bin_code, uom, qty_on_hand, last_movement_at) "
-                                    + "VALUES (?,?,NULL,?,?,?,CURRENT_TIMESTAMP)",
-                            tenantId, skuCode, tankLocation, uom, weight);
+            // Location-wise: a line naming a tank receipts just that tank's row, the SKU's other
+            // tanks stay open. SKU-wise (no tank): the weight is divided across the SKU's open
+            // tank rows in proportion to each row's planned (QC-approved) quantity.
+            String onlyTank = str(line, "tank_location") != null ? str(line, "tank_location") : str(line, "bay_name");
+            if (onlyTank != null) {
+                final String wanted = onlyTank.trim();
+                rows = rows.stream().filter(r -> wanted.equals(r.get("bay_name"))).toList();
+                if (rows.isEmpty()) {
+                    markRollbackOnly();
+                    return ActionResult.error("unload_receipt_items[" + i + "] (" + skuCode + ") has no open unload row for tank " + wanted
+                            + " (already receipted, or not allocated to that tank)");
                 }
-                jdbc.update(
-                        "INSERT INTO m5_stock_movement (tenant_id, kind, item_code, to_bin, qty, uom, "
-                                + "ref_type, ref_id, ref_number) VALUES (?,?,?,?,?,?,?,?,?)",
-                        tenantId, "RECEIPT", skuCode, tankLocation, weight, uom, "TANKER_UNLOAD", instanceId, invoiceNo);
-                log.info("action.tanker-unload-receipt.stock-receipt tenantId={} instanceId={} invoiceNo={} skuCode={} tankLocation={} qty={}",
-                        tenantId, instanceId, invoiceNo, skuCode, tankLocation, weight);
             }
 
-            int n = jdbc.update(
-                    "UPDATE unloading_progress_detail_bay SET processed_quantity = ?, status = 'DONE' WHERE id = ?",
-                    weight, rows.get(0).get("id"));
-            if (n == 0) {
-                markRollbackOnly();
-                return ActionResult.error("unloading_progress_detail_bay row changed concurrently for invoice_no=" + invoiceNo + " sku_code=" + skuCode + " — retry");
-            }
+            String uom = null;
+            for (TankShare share : splitByAllocation(rows, weight)) {
+                String tankLocation = share.tank();
+                if (tankLocation == null || tankLocation.isBlank()) {
+                    markRollbackOnly();
+                    return ActionResult.error("unload_receipt_items[" + i + "] (" + skuCode + ") has no tank location recorded — pick one on QC Approval before receipting");
+                }
 
+                if (share.qty().signum() > 0) {
+                    if (uom == null) uom = lookupUom(tenantId, skuCode);
+                    int updated = jdbc.update(
+                            "UPDATE m5_stock_balance SET qty_on_hand = qty_on_hand + ?, last_movement_at = CURRENT_TIMESTAMP "
+                                    + "WHERE tenant_id = ? AND item_code = ? AND lot_no IS NULL AND bin_code = ?",
+                            share.qty(), tenantId, skuCode, tankLocation);
+                    if (updated == 0) {
+                        jdbc.update(
+                                "INSERT INTO m5_stock_balance (tenant_id, item_code, lot_no, bin_code, uom, qty_on_hand, last_movement_at) "
+                                        + "VALUES (?,?,NULL,?,?,?,CURRENT_TIMESTAMP)",
+                                tenantId, skuCode, tankLocation, uom, share.qty());
+                    }
+                    jdbc.update(
+                            "INSERT INTO m5_stock_movement (tenant_id, kind, item_code, to_bin, qty, uom, "
+                                    + "ref_type, ref_id, ref_number) VALUES (?,?,?,?,?,?,?,?,?)",
+                            tenantId, "RECEIPT", skuCode, tankLocation, share.qty(), uom, "TANKER_UNLOAD", instanceId, invoiceNo);
+                    log.info("action.tanker-unload-receipt.stock-receipt tenantId={} instanceId={} invoiceNo={} skuCode={} tankLocation={} qty={}",
+                            tenantId, instanceId, invoiceNo, skuCode, tankLocation, share.qty());
+                }
+
+                int n = jdbc.update(
+                        "UPDATE unloading_progress_detail_bay SET processed_quantity = ?, status = 'DONE' WHERE id = ?",
+                        share.qty(), share.rowId());
+                if (n == 0) {
+                    markRollbackOnly();
+                    return ActionResult.error("unloading_progress_detail_bay row changed concurrently for invoice_no=" + invoiceNo + " sku_code=" + skuCode + " — retry");
+                }
+
+                Map<String, Object> row = new HashMap<>();
+                row.put("invoiceNo", invoiceNo);
+                row.put("skuCode", skuCode);
+                row.put("tankLocation", tankLocation);
+                row.put("weight", share.qty());
+                closed.add(row);
+            }
             totalReceived = totalReceived.add(weight);
-            Map<String, Object> row = new HashMap<>();
-            row.put("invoiceNo", invoiceNo);
-            row.put("skuCode", skuCode);
-            row.put("tankLocation", tankLocation);
-            row.put("weight", weight);
-            closed.add(row);
         }
 
         jdbc.update(
@@ -193,6 +226,46 @@ public class M10TankerUnloadReceiptActionHandler implements ActionHandler {
                 .message(closed.size() + " unload receipt line(s) closed, received " + totalReceived + " total into stock")
                 .data(Map.of("closed", closed, "totalReceived", totalReceived))
                 .build();
+    }
+
+    /** One tank's portion of a receipted line; rowId is the unloading_progress_detail_bay row it closes. */
+    private record TankShare(Object rowId, String tank, BigDecimal qty) {}
+
+    /**
+     * Divides the weighed qty across the SKU's open tank rows in proportion to each row's
+     * planned {@code quantity}; a single row takes everything. If every planned quantity is
+     * zero/missing the split is equal. Shares are rounded to 3 dp, the LAST row takes the
+     * remainder so they always sum exactly to the weight.
+     */
+    private static List<TankShare> splitByAllocation(List<Map<String, Object>> rows, BigDecimal weight) {
+        List<TankShare> out = new ArrayList<>();
+        if (rows.size() == 1) {
+            Map<String, Object> only = rows.get(0);
+            out.add(new TankShare(only.get("id"), (String) only.get("bay_name"), weight));
+            return out;
+        }
+        BigDecimal total = BigDecimal.ZERO;
+        for (Map<String, Object> r : rows) total = total.add(asDecimal(r.get("quantity")));
+        BigDecimal assigned = BigDecimal.ZERO;
+        for (int k = 0; k < rows.size(); k++) {
+            Map<String, Object> r = rows.get(k);
+            BigDecimal share;
+            if (k == rows.size() - 1) {
+                share = weight.subtract(assigned);
+            } else if (total.signum() > 0) {
+                share = weight.multiply(asDecimal(r.get("quantity"))).divide(total, 3, RoundingMode.HALF_UP);
+            } else {
+                share = weight.divide(BigDecimal.valueOf(rows.size()), 3, RoundingMode.HALF_UP);
+            }
+            assigned = assigned.add(share);
+            out.add(new TankShare(r.get("id"), (String) r.get("bay_name"), share));
+        }
+        return out;
+    }
+
+    private static BigDecimal asDecimal(Object v) {
+        if (v == null) return BigDecimal.ZERO;
+        try { return new BigDecimal(v.toString()); } catch (NumberFormatException e) { return BigDecimal.ZERO; }
     }
 
     private String lookupUom(long tenantId, String skuCode) {

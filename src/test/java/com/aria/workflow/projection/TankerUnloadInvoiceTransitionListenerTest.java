@@ -58,7 +58,7 @@ class TankerUnloadInvoiceTransitionListenerTest {
 
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
                 eq(1L), eq(777L), eq(1495L), eq("INV1"), isNull(), isNull(), isNull(),
-                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("20")));
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("20")), isNull(), isNull());
     }
 
     @Test
@@ -75,10 +75,10 @@ class TankerUnloadInvoiceTransitionListenerTest {
 
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
                 eq(1L), eq(777L), eq(1495L), eq("INV1"), isNull(), isNull(), isNull(),
-                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("60")));
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("60")), isNull(), isNull());
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
                 eq(1L), eq(777L), eq(1495L), eq("INV1"), isNull(), isNull(), isNull(),
-                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-2"), eq(new BigDecimal("40")));
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-2"), eq(new BigDecimal("40")), isNull(), isNull());
         // total_quantity on the parent row must reflect the sum of allocations (100), not double it.
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail"),
                 eq(1L), eq(1495L), any(), any(), eq(new BigDecimal("100")));
@@ -95,7 +95,27 @@ class TankerUnloadInvoiceTransitionListenerTest {
 
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
                 eq(1L), eq(777L), eq(1495L), eq("INV1"), isNull(), isNull(), isNull(),
-                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("20")));
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("20")), isNull(), isNull());
+    }
+
+    @Test
+    void diffAndReason_savedOnEveryTankRowOfTheLine() {
+        WorkflowInstance inst = instance("M10.TankerInbound", "QC_APPROVED");
+        Map<String, Object> line = baseLine("SKU1", "100");
+        line.put("diff_box", "5");
+        line.put("diff_reason", "Short supply");
+        line.put("tank_allocations", List.of(
+                Map.of("tank_location", "ROT-1", "qty", "60"),
+                Map.of("tank_location", "ROT-2", "qty", "40")));
+
+        listener.onTransition(inst, "DISPATCH_QUEUED", bag(line));
+
+        verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
+                eq(1L), eq(777L), eq(1495L), eq("INV1"), isNull(), isNull(), isNull(),
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("60")), eq(new BigDecimal("5")), eq("Short supply"));
+        verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
+                eq(1L), eq(777L), eq(1495L), eq("INV1"), isNull(), isNull(), isNull(),
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-2"), eq(new BigDecimal("40")), eq(new BigDecimal("5")), eq("Short supply"));
     }
 
     private static WorkflowInstance instance(String workflowCode, String currentState) {

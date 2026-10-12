@@ -179,6 +179,72 @@ class M10TankerUnloadReceiptActionHandlerTest {
                 eq(1L), eq(1495L));
     }
 
+    private static Map<String, Object> tankRow(long id, String tank, String qty) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", id);
+        row.put("bay_name", tank);
+        row.put("quantity", new BigDecimal(qty));
+        return row;
+    }
+
+    @Test
+    void skuWise_weightSplitAcrossTanksByPlannedQty_eachTankBinReceipts() {
+        when(jdbc.queryForList(contains("unloading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(tankRow(10L, "ROT-1", "1000"), tankRow(11L, "ROT-2", "800")));
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(line("INV-1001", "SKU1215", 1800))));
+
+        assertThat(r.isOk()).isTrue();
+        assertThat(r.getData()).containsEntry("totalReceived", new BigDecimal("1800"));
+        verify(jdbc).update(
+                eq("INSERT INTO m5_stock_movement (tenant_id, kind, item_code, to_bin, qty, uom, "
+                        + "ref_type, ref_id, ref_number) VALUES (?,?,?,?,?,?,?,?,?)"),
+                eq(1L), eq("RECEIPT"), eq("SKU1215"), eq("ROT-1"), argThat((BigDecimal b) -> b.compareTo(new BigDecimal("1000")) == 0),
+                eq("KG"), eq("TANKER_UNLOAD"), eq(1495L), eq("INV-1001"));
+        verify(jdbc).update(
+                eq("INSERT INTO m5_stock_movement (tenant_id, kind, item_code, to_bin, qty, uom, "
+                        + "ref_type, ref_id, ref_number) VALUES (?,?,?,?,?,?,?,?,?)"),
+                eq(1L), eq("RECEIPT"), eq("SKU1215"), eq("ROT-2"), argThat((BigDecimal b) -> b.compareTo(new BigDecimal("800")) == 0),
+                eq("KG"), eq("TANKER_UNLOAD"), eq(1495L), eq("INV-1001"));
+        verify(jdbc).update(eq("UPDATE unloading_progress_detail_bay SET processed_quantity = ?, status = 'DONE' WHERE id = ?"),
+                argThat((BigDecimal b) -> b.compareTo(new BigDecimal("1000")) == 0), eq(10L));
+        verify(jdbc).update(eq("UPDATE unloading_progress_detail_bay SET processed_quantity = ?, status = 'DONE' WHERE id = ?"),
+                argThat((BigDecimal b) -> b.compareTo(new BigDecimal("800")) == 0), eq(11L));
+    }
+
+    @Test
+    void locationWise_onlyThatTankReceipts_otherStaysOpen() {
+        when(jdbc.queryForList(contains("unloading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(tankRow(10L, "ROT-1", "1000"), tankRow(11L, "ROT-2", "800")));
+        Map<String, Object> l = line("INV-1001", "SKU1215", 750);
+        l.put("tank_location", "ROT-2");
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(l)));
+
+        assertThat(r.isOk()).isTrue();
+        verify(jdbc).update(
+                eq("INSERT INTO m5_stock_movement (tenant_id, kind, item_code, to_bin, qty, uom, "
+                        + "ref_type, ref_id, ref_number) VALUES (?,?,?,?,?,?,?,?,?)"),
+                eq(1L), eq("RECEIPT"), eq("SKU1215"), eq("ROT-2"), eq(new BigDecimal("750")), eq("KG"), eq("TANKER_UNLOAD"), eq(1495L), eq("INV-1001"));
+        verify(jdbc, never()).update(eq("UPDATE unloading_progress_detail_bay SET processed_quantity = ?, status = 'DONE' WHERE id = ?"),
+                any(), eq(10L));
+        verify(jdbc).update(eq("UPDATE unloading_progress_detail_bay SET processed_quantity = ?, status = 'DONE' WHERE id = ?"),
+                eq(new BigDecimal("750")), eq(11L));
+    }
+
+    @Test
+    void locationWise_unknownTank_errors() {
+        when(jdbc.queryForList(contains("unloading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(tankRow(10L, "ROT-1", "1000")));
+        Map<String, Object> l = line("INV-1001", "SKU1215", 100);
+        l.put("tank_location", "ROT-9");
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(l)));
+
+        assertThat(r.isOk()).isFalse();
+        assertThat(r.getMessage()).contains("no open unload row for tank ROT-9");
+    }
+
     private ActionInvocation invocationWithLines(List<Map<String, Object>> lines) {
         return ActionInvocation.builder()
                 .instanceId(1495L)

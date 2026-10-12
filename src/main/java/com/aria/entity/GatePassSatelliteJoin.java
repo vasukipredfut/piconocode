@@ -125,7 +125,7 @@ public final class GatePassSatelliteJoin {
             // JDBC keeps last, clobbering one with the other.
             "mqad.unloading_qty, mqad.grn_status AS manager_qty_grn_status, " +
             "pcvd.camera_photo, pcvd.issue_identified, pcvd.camera_variance_reason, " +
-            "dvd.broker_name, dvd.broker_number, dvd.invoice_qty, dvd.oil_rm_item, dvd.transport_name, " +
+            "dvd.broker_name, dvd.broker_number, dvd.invoice_qty, dvd.oil_rm_item, dvd.transport_name, dvd.tanker_name, " +
             "dvd.po_numbers, dvd.po_attachment, dvd.party_name, " +
             "dvd.invoice_return_count, dvd.box_weight_kg, dvd.vendor_location, " +
             "lpd.route_id, " +

@@ -118,6 +118,9 @@ public class TankerUnloadInvoiceTransitionListener implements WorkflowTransition
             Object rdCode = str(line, "rd_code", "rdCode");
             Object skuCode = str(line, "sku_code", "skuCode");
             Object skuName = str(line, "sku_name", "skuName");
+            // Per-line Diff / Diff Reason (V361): same value on every tank row the line splits into.
+            BigDecimal diffQty = numOrNull(line, "diff_box", "diff_qty");
+            String diffReason = str(line, "diff_reason", "diffReason");
 
             // Multiple tank locations for one product: a nested allocations
             // array overrides the line's own single tank_location/qty, one
@@ -130,7 +133,7 @@ public class TankerUnloadInvoiceTransitionListener implements WorkflowTransition
                     BigDecimal allocQty = num(alloc, "qty");
                     rows.add(new Object[]{
                             invoiceNo, orderId, vendorName, rdCode, skuCode, skuName,
-                            str(alloc, "tank_location", "tankLocation"), allocQty
+                            str(alloc, "tank_location", "tankLocation"), allocQty, diffQty, diffReason
                     });
                     totalQty = totalQty.add(allocQty);
                 }
@@ -138,7 +141,7 @@ public class TankerUnloadInvoiceTransitionListener implements WorkflowTransition
                 BigDecimal qty = num(line, "qty");
                 rows.add(new Object[]{
                         invoiceNo, orderId, vendorName, rdCode, skuCode, skuName,
-                        str(line, "tank_location", "tankLocation"), qty
+                        str(line, "tank_location", "tankLocation"), qty, diffQty, diffReason
                 });
                 totalQty = totalQty.add(qty);
             }
@@ -156,9 +159,9 @@ public class TankerUnloadInvoiceTransitionListener implements WorkflowTransition
             try {
                 jdbc.update(
                         "INSERT INTO unloading_progress_detail_bay (tenant_id, unloading_progress_detail_id, workflow_instance_id, "
-                                + "invoice_no, order_id, vendor_name, rd_code, sku_code, sku_desc, bay_name, quantity, status) "
-                                + "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
-                        tenantId, parentId, instanceId, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
+                                + "invoice_no, order_id, vendor_name, rd_code, sku_code, sku_desc, bay_name, quantity, status, diff_qty, diff_reason) "
+                                + "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'IN_PROGRESS', ?, ?)",
+                        tenantId, parentId, instanceId, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9]);
                 written++;
             } catch (Exception e) {
                 log.warn("unloading_progress_detail_bay insert failed for instance {} invoice_no={}: {}", instanceId, r[0], e.getMessage());
@@ -173,6 +176,21 @@ public class TankerUnloadInvoiceTransitionListener implements WorkflowTransition
         for (String k : keys) {
             Object v = m.get(k);
             if (v != null && !String.valueOf(v).isBlank()) return String.valueOf(v);
+        }
+        return null;
+    }
+
+    /** First present key parsed as a number, or null when absent/blank/non-numeric. */
+    private static BigDecimal numOrNull(Map<String, Object> m, String... keys) {
+        for (String k : keys) {
+            Object v = m.get(k);
+            if (v == null || String.valueOf(v).isBlank()) continue;
+            if (v instanceof BigDecimal bd) return bd;
+            try {
+                return new BigDecimal(String.valueOf(v).trim());
+            } catch (NumberFormatException e) {
+                return null;
+            }
         }
         return null;
     }
