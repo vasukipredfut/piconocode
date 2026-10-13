@@ -168,6 +168,9 @@ public class OrderDispatchDetailImportController {
         int imported = 0;
         int replaced = 0;
         List<Map<String, Object>> perFile = new ArrayList<>();
+        // SKUs on the sheet that are not in m5_sku_master: the row is still saved, the user is told.
+        Map<String, Boolean> skuKnown = new HashMap<>();
+        Map<String, Map<String, Object>> missingSkus = new LinkedHashMap<>();
 
         for (MultipartFile file : files) {
             if (file == null || file.isEmpty()) continue;
@@ -233,6 +236,7 @@ public class OrderDispatchDetailImportController {
                         }
                     }
                     insertRow(tenantId, r, sourceFile);
+                    noteMissingSku(tenantId, r, skuKnown, missingSkus);
                     imported++;
                     fileImported++;
                 } catch (Exception rowEx) {
@@ -252,7 +256,45 @@ public class OrderDispatchDetailImportController {
         body.put("rowsFailed", errors.size());
         body.put("errors", errors);
         body.put("perFile", perFile);
+        body.put("missingSkus", new ArrayList<>(missingSkus.values()));
+        if (!missingSkus.isEmpty()) {
+            String codes = String.join(", ", missingSkus.keySet());
+            body.put("warnings", List.of("SKU not found in SKU master: " + codes));
+            body.put("message", imported + " row(s) imported, but " + missingSkus.size()
+                    + " SKU code(s) are not in SKU master: " + codes
+                    + ". The rows were saved anyway - please add these SKUs to SKU master.");
+        }
         return ResponseEntity.ok(body);
+    }
+
+    /**
+     * Records an imported row's SKU when it is missing from {@code m5_sku_master} (or the row has no SKU code at all).
+     * Never blocks the import -- the row is already inserted; this only feeds the warning in the response.
+     * One master lookup per distinct SKU code per request.
+     */
+    private void noteMissingSku(Long tenantId, List<String> r, Map<String, Boolean> known,
+                                Map<String, Map<String, Object>> missing) {
+        try {
+            String sku = str(r, 14);
+            boolean exists = sku != null && known.computeIfAbsent(sku, code -> {
+                Integer n = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM m5_sku_master WHERE tenant_id = ? AND sku_code = ?",
+                        Integer.class, tenantId, code);
+                return n != null && n > 0;
+            });
+            if (exists) return;
+            String key = sku == null ? "(blank)" : sku;
+            Map<String, Object> m = missing.computeIfAbsent(key, k -> {
+                Map<String, Object> e = new LinkedHashMap<>();
+                e.put("sku_code", sku);
+                e.put("sku_desc", str(r, 15));
+                e.put("rows", 0);
+                return e;
+            });
+            m.put("rows", (Integer) m.get("rows") + 1);
+        } catch (Exception ignored) {
+            // a failed lookup must never fail the import
+        }
     }
 
     private static Map<String, Object> fileResult(String fileName, int imported, int replaced, List<String> errors) {

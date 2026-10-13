@@ -65,6 +65,58 @@ class QcPreloadTankAllocationListenerTest {
     }
 
     @Test
+    void reloadTopUp_inProgressLineNotDuplicated_newLineSeeded() {
+        // SKU-OLD already has an IN_PROGRESS bay row on this tank (e.g. a re-delivered event); SKU-NEW has none.
+        when(jdbc.queryForObject(contains("loading_progress_detail_bay"), eq(Integer.class), any(Object[].class)))
+                .thenAnswer(inv -> {
+                    Object[] a = inv.getArguments();
+                    return java.util.Arrays.asList(a).contains("SKU-OLD") ? 1 : 0;
+                });
+        WorkflowInstance inst = instance("M10.TankerOutbound", "QC_PRELOAD_APPROVED");
+
+        listener.onTransition(inst, "DISPATCH_LOADING_PLANNING",
+                bagWith(List.of(line("SKU-OLD", "ROT-1", "50"), line("SKU-NEW", "ROT-2", "30"))));
+
+        verify(jdbc, never()).update(contains("INSERT INTO loading_progress_detail_bay"),
+                eq(1L), eq(777L), eq(1495L), eq("ROU1"), eq("ORD1"), eq("SKU-OLD"), any(), any(), any(), any(), any());
+        verify(jdbc).update(contains("INSERT INTO loading_progress_detail_bay"),
+                eq(1L), eq(777L), eq(1495L), eq("ROU1"), eq("ORD1"), eq("SKU-NEW"), eq("SKU-NEW Desc"),
+                eq("ROT-2"), eq(new BigDecimal("30")), isNull(), isNull());
+        // parent total grows by the NEW lines only (30), not by the already-seeded 50.
+        verify(jdbc).update(contains("INSERT INTO loading_progress_detail"),
+                eq(1L), eq(1495L), any(), any(), any(), any(), eq(new BigDecimal("30")));
+    }
+
+    @Test
+    void doneRowsDoNotBlock_aTopUpOnTheSameLineAndTankIsSeeded() {
+        WorkflowInstance inst = instance("M10.TankerOutbound", "QC_PRELOAD_APPROVED");
+        listener.onTransition(inst, "DISPATCH_LOADING_PLANNING", bagWith(List.of(line("SKU1", "ROT-1", "20"))));
+
+        // only an IN_PROGRESS row blocks; DONE (loaded earlier) / REVERSED / REJECTED rows never do, so a
+        // reload can top up the same order line (and tank) for what is still short
+        verify(jdbc).queryForObject(argThat((String s) -> s.contains("AND status = 'IN_PROGRESS'")
+                        && !s.contains("'DONE'") && !s.contains("REVERSED") && !s.contains("REJECTED")),
+                eq(Integer.class), any(Object[].class));
+        verify(jdbc).update(contains("INSERT INTO loading_progress_detail_bay"), any(Object[].class));
+    }
+
+    @Test
+    void reloadSkippingFirstWeighment_seedsWhenQcPreloadGoesStraightToLoadingCompleted() {
+        WorkflowInstance inst = instance("M10.TankerOutbound", "LOADING_COMPLETED");
+
+        listener.onTransition(inst, "DISPATCH_LOADING_PLANNING", bagWith(List.of(line("SKU1", "ROT-1", "20"))));
+
+        verify(jdbc).update(contains("INSERT INTO loading_progress_detail_bay"), any(Object[].class));
+    }
+
+    @Test
+    void otherTargetStates_doNothing() {
+        WorkflowInstance inst = instance("M10.TankerOutbound", "QC_PRELOAD_REJECTED");
+        listener.onTransition(inst, "DISPATCH_LOADING_PLANNING", bagWith(List.of(line("SKU1", "ROT-1", "20"))));
+        verifyNoInteractions(jdbc);
+    }
+
+    @Test
     void noAllocationsListAtAll_fallsBackToSingleTankLocation() {
         WorkflowInstance inst = instance("M10.TankerOutbound", "QC_PRELOAD_APPROVED");
 

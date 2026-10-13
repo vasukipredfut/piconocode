@@ -103,11 +103,11 @@ class TankerUnloadCaptureActionHandlerTest {
         List<Object[]> moves = updates("INSERT INTO m5_stock_movement");
         assertThat(moves).hasSize(2);
         // sql, tenant, kind, item, lot, to_bin, qty, uom, ref_type, ref_id, ref_number
-        assertThat(moves.get(0)[5]).isEqualTo("TANK-1");
-        assertThat((BigDecimal) moves.get(0)[6]).isEqualByComparingTo("1000");
-        assertThat(moves.get(0)[8]).isEqualTo("TANKER_UNLOAD");
-        assertThat(moves.get(1)[5]).isEqualTo("TANK-2");
-        assertThat((BigDecimal) moves.get(1)[6]).isEqualByComparingTo("800");
+        assertThat(moves.get(0)[6]).isEqualTo("TANK-1");
+        assertThat((BigDecimal) moves.get(0)[7]).isEqualByComparingTo("1000");
+        assertThat(moves.get(0)[9]).isEqualTo("TANKER_UNLOAD");
+        assertThat(moves.get(1)[6]).isEqualTo("TANK-2");
+        assertThat((BigDecimal) moves.get(1)[7]).isEqualByComparingTo("800");
         assertThat(updates("status = 'DONE'")).hasSize(2);
         assertThat(updates("SET status = 'REVERSED'")).hasSize(2);
     }
@@ -123,7 +123,7 @@ class TankerUnloadCaptureActionHandlerTest {
         assertThat(r.isOk()).isTrue();
         List<Object[]> moves = updates("INSERT INTO m5_stock_movement");
         assertThat(moves).hasSize(1);
-        assertThat(moves.get(0)[5]).isEqualTo("TANK-2");
+        assertThat(moves.get(0)[6]).isEqualTo("TANK-2");
         assertThat(updates("SET status = 'REVERSED'")).hasSize(1);
     }
 
@@ -203,6 +203,41 @@ class TankerUnloadCaptureActionHandlerTest {
         assertThat(updates("SET status = 'UNLOAD_IN_PROGRESS'")).hasSize(1);
         assertThat(updates("INSERT INTO m5_stock_movement")).hasSize(1);
         assertThat(updates("SET status = 'REVERSED'")).hasSize(1);
+    }
+
+    @Test
+    void toLocation_putsStockIntoDifferentTank_fromBinStillTheOrigin() {
+        openRows(row("id", 11L, "bay_name", "COT-9", "quantity", new BigDecimal("2000")), null);
+        consumed(Map.of("COT-9", "2000"));
+        when(jdbc.queryForObject(contains("m10_tanker_location"), eq(Integer.class), any(Object[].class))).thenReturn(1);
+        Map<String, Object> l = line(2000, "COT-9");
+        l.put("to_location", "COT-3");
+
+        ActionResult r = unload(l);
+
+        assertThat(r.isOk()).isTrue();
+        List<Object[]> moves = updates("INSERT INTO m5_stock_movement");
+        assertThat(moves).hasSize(1);
+        // sql, tenant, kind, item, lot, from_bin, to_bin, qty, uom, ref_type, ref_id, ref_number
+        assertThat(moves.get(0)[5]).isEqualTo("COT-9");
+        assertThat(moves.get(0)[6]).isEqualTo("COT-3");
+        assertThat(updates("m5_stock_balance").get(0)[6]).isEqualTo("COT-3");
+        assertThat(updates("SET status = 'REVERSED'")).hasSize(1);
+    }
+
+    @Test
+    void toLocation_notAnActiveTank_refusedNothingWritten() {
+        openRows(row("id", 11L, "bay_name", "COT-9", "quantity", new BigDecimal("2000")), null);
+        consumed(Map.of("COT-9", "2000"));
+        when(jdbc.queryForObject(contains("m10_tanker_location"), eq(Integer.class), any(Object[].class))).thenReturn(0);
+        Map<String, Object> l = line(2000, "COT-9");
+        l.put("to_location", "NOPE");
+
+        ActionResult r = unload(l);
+
+        assertThat(r.isOk()).isFalse();
+        assertThat(r.getMessage()).contains("not an active tank location");
+        assertThat(updates("INSERT INTO m5_stock_movement")).isEmpty();
     }
 
     @Test

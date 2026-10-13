@@ -101,6 +101,8 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
             String skuCode = str(line, "sku_code");
             String onlyTank = str(line, "tank_location") != null ? str(line, "tank_location") : str(line, "bay_name");
             boolean forceFinal = Boolean.parseBoolean(String.valueOf(line.get("final")));
+            // Optional: put the unloaded oil into a DIFFERENT tank than it was drawn from.
+            String toLocation = str(line, "to_location") != null ? str(line, "to_location") : str(line, "return_location");
             if (routeId == null || skuCode == null) {
                 markRollbackOnly();
                 return ActionResult.error("tankerUnloadItems[" + i + "] is missing route_id or sku_code");
@@ -117,6 +119,16 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
             if (unloadQty == null || unloadQty.signum() <= 0) {
                 markRollbackOnly();
                 return ActionResult.error("tankerUnloadItems[" + i + "] (" + skuCode + ") needs unloading_qty > 0");
+            }
+            if (toLocation != null) {
+                toLocation = toLocation.trim();
+                Integer known = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM m10_tanker_location WHERE code = ? AND active = 1", Integer.class, toLocation);
+                if (known == null || known == 0) {
+                    markRollbackOnly();
+                    return ActionResult.error("tankerUnloadItems[" + i + "] (" + skuCode + ") to_location '" + toLocation
+                            + "' is not an active tank location");
+                }
             }
 
             List<Map<String, Object>> openRows = jdbc.queryForList(
@@ -191,7 +203,8 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
                 for (LotQty lot : p.lots()) {
                     if (left.signum() <= 0) break;
                     BigDecimal take = lot.qty().compareTo(left) >= 0 ? left : lot.qty();
-                    addStock(tenantId, instanceId, routeId, skuCode, lot.lotNo(), p.tank(), take, lot.uom());
+                    addStock(tenantId, instanceId, routeId, skuCode, lot.lotNo(), p.tank(),
+                            toLocation != null ? toLocation : p.tank(), take, lot.uom());
                     left = left.subtract(take);
                 }
 
@@ -222,6 +235,7 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
                 row.put("orderId", orderId);
                 row.put("skuCode", skuCode);
                 row.put("tank", p.tank());
+                row.put("returnedTo", toLocation != null ? toLocation : p.tank());
                 row.put("unloaded", share);
                 row.put("tankClosed", tankDone);
                 closed.add(row);
@@ -317,8 +331,8 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
         for (Map<String, Object> r : jdbc.queryForList(
                 "SELECT lot_no, SUM(qty) AS qty FROM m5_stock_movement "
                         + "WHERE tenant_id = ? AND kind = 'RETURN' AND ref_type IN ('UNLOAD_BAY','TANKER_UNLOAD') AND ref_id = ? "
-                        + "AND item_code = ? AND to_bin = ? GROUP BY lot_no",
-                tenantId, instanceId, skuCode, tank)) {
+                        + "AND item_code = ? AND (from_bin = ? OR (from_bin IS NULL AND to_bin = ?)) GROUP BY lot_no",
+                tenantId, instanceId, skuCode, tank, tank)) {
             returned.merge(lotKey(r.get("lot_no")), asDecimal(r.get("qty")), BigDecimal::add);
         }
         List<LotQty> out = new ArrayList<>();
@@ -330,19 +344,25 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
         return out;
     }
 
-    private void addStock(long tenantId, Long instanceId, String routeId, String skuCode, String lotNo, String bin, BigDecimal qty, String uom) {
+    /**
+     * Puts {@code qty} into {@code toBin}. {@code fromBin} is the tank the loading drew it from and is always
+     * stamped on the RETURN movement, so what has already been returned per origin tank can be netted off
+     * whether the oil went back to the same tank or into a different one.
+     */
+    private void addStock(long tenantId, Long instanceId, String routeId, String skuCode, String lotNo,
+                          String fromBin, String toBin, BigDecimal qty, String uom) {
         int updated = jdbc.update(
                 "UPDATE m5_stock_balance SET qty_on_hand = qty_on_hand + ?, last_movement_at = CURRENT_TIMESTAMP "
                         + "WHERE tenant_id = ? AND item_code = ? AND ((lot_no IS NULL AND ? IS NULL) OR lot_no = ?) AND bin_code = ?",
-                qty, tenantId, skuCode, lotNo, lotNo, bin);
+                qty, tenantId, skuCode, lotNo, lotNo, toBin);
         if (updated == 0) {
             jdbc.update("INSERT INTO m5_stock_balance (tenant_id, item_code, lot_no, bin_code, uom, qty_on_hand, last_movement_at) "
-                    + "VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)", tenantId, skuCode, lotNo, bin, uom, qty);
+                    + "VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)", tenantId, skuCode, lotNo, toBin, uom, qty);
         }
-        jdbc.update("INSERT INTO m5_stock_movement (tenant_id, kind, item_code, lot_no, to_bin, qty, uom, ref_type, ref_id, ref_number) "
-                + "VALUES (?,?,?,?,?,?,?,?,?,?)", tenantId, "RETURN", skuCode, lotNo, bin, qty, uom, "TANKER_UNLOAD", instanceId, routeId);
-        log.info("action.tanker-unload-capture.stock-return tenantId={} instanceId={} skuCode={} lotNo={} bin={} qty={}",
-                tenantId, instanceId, skuCode, lotNo, bin, qty);
+        jdbc.update("INSERT INTO m5_stock_movement (tenant_id, kind, item_code, lot_no, from_bin, to_bin, qty, uom, ref_type, ref_id, ref_number) "
+                + "VALUES (?,?,?,?,?,?,?,?,?,?,?)", tenantId, "RETURN", skuCode, lotNo, fromBin, toBin, qty, uom, "TANKER_UNLOAD", instanceId, routeId);
+        log.info("action.tanker-unload-capture.stock-return tenantId={} instanceId={} skuCode={} lotNo={} fromBin={} toBin={} qty={}",
+                tenantId, instanceId, skuCode, lotNo, fromBin, toBin, qty);
     }
 
     private record LotQty(String lotNo, BigDecimal qty, String uom) {}

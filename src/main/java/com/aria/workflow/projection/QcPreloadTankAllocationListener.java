@@ -90,7 +90,10 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
     public void onTransition(WorkflowInstance instance, String previousState, Map<String, Object> submittedDataBag) {
         if (!"DISPATCH_LOADING_PLANNING".equals(previousState)) return;
         if (!"M10.TankerOutbound".equals(instance.getWorkflowCode())) return;
-        if (!"QC_PRELOAD_APPROVED".equals(instance.getCurrentState())) return;
+        // QC_PRELOAD_APPROVED normally; LOADING_COMPLETED on a reload, where the first weighment (W1) is
+        // skipped and QC preload approve goes straight to loading (see M10.TankerOutbound's workflow).
+        String toState = instance.getCurrentState();
+        if (!"QC_PRELOAD_APPROVED".equals(toState) && !"LOADING_COMPLETED".equals(toState)) return;
         if (submittedDataBag == null) return;
 
         Long tenantId = TenantContext.get();
@@ -211,12 +214,27 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
                 return;
             }
 
-            // One-time seed — this edge fires once per instance, but guard
-            // anyway rather than risk duplicate bay rows on a re-delivered event.
-            Integer already = jdbc.queryForObject(
-                    "SELECT COUNT(*) FROM loading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ?",
-                    Integer.class, tenantId, instanceId);
-            if (already != null && already > 0) return;
+            // This edge fires again after a manager reject -> reload (planning -> QC preload) -- the vehicle
+            // is NOT unloaded, it is topped up: the same order line can get a further allocation for what is
+            // still short, and an extra order sheet's lines get their own. So rows that are already DONE
+            // (loaded earlier) must not block a new allocation. Only a line + tank that already has an
+            // IN_PROGRESS row is skipped, which is exactly what a re-delivered event of this same
+            // transition would find (its own just-seeded rows).
+            List<LineEntry> fresh = new ArrayList<>();
+            BigDecimal freshQty = BigDecimal.ZERO;
+            for (LineEntry e : parsed) {
+                Integer active = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM loading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? "
+                                + "AND route_id <=> ? AND order_id <=> ? AND sku_code = ? AND bay_name = ? "
+                                + "AND status = 'IN_PROGRESS'",
+                        Integer.class, tenantId, instanceId, e.routeId, e.orderId, e.skuCode, e.tankLocation);
+                if (active != null && active > 0) continue;
+                fresh.add(e);
+                freshQty = freshQty.add(e.quantity());
+            }
+            if (fresh.isEmpty()) return;
+            parsed = fresh;
+            totalQty = freshQty;
 
             String vehicleNo = firstNonBlank(str(page.get("vehicle_no")), str(page.get("vehicleNo")));
             String gatePassNo = firstNonBlank(str(page.get("gpNumber")), str(page.get("gp_number")));

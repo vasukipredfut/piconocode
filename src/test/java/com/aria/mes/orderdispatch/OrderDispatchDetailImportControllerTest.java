@@ -55,6 +55,66 @@ class OrderDispatchDetailImportControllerTest {
     }
 
     @Test
+    void skuMissingFromMaster_rowStillSaved_userGetsWarningMessage() {
+        // csvRow() leaves sku_code (col 14) blank -> "(blank)"; give it a real code via a custom row
+        String[] cols = new String[35];
+        java.util.Arrays.fill(cols, "");
+        cols[14] = "SKU-NOPE";
+        cols[15] = "Unknown oil";
+        cols[24] = "ROU1";
+        cols[26] = "10";
+        cols[28] = "TN01AA1111";
+        MultipartFile f = csvFile("r.csv", String.join(",", cols));
+        when(jdbc.queryForObject(contains("m5_sku_master"), eq(Integer.class), any(Object[].class))).thenReturn(0);
+
+        Map<String, Object> body = (Map<String, Object>) controller.importCsv(new MultipartFile[]{f}).getBody();
+
+        assertThat(body).containsEntry("ok", true).containsEntry("rowsImported", 1).containsEntry("rowsFailed", 0);
+        verify(jdbc, times(1)).update(startsWith("INSERT INTO m5_order_dispatch_detail"), any(Object[].class));
+        assertThat((String) body.get("message")).contains("SKU-NOPE").contains("saved anyway");
+        List<Map<String, Object>> missing = (List<Map<String, Object>>) body.get("missingSkus");
+        assertThat(missing).hasSize(1);
+        assertThat(missing.get(0)).containsEntry("sku_code", "SKU-NOPE").containsEntry("rows", 1);
+    }
+
+    @Test
+    void skuPresentInMaster_noWarning() {
+        String[] cols = new String[35];
+        java.util.Arrays.fill(cols, "");
+        cols[14] = "SKU1";
+        cols[24] = "ROU1";
+        cols[26] = "10";
+        cols[28] = "TN01AA1111";
+        MultipartFile f = csvFile("r.csv", String.join(",", cols));
+        when(jdbc.queryForObject(contains("m5_sku_master"), eq(Integer.class), any(Object[].class))).thenReturn(1);
+
+        Map<String, Object> body = (Map<String, Object>) controller.importCsv(new MultipartFile[]{f}).getBody();
+
+        assertThat(body).containsEntry("rowsImported", 1);
+        assertThat((List<?>) body.get("missingSkus")).isEmpty();
+        assertThat(body).doesNotContainKey("message").doesNotContainKey("warnings");
+    }
+
+    @Test
+    void sameMissingSkuOnManyRows_reportedOnceWithRowCount_oneLookup() {
+        String[] c1 = new String[35];
+        java.util.Arrays.fill(c1, "");
+        c1[14] = "SKU-NOPE"; c1[24] = "ROU1"; c1[26] = "10"; c1[28] = "TN01AA1111";
+        String[] c2 = c1.clone();
+        c2[24] = "ROU2";
+        MultipartFile f = csvFile("r.csv", String.join(",", c1) + "\n" + String.join(",", c2));
+        when(jdbc.queryForObject(contains("m5_sku_master"), eq(Integer.class), any(Object[].class))).thenReturn(0);
+
+        Map<String, Object> body = (Map<String, Object>) controller.importCsv(new MultipartFile[]{f}).getBody();
+
+        assertThat(body).containsEntry("rowsImported", 2);
+        List<Map<String, Object>> missing = (List<Map<String, Object>>) body.get("missingSkus");
+        assertThat(missing).hasSize(1);
+        assertThat(missing.get(0)).containsEntry("rows", 2);
+        verify(jdbc, times(1)).queryForObject(contains("m5_sku_master"), eq(Integer.class), any(Object[].class));
+    }
+
+    @Test
     void noFiles_errors() {
         ResponseEntity<?> r = controller.importCsv(new MultipartFile[0]);
         assertThat(r.getStatusCode().value()).isEqualTo(400);
