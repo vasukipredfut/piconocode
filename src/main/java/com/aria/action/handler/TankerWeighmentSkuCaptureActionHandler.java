@@ -78,7 +78,10 @@ import java.util.Map;
  * weight, divided across its open tank rows in proportion to each row's allocated
  * quantity. A line WITH {@code tank_location} (or {@code bay_name}) weighs just that
  * tank: the whole {@code load_wgt} is issued from it and only its row closes, the
- * SKU's other tanks stay IN_PROGRESS for a later weighment.
+ * SKU's other tanks stay IN_PROGRESS for a later weighment. A line with {@code tank_locations}
+ * (array / comma list, e.g. 2 of the SKU's 3 tanks) carries ONE total weight for just those
+ * tanks: it is divided across them in proportion to their allocated quantities and the SKU's
+ * remaining tanks stay open.
  *
  * <p>Payload shape (formData.tankerSkuWeights — the grid's current rows,
  * the weight already edited by the officer from the scale reading;
@@ -137,6 +140,9 @@ public class TankerWeighmentSkuCaptureActionHandler implements ActionHandler {
             String skuCode = str(line, "sku_code");
             // Optional: weigh ONE tank of a multi-tank SKU on its own (see class javadoc).
             String onlyTank = str(line, "tank_location") != null ? str(line, "tank_location") : str(line, "bay_name");
+            // Optional: ONE total weight for just these tanks of the SKU (e.g. 2 of its 3) -- split across
+            // them by allocation, the SKU's other tanks stay open. Ignored when a single tank_location is given.
+            List<String> tankSubset = onlyTank != null ? List.of() : tankList(line.get("tank_locations"));
             if (routeId == null || skuCode == null) {
                 markRollbackOnly();
                 return ActionResult.error("tankerSkuWeights[" + i + "] is missing route_id or sku_code");
@@ -176,6 +182,17 @@ public class TankerWeighmentSkuCaptureActionHandler implements ActionHandler {
             // whenever the SKU has more than one open row, so a single-tank weighment
             // can never close its siblings.
             boolean multiRowSku = bayRows.size() > 1;
+            if (!tankSubset.isEmpty()) {
+                final List<Map<String, Object>> open = bayRows;
+                for (String t : tankSubset) {
+                    if (open.stream().noneMatch(r -> t.equals(r.get("bay_name")))) {
+                        markRollbackOnly();
+                        return ActionResult.error("tankerSkuWeights[" + i + "] (" + skuCode + ") has no open tank row for " + t
+                                + " (already weighed, or not allocated to that tank)");
+                    }
+                }
+                bayRows = bayRows.stream().filter(r -> tankSubset.contains((String) r.get("bay_name"))).toList();
+            }
             if (onlyTank != null) {
                 final String wanted = onlyTank.trim();
                 bayRows = bayRows.stream().filter(r -> wanted.equals(r.get("bay_name"))).toList();
@@ -314,6 +331,17 @@ public class TankerWeighmentSkuCaptureActionHandler implements ActionHandler {
             }
             assigned = assigned.add(share);
             out.add(new TankShare(asLong(r.get("id")), (String) r.get("bay_name"), share));
+        }
+        return out;
+    }
+
+    /** {@code tank_locations}: a JSON array of tank codes, or a comma-separated string. Blank entries dropped. */
+    private static List<String> tankList(Object raw) {
+        List<String> out = new ArrayList<>();
+        if (raw instanceof List<?> l) {
+            for (Object o : l) if (o != null && !o.toString().isBlank()) out.add(o.toString().trim());
+        } else if (raw != null && !raw.toString().isBlank()) {
+            for (String s : raw.toString().split(",")) if (!s.isBlank()) out.add(s.trim());
         }
         return out;
     }

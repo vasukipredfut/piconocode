@@ -149,6 +149,20 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
                 return ActionResult.error("nothing loaded to unload for route_id=" + routeId + " order_id=" + orderId + " sku_code=" + skuCode
                         + " (already unloaded, or this SKU was never loaded)");
             }
+            // tank_locations: ONE total unloading_qty for just these tanks of the SKU (e.g. 2 of its 3), divided
+            // across them by what each can still give back; the SKU's other tanks stay open.
+            List<String> tankSubset = onlyTank != null ? List.of() : tankList(line.get("tank_locations"));
+            if (!tankSubset.isEmpty()) {
+                final List<Map<String, Object>> open = openRows;
+                for (String t : tankSubset) {
+                    if (open.stream().noneMatch(r -> t.equals(r.get("bay_name")))) {
+                        markRollbackOnly();
+                        return ActionResult.error("tankerUnloadItems[" + i + "] (" + skuCode + ") has no open unload row for tank " + t
+                                + " (already unloaded, or not loaded in that tank)");
+                    }
+                }
+                openRows = openRows.stream().filter(r -> tankSubset.contains((String) r.get("bay_name"))).toList();
+            }
             if (onlyTank != null) {
                 final String wanted = onlyTank.trim();
                 openRows = openRows.stream().filter(r -> wanted.equals(r.get("bay_name"))).toList();
@@ -368,6 +382,17 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
     private record LotQty(String lotNo, BigDecimal qty, String uom) {}
 
     private record TankPlan(Long rowId, String tank, List<LotQty> lots, BigDecimal returnable) {}
+
+    /** {@code tank_locations}: a JSON array of tank codes, or a comma-separated string. Blank entries dropped. */
+    private static List<String> tankList(Object raw) {
+        List<String> out = new ArrayList<>();
+        if (raw instanceof List<?> l) {
+            for (Object o : l) if (o != null && !o.toString().isBlank()) out.add(o.toString().trim());
+        } else if (raw != null && !raw.toString().isBlank()) {
+            for (String s : raw.toString().split(",")) if (!s.isBlank()) out.add(s.trim());
+        }
+        return out;
+    }
 
     private static String lotKey(Object lotNo) { return lotNo == null ? "" : lotNo.toString(); }
 

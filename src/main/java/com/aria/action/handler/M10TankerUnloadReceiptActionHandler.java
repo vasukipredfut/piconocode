@@ -146,6 +146,20 @@ public class M10TankerUnloadReceiptActionHandler implements ActionHandler {
             // tanks stay open. SKU-wise (no tank): the weight is divided across the SKU's open
             // tank rows in proportion to each row's planned (QC-approved) quantity.
             String onlyTank = str(line, "tank_location") != null ? str(line, "tank_location") : str(line, "bay_name");
+            // tank_locations: ONE total weight for just these tanks of the SKU (e.g. 2 of its 3), split by
+            // planned qty across them; the SKU's other tanks stay open. Ignored when a single tank is named.
+            List<String> tankSubset = onlyTank != null ? List.of() : tankList(line.get("tank_locations"));
+            if (!tankSubset.isEmpty()) {
+                final List<Map<String, Object>> open = rows;
+                for (String t : tankSubset) {
+                    if (open.stream().noneMatch(r -> t.equals(r.get("bay_name")))) {
+                        markRollbackOnly();
+                        return ActionResult.error("unload_receipt_items[" + i + "] (" + skuCode + ") has no open unload row for tank " + t
+                                + " (already receipted, or not allocated to that tank)");
+                    }
+                }
+                rows = rows.stream().filter(r -> tankSubset.contains((String) r.get("bay_name"))).toList();
+            }
             if (onlyTank != null) {
                 final String wanted = onlyTank.trim();
                 rows = rows.stream().filter(r -> wanted.equals(r.get("bay_name"))).toList();
@@ -259,6 +273,17 @@ public class M10TankerUnloadReceiptActionHandler implements ActionHandler {
             }
             assigned = assigned.add(share);
             out.add(new TankShare(r.get("id"), (String) r.get("bay_name"), share));
+        }
+        return out;
+    }
+
+    /** {@code tank_locations}: a JSON array of tank codes, or a comma-separated string. Blank entries dropped. */
+    private static List<String> tankList(Object raw) {
+        List<String> out = new ArrayList<>();
+        if (raw instanceof List<?> l) {
+            for (Object o : l) if (o != null && !o.toString().isBlank()) out.add(o.toString().trim());
+        } else if (raw != null && !raw.toString().isBlank()) {
+            for (String s : raw.toString().split(",")) if (!s.isBlank()) out.add(s.trim());
         }
         return out;
     }

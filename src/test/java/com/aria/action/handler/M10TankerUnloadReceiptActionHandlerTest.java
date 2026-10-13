@@ -233,6 +233,37 @@ class M10TankerUnloadReceiptActionHandlerTest {
     }
 
     @Test
+    void tankLocations_oneTotalWeightSplitOverJustTheSelectedTanks_thirdTankStaysOpen() {
+        when(jdbc.queryForList(contains("unloading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(tankRow(10L, "ROT-1", "4000"), tankRow(11L, "ROT-2", "3000"), tankRow(12L, "ROT-3", "2000")));
+        Map<String, Object> l = line("INV-1001", "SKU1215", 7000);
+        l.put("tank_locations", List.of("ROT-1", "ROT-2"));
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(l)));
+
+        assertThat(r.isOk()).isTrue();
+        verify(jdbc).update(eq("UPDATE unloading_progress_detail_bay SET processed_quantity = ?, status = 'DONE' WHERE id = ?"),
+                argThat((BigDecimal b) -> b.compareTo(new BigDecimal("4000")) == 0), eq(10L));
+        verify(jdbc).update(eq("UPDATE unloading_progress_detail_bay SET processed_quantity = ?, status = 'DONE' WHERE id = ?"),
+                argThat((BigDecimal b) -> b.compareTo(new BigDecimal("3000")) == 0), eq(11L));
+        verify(jdbc, never()).update(eq("UPDATE unloading_progress_detail_bay SET processed_quantity = ?, status = 'DONE' WHERE id = ?"),
+                any(), eq(12L));
+    }
+
+    @Test
+    void tankLocations_aNamedTankWithNoOpenRow_errors() {
+        when(jdbc.queryForList(contains("unloading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(tankRow(10L, "ROT-1", "1000")));
+        Map<String, Object> l = line("INV-1001", "SKU1215", 100);
+        l.put("tank_locations", "ROT-1,ROT-9");
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(l)));
+
+        assertThat(r.isOk()).isFalse();
+        assertThat(r.getMessage()).contains("no open unload row for tank ROT-9");
+    }
+
+    @Test
     void locationWise_unknownTank_errors() {
         when(jdbc.queryForList(contains("unloading_progress_detail_bay"), any(Object[].class)))
                 .thenReturn(List.of(tankRow(10L, "ROT-1", "1000")));

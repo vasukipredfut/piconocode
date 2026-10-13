@@ -241,6 +241,44 @@ class TankerUnloadCaptureActionHandlerTest {
     }
 
     @Test
+    void tankLocations_oneTotalSplitOverJustTheSelectedTanks_otherTankStaysOpen() {
+        openRows(row("id", 11L, "bay_name", "T1", "quantity", new BigDecimal("4000")),
+                row("id", 12L, "bay_name", "T2", "quantity", new BigDecimal("3000")));
+        // a third open row exists but is not selected
+        when(jdbc.queryForList(contains("FROM unloading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(row("id", 11L, "bay_name", "T1", "quantity", new BigDecimal("4000")),
+                        row("id", 12L, "bay_name", "T2", "quantity", new BigDecimal("3000")),
+                        row("id", 13L, "bay_name", "T3", "quantity", new BigDecimal("2000"))));
+        consumed(Map.of("T1", "4000", "T2", "3000", "T3", "2000"));
+        Map<String, Object> l = line(7000, null);
+        l.put("tank_locations", List.of("T1", "T2"));
+
+        ActionResult r = unload(l);
+
+        assertThat(r.isOk()).isTrue();
+        List<Object[]> moves = updates("INSERT INTO m5_stock_movement");
+        assertThat(moves).hasSize(2);                           // T3 never touched
+        assertThat(moves.get(0)[6]).isEqualTo("T1");
+        assertThat((BigDecimal) moves.get(0)[7]).isEqualByComparingTo("4000");
+        assertThat(moves.get(1)[6]).isEqualTo("T2");
+        assertThat((BigDecimal) moves.get(1)[7]).isEqualByComparingTo("3000");
+        assertThat(updates("SET status = 'REVERSED'")).hasSize(2);
+    }
+
+    @Test
+    void tankLocations_aNamedTankWithNoOpenRow_errors() {
+        openRows(row("id", 11L, "bay_name", "T1", "quantity", new BigDecimal("4000")), null);
+        Map<String, Object> l = line(100, null);
+        l.put("tank_locations", "T1,T9");
+
+        ActionResult r = unload(l);
+
+        assertThat(r.isOk()).isFalse();
+        assertThat(r.getMessage()).contains("no open unload row for tank T9");
+        assertThat(updates("INSERT INTO m5_stock_movement")).isEmpty();
+    }
+
+    @Test
     void unknownTank_errors() {
         openRows(row("id", 11L, "bay_name", "TANK-1", "quantity", new BigDecimal("1000")), null);
         ActionResult r = unload(line(100, "TANK-9"));

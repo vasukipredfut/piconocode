@@ -316,6 +316,40 @@ class TankerWeighmentSkuCaptureActionHandlerTest {
     }
 
     @Test
+    void tankLocations_oneTotalWeightSplitOverJustTheSelectedTanks_otherTankStaysOpen() {
+        // SKU has 3 open tanks (4000 / 3000 / 2000); 2 are selected, ONE total weight of 7000 is entered.
+        when(jdbc.queryForList(contains("SELECT id, bay_name, quantity FROM loading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(bayRow(11, "ROT-1", "4000"), bayRow(12, "ROT-2", "3000"), bayRow(13, "ROT-3", "2000")));
+        fefoPicker.seed("SKU1215", lotRow("LOT-A", "BIN-A", "KG", "100000"));
+        Map<String, Object> l = line("ROU028912", "SKU1215", 7000);
+        l.put("tank_locations", List.of("ROT-1", "ROT-2"));
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(l)));
+
+        assertThat(r.isOk()).isTrue();
+        // 7000 split 4000:3000 over the two selected tanks -> 4000 and 3000; ROT-3 (id 13) untouched.
+        verify(jdbc).update(startsWith("UPDATE loading_progress_detail_bay"), eq(new BigDecimal("4000.000")), eq(1L), eq(11L));
+        verify(jdbc).update(startsWith("UPDATE loading_progress_detail_bay"), eq(new BigDecimal("3000.000")), eq(1L), eq(12L));
+        verify(jdbc, never()).update(startsWith("UPDATE loading_progress_detail_bay"), any(), eq(1L), eq(13L));
+        verify(jdbc).update(startsWith("UPDATE loading_progress_detail SET processed_quantity"),
+                eq(new BigDecimal("7000")), eq(1L), eq(1495L));
+    }
+
+    @Test
+    void tankLocations_aNamedTankWithNoOpenRow_errors() {
+        when(jdbc.queryForList(contains("SELECT id, bay_name, quantity FROM loading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(bayRow(11, "ROT-1", "60"), bayRow(12, "ROT-2", "40")));
+        Map<String, Object> l = line("ROU028912", "SKU1215", 10);
+        l.put("tank_locations", "ROT-1,ROT-9");
+
+        ActionResult r = handler.handle(invocationWithLines(List.of(l)));
+
+        assertThat(r.isOk()).isFalse();
+        assertThat(r.getMessage()).contains("no open tank row for ROT-9");
+        verify(jdbc, never()).update(startsWith("INSERT INTO m5_stock_movement"), any(Object[].class));
+    }
+
+    @Test
     void tankLocationGiven_butNoOpenRowForIt_errors() {
         when(jdbc.queryForList(contains("SELECT id, bay_name, quantity FROM loading_progress_detail_bay"), any(Object[].class)))
                 .thenReturn(List.of(bayRow(11, "ROT-1", "60")));
