@@ -117,6 +117,114 @@ class QcPreloadTankAllocationListenerTest {
     }
 
     @Test
+    void livePayload_unloadAllocations_savedAsInProgressPlanRows_evenWithNoNewLoading() {
+        // Shape captured off a live reload transition (instance 2040): no NEW loading allocation (tank_location blank on
+        // the parent lines; tankLocationAllocations carries parent-shaped objects), but tankUnloadAllocations has the plan.
+        WorkflowInstance inst = instance("M10.TankerOutbound", "LOADING_COMPLETED");
+        Map<String, Object> p1 = new HashMap<>();
+        p1.put("sku_code", "SKU1013"); p1.put("order_id", "OR2256762"); p1.put("order_qty", 20);
+        Map<String, Object> bag = bagWith(List.of(p1));
+        pageData(bag).put("tankLocationAllocations", List.of(new HashMap<>(Map.of("sku_code", "SKU1013", "order_qty", 20))));
+        pageData(bag).put("tankUnloadAllocations", List.of(
+                Map.of("order_dispatch_detail_id", 3886, "tank_location", "COT-5", "alloc_qty", "10"),
+                Map.of("order_dispatch_detail_id", 3886, "tank_location", "COT-8", "alloc_qty", "10")));
+        when(jdbc.queryForMap(contains("FROM m5_order_dispatch_detail"), eq(1L), eq(3886L)))
+                .thenReturn(Map.of("route_id", "ROU638342", "order_id", "OR2256762", "sku_code", "SKU1013", "sku_desc", "SF ACID OIL"));
+        when(jdbc.queryForObject(contains("SELECT id FROM unloading_progress_detail"), eq(Long.class), any(Object[].class)))
+                .thenReturn(888L);
+
+        listener.onTransition(inst, "DISPATCH_LOADING_PLANNING", bag);
+
+        // the previous plan is replaced, the parent row is ensured with the planned total (20)
+        verify(jdbc).update(contains("DELETE FROM unloading_progress_detail_bay"), eq(1L), eq(1495L));
+        // PLAN rows are IN_PROGRESS + plan_source QC_PRELOAD
+        verify(jdbc).update(contains("INSERT INTO unloading_progress_detail ("),
+                eq(1L), eq(1495L), eq("M10.TankerOutbound"), eq("LOADING_COMPLETED"), any(), any(), eq(new BigDecimal("20")));
+        // one plan row per destination tank
+        verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
+                eq(1L), eq(888L), eq(1495L), eq("ROU638342"), eq("OR2256762"), eq("SKU1013"), eq("SF ACID OIL"),
+                eq("COT-5"), eq(new BigDecimal("10")), isNull(), isNull());
+        verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
+                eq(1L), eq(888L), eq(1495L), eq("ROU638342"), eq("OR2256762"), eq("SKU1013"), eq("SF ACID OIL"),
+                eq("COT-8"), eq(new BigDecimal("10")), isNull(), isNull());
+        // and nothing was loaded
+        verify(jdbc, never()).update(contains("INSERT INTO loading_progress_detail_bay"), any(Object[].class));
+    }
+
+    @Test
+    void reloadGrid_alreadyLoadedSlots_areNotSeededAgain_onlyTheNewAllocationIs() {
+        // the grid is pre-filled from what is already loaded (status DONE + the loading row id) -- loading it again would
+        // double the oil; only the genuinely new slot (ROT-2) is seeded
+        WorkflowInstance inst = instance("M10.TankerOutbound", "LOADING_COMPLETED");
+        Map<String, Object> parent = new HashMap<>();
+        parent.put("sku_code", "SKU1"); parent.put("order_id", "ORD1"); parent.put("route_id", "ROU1");
+        parent.put("sku_desc", "SKU1 Desc"); parent.put("id", 501); parent.put("order_qty", 100);
+        Map<String, Object> bag = bagWith(List.of(parent));
+        Map<String, Object> done = new HashMap<>(Map.of("order_dispatch_detail_id", 501, "tank_location", "ROT-1", "alloc_qty", "60", "status", "DONE"));
+        Map<String, Object> withId = new HashMap<>(Map.of("order_dispatch_detail_id", 501, "tank_location", "ROT-1", "alloc_qty", "10", "id", 1379));
+        Map<String, Object> fresh = new HashMap<>(Map.of("order_dispatch_detail_id", 501, "tank_location", "ROT-2", "alloc_qty", "30"));
+        pageData(bag).put("tankLocationAllocations", List.of(done, withId, fresh));
+
+        listener.onTransition(inst, "DISPATCH_LOADING_PLANNING", bag);
+
+        verify(jdbc, times(1)).update(contains("INSERT INTO loading_progress_detail_bay"), any(Object[].class));
+        verify(jdbc).update(contains("INSERT INTO loading_progress_detail_bay"),
+                eq(1L), eq(777L), eq(1495L), eq("ROU1"), eq("ORD1"), eq("SKU1"), eq("SKU1 Desc"),
+                eq("ROT-2"), eq(new BigDecimal("30")), isNull(), isNull());
+    }
+
+    @Test
+    void unloadRows_orderSheetRowGone_fallBackToTheSkuRouteOrderTheUiSendsOnEachRow() {
+        WorkflowInstance inst = instance("M10.TankerOutbound", "LOADING_COMPLETED");
+        Map<String, Object> bag = bagWith(List.of(new HashMap<>(Map.of("sku_code", "S", "order_qty", 1))));
+        pageData(bag).put("tankUnloadAllocations", List.of(new HashMap<>(Map.of(
+                "order_dispatch_detail_id", 777, "tank_location", "COT-5", "alloc_qty", "10",
+                "sku_code", "SKU1013", "sku_desc", "SF ACID OIL", "order_id", "OR22", "route_id", "ROU6"))));
+        when(jdbc.queryForObject(contains("SELECT id FROM unloading_progress_detail"), eq(Long.class), any(Object[].class)))
+                .thenReturn(888L);   // queryForMap unstubbed -> order-sheet row not found
+
+        listener.onTransition(inst, "DISPATCH_LOADING_PLANNING", bag);
+
+        verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
+                eq(1L), eq(888L), eq(1495L), eq("ROU6"), eq("OR22"), eq("SKU1013"), eq("SF ACID OIL"),
+                eq("COT-5"), eq(new BigDecimal("10")), isNull(), isNull());
+    }
+
+    @Test
+    void uiUnloadPayload_everyKeyItSends_isUsed_rdCodeAndNameSavedToo() {
+        WorkflowInstance inst = instance("M10.TankerOutbound", "LOADING_COMPLETED");
+        Map<String, Object> bag = bagWith(List.of(new HashMap<>(Map.of("sku_code", "SKU1013", "order_qty", 20))));
+        Map<String, Object> row = new HashMap<>();
+        row.put("order_dispatch_detail_id", 3886); row.put("tank_location", "COT-5"); row.put("alloc_qty", "10");
+        row.put("sku_code", "SKU1013"); row.put("sku_desc", "SF ACID OIL"); row.put("order_id", "ORD1");
+        row.put("rd_code", "RD2"); row.put("rd_desc", "Navi Mumbai"); row.put("route_id", "ROU1");
+        pageData(bag).put("tankUnloadAllocations", List.of(row));
+        when(jdbc.queryForMap(contains("FROM m5_order_dispatch_detail"), eq(1L), eq(3886L)))
+                .thenReturn(Map.of("route_id", "ROU1", "order_id", "ORD1", "sku_code", "SKU1013", "sku_desc", "SF ACID OIL"));
+        when(jdbc.queryForObject(contains("SELECT id FROM unloading_progress_detail"), eq(Long.class), any(Object[].class))).thenReturn(888L);
+
+        listener.onTransition(inst, "DISPATCH_LOADING_PLANNING", bag);
+
+        verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
+                eq(1L), eq(888L), eq(1495L), eq("ROU1"), eq("ORD1"), eq("SKU1013"), eq("SF ACID OIL"),
+                eq("COT-5"), eq(new BigDecimal("10")), eq("RD2"), eq("Navi Mumbai"));
+    }
+
+    @Test
+    void unloadAllocation_withUnknownDetailOrBlankTankOrZeroQty_isSkipped() {
+        WorkflowInstance inst = instance("M10.TankerOutbound", "LOADING_COMPLETED");
+        Map<String, Object> bag = bagWith(List.of(new HashMap<>(Map.of("sku_code", "S", "order_qty", 1))));
+        pageData(bag).put("tankUnloadAllocations", List.of(
+                Map.of("order_dispatch_detail_id", 999, "tank_location", "COT-5", "alloc_qty", "10"),   // detail not found
+                Map.of("order_dispatch_detail_id", 3886, "tank_location", "", "alloc_qty", "10"),         // no tank
+                Map.of("order_dispatch_detail_id", 3886, "tank_location", "COT-5", "alloc_qty", "0")));   // no qty
+
+        listener.onTransition(inst, "DISPATCH_LOADING_PLANNING", bag);
+
+        verify(jdbc, never()).update(contains("unloading_progress_detail"), any(Object[].class));
+    }
+
+    @Test
     void noAllocationsListAtAll_fallsBackToSingleTankLocation() {
         WorkflowInstance inst = instance("M10.TankerOutbound", "QC_PRELOAD_APPROVED");
 

@@ -104,6 +104,11 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
             if (!(pageObj instanceof Map)) return;
             Map<String, Object> page = (Map<String, Object>) pageObj;
 
+            // Oil already loaded that QC wants taken back off: the page's unload allocations go to
+            // unloading_progress_detail(_bay), same way the loading allocations below go to loading_progress_detail(_bay).
+            // Independent of whether this submission also allocated NEW loading (a pure unload plan has none).
+            seedUnloadPlan(tenantId, instance, page);
+
             // "tankAllocation" is what aria:qc-preload-approval's "Order Details —
             // Tank Allocation" ListView actually submits (confirmed off a live
             // transition payload); order_sku_line_items (M10StartBayActionHandler's
@@ -160,6 +165,7 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
                 if (!lineAllocations.isEmpty()) {
                     consumedParentIds.add(lineId);
                     for (Map<String, Object> alloc : lineAllocations) {
+                        if (alreadyLoadedSlot(alloc)) continue;
                         String allocTank = firstNonBlank(str(alloc.get("tank_location")), str(alloc.get("bay_name")));
                         if (allocTank == null) continue;
                         BigDecimal allocQty = toBig(firstNonNull(alloc.get("alloc_qty"), alloc.get("qty"), alloc.get("quantity")));
@@ -192,6 +198,7 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
                 String skuCode = str(detail.get("sku_code"));
                 if (skuCode == null) continue;
                 for (Map<String, Object> alloc : e.getValue()) {
+                    if (alreadyLoadedSlot(alloc)) continue;
                     String allocTank = firstNonBlank(str(alloc.get("tank_location")), str(alloc.get("bay_name")));
                     if (allocTank == null) continue;
                     BigDecimal allocQty = toBig(firstNonNull(alloc.get("alloc_qty"), alloc.get("qty"), alloc.get("quantity")));
@@ -274,6 +281,102 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
         } catch (Exception e) {
             log.warn("qc-preload tank allocation seeding failed for instance={}: {}", instanceId, e.getMessage());
         }
+    }
+
+    /**
+     * aria:qc-preload-approval's "unload" allocations ({@code tankUnloadAllocations}: the BatchAllocationTable child list,
+     * {@code order_dispatch_detail_id} + {@code tank_location} + {@code alloc_qty}) -> one {@code unloading_progress_detail_bay}
+     * row per destination tank (route_id / order_id / sku_code / sku_desc resolved from the order-sheet row, bay_name = the
+     * tank the oil goes to, quantity = alloc_qty) under the {@code unloading_progress_detail} parent.
+     *
+     * <p>Rows are written {@code IN_PROGRESS} with {@code plan_source = 'QC_PRELOAD'} (V367): the marker tells
+     * {@code m10.tanker-unload-capture} that {@code bay_name} is the DESTINATION tank (oil goes there from the tank(s) it was
+     * loaded from), not an origin tank. Re-running replaces the instance's not-yet-started plan rows, so a re-delivered event
+     * or a re-submitted page never duplicates them.
+     */
+    @SuppressWarnings("unchecked")
+    private void seedUnloadPlan(Long tenantId, WorkflowInstance instance, Map<String, Object> page) {
+        Object raw = page.get("tankUnloadAllocations");
+        if (!(raw instanceof List<?> list) || list.isEmpty()) return;
+        Long instanceId = instance.getId();
+        try {
+            List<Object[]> rows = new ArrayList<>();
+            BigDecimal total = BigDecimal.ZERO;
+            for (Object o : list) {
+                if (!(o instanceof Map)) continue;
+                Map<String, Object> alloc = (Map<String, Object>) o;
+                String detailId = str(alloc.get("order_dispatch_detail_id"));
+                String tank = firstNonBlank(str(alloc.get("tank_location")), str(alloc.get("bay_name")));
+                BigDecimal qty = toBig(firstNonNull(alloc.get("alloc_qty"), alloc.get("qty"), alloc.get("quantity")));
+                if (detailId == null || tank == null || qty.signum() <= 0) continue;
+                Map<String, Object> detail = orderDispatchDetail(tenantId, detailId);
+                if ((detail == null || str(detail.get("sku_code")) == null) && str(alloc.get("sku_code")) != null) {
+                    // the page also sends sku_code / sku_desc / order_id / route_id on each unload row (unloadExtraFields)
+                    detail = new java.util.HashMap<>();
+                    detail.put("sku_code", alloc.get("sku_code"));
+                    detail.put("sku_desc", alloc.get("sku_desc"));
+                    detail.put("order_id", alloc.get("order_id"));
+                    detail.put("route_id", alloc.get("route_id"));
+                }
+                if (detail == null || str(detail.get("sku_code")) == null) {
+                    log.warn("qc-preload unload plan: instance={} order_dispatch_detail_id={} not found -- allocation skipped", instanceId, detailId);
+                    continue;
+                }
+                rows.add(new Object[]{str(detail.get("route_id")), str(detail.get("order_id")), str(detail.get("sku_code")),
+                        str(detail.get("sku_desc")), tank, qty, str(alloc.get("rd_code")), str(alloc.get("rd_desc"))});
+                total = total.add(qty);
+            }
+            if (rows.isEmpty()) return;
+
+            String vehicleNo = firstNonBlank(str(page.get("vehicle_no")), str(page.get("vehicleNo")));
+            String gatePassNo = firstNonBlank(str(page.get("gpNumber")), str(page.get("gp_number")));
+            if (vehicleNo == null || gatePassNo == null) {
+                Map<String, Object> gp = gatePassRow(tenantId, instanceId);
+                if (gp != null) {
+                    if (vehicleNo == null) vehicleNo = str(gp.get("vehicle_no"));
+                    if (gatePassNo == null) gatePassNo = str(gp.get("gp_number"));
+                }
+            }
+
+            // replace this instance's not-yet-started plan rows (a re-submitted page / re-delivered event never duplicates them;
+            // rows that already unloaded something keep their progress)
+            jdbc.update("DELETE FROM unloading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? "
+                            + "AND plan_source = 'QC_PRELOAD' AND status = 'IN_PROGRESS' AND (processed_quantity IS NULL OR processed_quantity = 0)",
+                    tenantId, instanceId);
+            jdbc.update(
+                    "INSERT INTO unloading_progress_detail (tenant_id, workflow_instance_id, flow_variant_code, current_step, vehicle_no, gate_pass_no, total_quantity, processed_quantity, status) "
+                            + "VALUES (?,?,?,?,?,?,?,0,'IN_PROGRESS') "
+                            + "ON DUPLICATE KEY UPDATE "
+                            + "flow_variant_code = COALESCE(unloading_progress_detail.flow_variant_code, VALUES(flow_variant_code)), "
+                            + "current_step = VALUES(current_step), "
+                            + "vehicle_no = COALESCE(VALUES(vehicle_no), vehicle_no), "
+                            + "gate_pass_no = COALESCE(VALUES(gate_pass_no), gate_pass_no)",
+                    tenantId, instanceId, instance.getWorkflowCode(), instance.getCurrentState(), vehicleNo, gatePassNo, total);
+            Long parentId = jdbc.queryForObject(
+                    "SELECT id FROM unloading_progress_detail WHERE tenant_id = ? AND workflow_instance_id = ?",
+                    Long.class, tenantId, instanceId);
+            for (Object[] r : rows) {
+                jdbc.update(
+                        "INSERT INTO unloading_progress_detail_bay "
+                                + "(tenant_id, unloading_progress_detail_id, workflow_instance_id, route_id, order_id, sku_code, sku_desc, bay_name, quantity, rd_code, vendor_name, status, plan_source) "
+                                + "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'IN_PROGRESS', 'QC_PRELOAD')",
+                        tenantId, parentId, instanceId, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
+            }
+            log.info("qc-preload unload plan: instance={} wrote {} PLANNED unloading_progress_detail_bay row(s), total={}", instanceId, rows.size(), total);
+        } catch (Exception e) {
+            log.warn("qc-preload unload plan seeding failed for instance={}: {}", instanceId, e.getMessage());
+        }
+    }
+
+    /**
+     * On a reload the allocation grid is pre-filled from what is already loaded (seedAllocationsFrom, read-only slots marked
+     * status DONE, carrying the existing loading_progress_detail_bay id). Those slots are not new allocations: seeding them
+     * again would load the same oil twice, so they are skipped.
+     */
+    private static boolean alreadyLoadedSlot(Map<String, Object> alloc) {
+        String status = str(alloc.get("status"));
+        if (status != null && "DONE".equalsIgnoreCase(status.trim())) return true;
+        return str(alloc.get("id")) != null;
     }
 
     private Map<String, Object> orderDispatchDetail(Long tenantId, String id) {

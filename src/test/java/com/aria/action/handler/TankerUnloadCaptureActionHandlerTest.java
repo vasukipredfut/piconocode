@@ -293,6 +293,95 @@ class TankerUnloadCaptureActionHandlerTest {
         verify(jdbc).update("UPDATE unloading_progress_detail_bay SET unloaded_by_id = ? WHERE tenant_id = ? AND id = ?", 42L, 1L, 11L);
     }
 
+    // ---- QC preload unload plan (plan_source QC_PRELOAD): bay_name is the DESTINATION tank ----
+
+    private Map<String, Object> planRow(long id, String destTank, String planned, String done) {
+        Map<String, Object> m = row("id", id, "bay_name", destTank, "quantity", new BigDecimal(planned), "plan_source", "QC_PRELOAD");
+        m.put("processed_quantity", done == null ? null : new BigDecimal(done));
+        return m;
+    }
+
+    private void loadedFrom(String... tanks) {
+        when(jdbc.queryForList(contains("SELECT DISTINCT bay_name FROM loading_progress_detail_bay"), eq(String.class), any(Object[].class)))
+                .thenReturn(List.of(tanks));
+    }
+
+    @Test
+    void plan_oilLoadedInCot1_isTakenOutOfCot1_andPutIntoThePlannedTanks() {
+        // 20 loaded from COT-1; the QC planned COT-5: 10 and COT-8: 10
+        when(jdbc.queryForList(contains("FROM unloading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(planRow(31L, "COT-5", "10", null), planRow(32L, "COT-8", "10", null)));
+        loadedFrom("COT-1");
+        consumed(Map.of("COT-1", "20"));
+
+        ActionResult r = unload(line(20, null));
+
+        assertThat(r.isOk()).isTrue();
+        List<Object[]> moves = updates("INSERT INTO m5_stock_movement");
+        assertThat(moves).hasSize(2);
+        // sql, tenant, kind, item, lot, from_bin, to_bin, qty, uom, ref_type, ref_id, ref_number
+        assertThat(moves.get(0)[5]).isEqualTo("COT-1");
+        assertThat(moves.get(0)[6]).isEqualTo("COT-5");
+        assertThat((BigDecimal) moves.get(0)[7]).isEqualByComparingTo("10");
+        assertThat(moves.get(1)[5]).isEqualTo("COT-1");
+        assertThat(moves.get(1)[6]).isEqualTo("COT-8");
+        assertThat((BigDecimal) moves.get(1)[7]).isEqualByComparingTo("10");
+        assertThat(updates("status = 'DONE'")).hasSize(2);                 // both plan rows filled
+        assertThat(updates("SET status = 'REVERSED'")).hasSize(1);         // COT-1 gave everything back
+    }
+
+    @Test
+    void plan_aNamedDestination_unloadsJustThatPlanRow_originStaysLoaded() {
+        when(jdbc.queryForList(contains("FROM unloading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(planRow(31L, "COT-5", "10", null), planRow(32L, "COT-8", "10", null)));
+        loadedFrom("COT-1");
+        consumed(Map.of("COT-1", "20"));
+        Map<String, Object> l = line(10, "COT-5");
+
+        ActionResult r = unload(l);
+
+        assertThat(r.isOk()).isTrue();
+        List<Object[]> moves = updates("INSERT INTO m5_stock_movement");
+        assertThat(moves).hasSize(1);
+        assertThat(moves.get(0)[6]).isEqualTo("COT-5");
+        assertThat(updates("status = 'DONE'")).hasSize(1);                 // only COT-5's plan row
+        assertThat(updates("SET status = 'REVERSED'")).isEmpty();          // COT-1 still has 10 to give back
+    }
+
+    @Test
+    void plan_moreThanThePlanStillNeeds_orMoreThanLoaded_isRefused() {
+        when(jdbc.queryForList(contains("FROM unloading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(planRow(31L, "COT-5", "10", "4")));   // only 6 more planned
+        loadedFrom("COT-1");
+        consumed(Map.of("COT-1", "20"));
+
+        ActionResult tooMuchForPlan = unload(line(8, null));
+        assertThat(tooMuchForPlan.isOk()).isFalse();
+        assertThat(tooMuchForPlan.getMessage()).contains("more than the unload plan still needs");
+
+        consumed(Map.of("COT-1", "5"));
+        ActionResult tooMuchForLoad = unload(line(6, null));
+        assertThat(tooMuchForLoad.isOk()).isFalse();
+        assertThat(tooMuchForLoad.getMessage()).contains("more than was loaded");
+        assertThat(updates("INSERT INTO m5_stock_movement")).isEmpty();
+    }
+
+    @Test
+    void plan_nothingLoaded_orUnknownDestination_errors() {
+        when(jdbc.queryForList(contains("FROM unloading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(planRow(31L, "COT-5", "10", null)));
+        loadedFrom();                                                       // no origin tank
+        ActionResult none = unload(line(5, null));
+        assertThat(none.isOk()).isFalse();
+        assertThat(none.getMessage()).contains("more than was loaded");
+
+        loadedFrom("COT-1");
+        consumed(Map.of("COT-1", "20"));
+        ActionResult unknown = unload(line(5, "COT-9"));
+        assertThat(unknown.isOk()).isFalse();
+        assertThat(unknown.getMessage()).contains("no open unload plan row for tank COT-9");
+    }
+
     @Test
     void unknownTank_errors() {
         openRows(row("id", 11L, "bay_name", "TANK-1", "quantity", new BigDecimal("1000")), null);
