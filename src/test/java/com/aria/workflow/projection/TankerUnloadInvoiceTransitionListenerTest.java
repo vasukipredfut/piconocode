@@ -118,6 +118,99 @@ class TankerUnloadInvoiceTransitionListenerTest {
                 eq("SKU1"), eq("SKU1 Desc"), eq("ROT-2"), eq(new BigDecimal("40")), eq(new BigDecimal("5")), eq("Short supply"));
     }
 
+    // ---- "load again": loadingInvoices -> loading_progress_detail(_bay), status IN_PROGRESS ----
+
+    @Test
+    void loadingInvoices_writeOneInProgressBayRowPerTankAllocation() {
+        when(jdbc.queryForObject(contains("SELECT id FROM loading_progress_detail"), eq(Long.class), any(Object[].class)))
+                .thenReturn(888L);
+        WorkflowInstance inst = instance("M10.TankerInbound", "QC_APPROVED");
+        Map<String, Object> line = loadingLine("SKU1", "100");
+        line.put("tank_allocations", List.of(
+                Map.of("tank_location", "ROT-1", "qty", "60"),
+                Map.of("tank_location", "ROT-2", "qty", "40")));
+
+        listener.onTransition(inst, "DISPATCH_QUEUED", loadingBag(line));
+
+        verify(jdbc).update(contains("INSERT INTO loading_progress_detail_bay"),
+                eq(1L), eq(888L), eq(1495L), eq("INV1"), eq("ORD1"), eq("Vendor A"), eq("RD1"),
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("60")));
+        verify(jdbc).update(contains("INSERT INTO loading_progress_detail_bay"),
+                eq(1L), eq(888L), eq(1495L), eq("INV1"), eq("ORD1"), eq("Vendor A"), eq("RD1"),
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-2"), eq(new BigDecimal("40")));
+        // every inserted bay row is IN_PROGRESS
+        verify(jdbc, times(2)).update(contains("INSERT INTO loading_progress_detail_bay"), any(Object[].class));
+        verify(jdbc, atLeastOnce()).update(argThat((String sql) -> sql.contains("INSERT INTO loading_progress_detail_bay") && sql.contains("'IN_PROGRESS'")), any(Object[].class));
+    }
+
+    @Test
+    void loadingInvoices_withoutUnloadingInvoices_doesNotTouchUnloadingTables() {
+        when(jdbc.queryForObject(contains("SELECT id FROM loading_progress_detail"), eq(Long.class), any(Object[].class)))
+                .thenReturn(888L);
+        WorkflowInstance inst = instance("M10.TankerInbound", "QC_APPROVED");
+        Map<String, Object> line = loadingLine("SKU1", "50");
+        line.put("tank_allocations", List.of(Map.of("tank_location", "ROT-1", "qty", "50")));
+
+        listener.onTransition(inst, "DISPATCH_QUEUED", loadingBag(line));
+
+        verify(jdbc, never()).update(contains("unloading_progress_detail"), any(Object[].class));
+    }
+
+    @Test
+    void loadingInvoices_lineWithoutAllocations_usesLineLevelTankLocation() {
+        when(jdbc.queryForObject(contains("SELECT id FROM loading_progress_detail"), eq(Long.class), any(Object[].class)))
+                .thenReturn(888L);
+        WorkflowInstance inst = instance("M10.TankerInbound", "QC_APPROVED");
+        Map<String, Object> line = loadingLine("SKU1", "20");
+        line.put("tank_location", "ROT-1");
+
+        listener.onTransition(inst, "DISPATCH_QUEUED", loadingBag(line));
+
+        verify(jdbc).update(contains("INSERT INTO loading_progress_detail_bay"),
+                eq(1L), eq(888L), eq(1495L), eq("INV1"), eq("ORD1"), eq("Vendor A"), eq("RD1"),
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("20")));
+    }
+
+    @Test
+    void loadingInvoices_rerunReplacesOnlyUnstartedInvoiceRows() {
+        when(jdbc.queryForObject(contains("SELECT id FROM loading_progress_detail"), eq(Long.class), any(Object[].class)))
+                .thenReturn(888L);
+        WorkflowInstance inst = instance("M10.TankerInbound", "QC_APPROVED");
+        Map<String, Object> line = loadingLine("SKU1", "20");
+        line.put("tank_allocations", List.of(Map.of("tank_location", "ROT-1", "qty", "20")));
+
+        listener.onTransition(inst, "DISPATCH_QUEUED", loadingBag(line));
+
+        verify(jdbc).update(argThat((String sql) -> sql.startsWith("DELETE FROM loading_progress_detail_bay")
+                && sql.contains("status = 'IN_PROGRESS'") && sql.contains("invoice_no IS NOT NULL")
+                && sql.contains("processed_quantity")), any(Object[].class));
+    }
+
+    @Test
+    void loadingInvoices_allocationsWithoutTankOrQty_writeNothing() {
+        WorkflowInstance inst = instance("M10.TankerInbound", "QC_APPROVED");
+        Map<String, Object> line = loadingLine("SKU1", "20");
+        line.put("tank_allocations", List.of(Map.of("qty", "20"), Map.of("tank_location", "ROT-1", "qty", "0")));
+
+        listener.onTransition(inst, "DISPATCH_QUEUED", loadingBag(line));
+
+        verify(jdbc, never()).update(contains("loading_progress_detail"), any(Object[].class));
+    }
+
+    private static Map<String, Object> loadingLine(String skuCode, String qty) {
+        Map<String, Object> line = baseLine(skuCode, qty);
+        line.put("order_id", "ORD1");
+        line.put("vendor_name", "Vendor A");
+        line.put("rd_code", "RD1");
+        return line;
+    }
+
+    private static Map<String, Object> loadingBag(Map<String, Object> line) {
+        Map<String, Object> pageData = new HashMap<>();
+        pageData.put("loadingInvoices", List.of(line));
+        return Map.of("aria:qc-approval", pageData);
+    }
+
     private static WorkflowInstance instance(String workflowCode, String currentState) {
         return WorkflowInstance.builder().id(1495L).workflowCode(workflowCode).currentState(currentState).build();
     }

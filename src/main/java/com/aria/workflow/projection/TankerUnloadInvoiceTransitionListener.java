@@ -72,6 +72,7 @@ public class TankerUnloadInvoiceTransitionListener implements WorkflowTransition
     private static final String TO_STATE = "QC_APPROVED";
     private static final String PAGE_CODE = "aria:qc-approval";
     private static final String LIST_FIELD = "unloadingInvoices";
+    private static final String LOADING_LIST_FIELD = "loadingInvoices";
 
     private final JdbcTemplate jdbc;
 
@@ -88,10 +89,15 @@ public class TankerUnloadInvoiceTransitionListener implements WorkflowTransition
         if (!(pageDataRaw instanceof Map)) return;
         Map<String, Object> pageData = (Map<String, Object>) pageDataRaw;
         Object linesRaw = pageData.get(LIST_FIELD);
-        if (!(linesRaw instanceof List<?> lines) || lines.isEmpty()) return;
 
         long tenantId = TenantContext.get();
         Long instanceId = instance.getId();
+
+        // "Load again" after the unload: the invoice lines the vehicle is loaded with next (loadingInvoices, same shape
+        // as unloadingInvoices) go to loading_progress_detail(_bay). Independent of the unload list below, which may be empty.
+        seedLoading(instance, pageData, tenantId, instanceId);
+
+        if (!(linesRaw instanceof List<?> lines) || lines.isEmpty()) return;
 
         // Idempotent re-run: this instance's prior snapshot (if any) is fully
         // replaced, same reasoning as DispatchInvoiceItemTransitionListener.
@@ -170,6 +176,101 @@ public class TankerUnloadInvoiceTransitionListener implements WorkflowTransition
 
         log.info("unloading_progress_detail (tanker): wrote {}/{} row(s) for instance {} (vehicle={}, totalQty={})",
                 written, rows.size(), instanceId, vehicleNo, totalQty);
+    }
+
+    /**
+     * {@code loadingInvoices} (aria:qc-approval, M10.TankerInbound "load again"): one {@code loading_progress_detail_bay}
+     * row per tank allocation -- invoice_no / order_id / vendor_name / rd_code / sku_code / sku_desc (the line's sku_name) /
+     * bay_name (tank) / quantity, status IN_PROGRESS, route_id NULL (an invoice line has none) -- under the
+     * {@code loading_progress_detail} parent, the same way the tanker-outbound QC preload seeds its loading rows.
+     *
+     * <p>Re-running replaces this instance's not-yet-started invoice rows (IN_PROGRESS, nothing processed) and recomputes the
+     * parent total, so a re-submitted page never duplicates them; rows already weighed (DONE) are left alone.
+     */
+    @SuppressWarnings("unchecked")
+    private void seedLoading(WorkflowInstance instance, Map<String, Object> pageData, long tenantId, Long instanceId) {
+        Object raw = pageData.get(LOADING_LIST_FIELD);
+        if (!(raw instanceof List<?> lines) || lines.isEmpty()) return;
+        try {
+            List<Object[]> rows = new ArrayList<>();
+            for (Object lineRaw : lines) {
+                if (!(lineRaw instanceof Map)) continue;
+                Map<String, Object> line = (Map<String, Object>) lineRaw;
+                Object skuCode = str(line, "sku_code", "skuCode");
+                if (skuCode == null) continue;
+                Object invoiceNo = str(line, "invoice_no", "invoiceNo");
+                Object orderId = str(line, "order_id", "orderId");
+                Object vendorName = str(line, "vendor_name", "vendorName");
+                Object rdCode = str(line, "rd_code", "rdCode");
+                Object skuName = str(line, "sku_name", "skuName");
+                Object allocationsRaw = line.get("tank_allocations");
+                if (allocationsRaw instanceof List<?> allocations && !allocations.isEmpty()) {
+                    for (Object allocRaw : allocations) {
+                        if (!(allocRaw instanceof Map)) continue;
+                        Map<String, Object> alloc = (Map<String, Object>) allocRaw;
+                        String tank = str(alloc, "tank_location", "tankLocation");
+                        BigDecimal qty = num(alloc, "qty");
+                        if (tank == null || qty.signum() <= 0) continue;
+                        rows.add(new Object[]{invoiceNo, orderId, vendorName, rdCode, skuCode, skuName, tank, qty});
+                    }
+                } else {
+                    String tank = str(line, "tank_location", "tankLocation");
+                    BigDecimal qty = num(line, "qty");
+                    if (tank != null && qty.signum() > 0) {
+                        rows.add(new Object[]{invoiceNo, orderId, vendorName, rdCode, skuCode, skuName, tank, qty});
+                    }
+                }
+            }
+            if (rows.isEmpty()) {
+                log.warn("tanker load-again: instance={} got {} loadingInvoices line(s) but none had a tank allocation -- nothing seeded", instanceId, lines.size());
+                return;
+            }
+
+            String vehicleNo = str(pageData, "vehicleNo", "vehicle_no");
+            String gatePassNo = str(pageData, "gpNumber", "gp_number");
+            if (vehicleNo == null || gatePassNo == null) {
+                List<Map<String, Object>> gp = jdbc.queryForList(
+                        "SELECT vehicle_no, gp_number FROM gate_pass WHERE workflow_instance_id = ? AND tenant_id = ?", instanceId, tenantId);
+                if (!gp.isEmpty()) {
+                    if (vehicleNo == null && gp.get(0).get("vehicle_no") != null) vehicleNo = String.valueOf(gp.get(0).get("vehicle_no"));
+                    if (gatePassNo == null && gp.get(0).get("gp_number") != null) gatePassNo = String.valueOf(gp.get(0).get("gp_number"));
+                }
+            }
+
+            jdbc.update("DELETE FROM loading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? "
+                            + "AND invoice_no IS NOT NULL AND status = 'IN_PROGRESS' AND (processed_quantity IS NULL OR processed_quantity = 0)",
+                    tenantId, instanceId);
+            jdbc.update(
+                    "INSERT INTO loading_progress_detail (tenant_id, workflow_instance_id, vehicle_no, gate_pass_no, flow_variant_code, current_step, total_quantity, processed_quantity, loading_start_time) "
+                            + "VALUES (?, ?, ?, ?, ?, ?, 0, 0, CURRENT_TIMESTAMP) "
+                            + "ON DUPLICATE KEY UPDATE "
+                            + "vehicle_no = COALESCE(VALUES(vehicle_no), vehicle_no), "
+                            + "gate_pass_no = COALESCE(VALUES(gate_pass_no), gate_pass_no), "
+                            + "flow_variant_code = COALESCE(flow_variant_code, VALUES(flow_variant_code)), "
+                            + "current_step = VALUES(current_step), "
+                            + "loading_start_time = COALESCE(loading_start_time, VALUES(loading_start_time))",
+                    tenantId, instanceId, vehicleNo, gatePassNo, instance.getWorkflowCode(), instance.getCurrentState());
+            Long parentId = jdbc.queryForObject(
+                    "SELECT id FROM loading_progress_detail WHERE tenant_id = ? AND workflow_instance_id = ?", Long.class, tenantId, instanceId);
+
+            int written = 0;
+            for (Object[] r : rows) {
+                jdbc.update(
+                        "INSERT INTO loading_progress_detail_bay (tenant_id, loading_progress_detail_id, workflow_instance_id, "
+                                + "invoice_no, order_id, vendor_name, rd_code, sku_code, sku_desc, bay_name, quantity, status) "
+                                + "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
+                        tenantId, parentId, instanceId, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
+                written++;
+            }
+            // recompute (not add) so a re-run converges to the same total
+            jdbc.update("UPDATE loading_progress_detail SET total_quantity = (SELECT COALESCE(SUM(b.quantity), 0) FROM loading_progress_detail_bay b "
+                            + "WHERE b.tenant_id = ? AND b.workflow_instance_id = ? AND b.status <> 'REJECTED') "
+                            + "WHERE tenant_id = ? AND workflow_instance_id = ?",
+                    tenantId, instanceId, tenantId, instanceId);
+            log.info("tanker load-again: instance={} wrote {} IN_PROGRESS loading_progress_detail_bay row(s)", instanceId, written);
+        } catch (Exception e) {
+            log.warn("tanker load-again seeding failed for instance={}: {}", instanceId, e.getMessage());
+        }
     }
 
     private static String str(Map<String, Object> m, String... keys) {
