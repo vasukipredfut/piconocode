@@ -350,6 +350,23 @@ class TankerWeighmentSkuCaptureActionHandlerTest {
     }
 
     @Test
+    void loggedInUser_isStampedOnEachClosedTankRow() {
+        when(jdbc.queryForList(contains("SELECT id, bay_name, quantity FROM loading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(bayRow(11, "ROT-1", "60"), bayRow(12, "ROT-2", "40")));
+        fefoPicker.seed("SKU1215", lotRow("LOT-A", "BIN-A", "KG", "1000"));
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
+                new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
+                        new com.aria.auth.AuthUserDetails(42L, "officer", "x", 1L), "n/a", List.of()));
+        try {
+            handler.handle(invocationWithLines(List.of(line("ROU028912", "SKU1215", 100))));
+        } finally {
+            org.springframework.security.core.context.SecurityContextHolder.clearContext();
+        }
+        verify(jdbc).update("UPDATE loading_progress_detail_bay SET weighed_by_id = ? WHERE tenant_id = ? AND id = ?", 42L, 1L, 11L);
+        verify(jdbc).update("UPDATE loading_progress_detail_bay SET weighed_by_id = ? WHERE tenant_id = ? AND id = ?", 42L, 1L, 12L);
+    }
+
+    @Test
     void tankLocationGiven_butNoOpenRowForIt_errors() {
         when(jdbc.queryForList(contains("SELECT id, bay_name, quantity FROM loading_progress_detail_bay"), any(Object[].class)))
                 .thenReturn(List.of(bayRow(11, "ROT-1", "60")));

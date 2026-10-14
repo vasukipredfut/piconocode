@@ -197,6 +197,8 @@ public class M10StartUnloadBayActionHandler implements ActionHandler {
                             + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
                     tenantId, parentId, instanceId, e.routeId, e.orderId, e.vendorName, e.rdCode, e.skuCode, e.skuDesc, bayName, e.quantity, e.unloadingQty, godownCode, plantCode);
 
+            RowActorStamp.startedUnloading(jdbc, tenantId, instanceId, e.routeId, e.orderId, e.skuCode, bayName, RowActorStamp.performedBy(null, formData));
+
             int flagged = jdbc.update(
                     "UPDATE loading_progress_detail_bay SET status = 'UNLOAD_IN_PROGRESS' "
                             + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "

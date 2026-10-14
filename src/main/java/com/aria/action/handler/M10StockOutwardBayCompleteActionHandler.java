@@ -168,6 +168,8 @@ public class M10StockOutwardBayCompleteActionHandler implements ActionHandler {
                 return ActionResult.error("no open bay row found for route_id=" + routeId + " order_id=" + orderId + " sku_code=" + skuCode);
             }
 
+            RowActorStamp.completedLoading(jdbc, tenantId, instanceId, routeId, orderId, skuCode, RowActorStamp.performedBy(line, formData));
+
             int dispatchTasksClosed = jdbc.update(
                     "UPDATE dispatch_task SET status = 'Completed', "
                             + "completed_at = CASE WHEN completed_at IS NULL THEN CURRENT_TIMESTAMP ELSE completed_at END "

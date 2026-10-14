@@ -169,6 +169,8 @@ public class M10StockInwardStartBayActionHandler implements ActionHandler {
                     tenantId, parentId, instanceId, e.routeId, e.orderId, e.skuCode, e.skuDesc, bayName, e.quantity, e.unloadingQty,
                     godownCode, plantCode, e.rdCode, e.vendorName);
 
+            RowActorStamp.startedUnloading(jdbc, tenantId, instanceId, e.routeId, e.orderId, e.skuCode, bayName, RowActorStamp.performedBy(null, formData));
+
             if ("WITHOUT_CONVEYOR".equals(e.conveyorMode) || "WITHOUT_BARCODE".equals(e.scanningStatus)) {
                 dispatchTasksSkipped++;
                 continue;

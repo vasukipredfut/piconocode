@@ -57,6 +57,8 @@ public class WorkflowEngineService {
     @Autowired private SpelGuardEvaluator guardEvaluator;
     @Autowired private JdbcTemplate jdbc;
     @Autowired(required = false) private java.util.List<WorkflowTransitionListener> transitionListeners;
+    /** Records the logged-in submitter on the page's own table; runs after every listener (see PageSubmitterStamper). */
+    @Autowired(required = false) private PageSubmitterStamper submitterStamper;
     @Autowired(required = false) private java.util.List<WorkflowTransitionValidator> transitionValidators;
 
     private final ObjectMapper json = new ObjectMapper();
@@ -364,6 +366,11 @@ public class WorkflowEngineService {
                             l.getClass().getSimpleName(), inst.getId(), ex.getMessage());
                 }
             }
+        }
+
+        // Who submitted this page -> that page's own table. Last, so the rows the listeners just wrote exist.
+        if (submitterStamper != null) {
+            submitterStamper.stamp(inst, previousState, pageCode, actorUserId, formData);
         }
 
         log.info("workflow.transition tenant={} instance={} {}->{} role={} actions={}",

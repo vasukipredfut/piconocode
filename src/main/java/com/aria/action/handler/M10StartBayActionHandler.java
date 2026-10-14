@@ -310,6 +310,8 @@ public class M10StartBayActionHandler implements ActionHandler {
                             + "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'IN_PROGRESS')",
                     tenantId, parentId, instanceId, e.routeId, e.orderId, e.skuCode, e.skuDesc, bayName, e.quantity, godownCode, plantCode);
 
+            RowActorStamp.startedLoading(jdbc, tenantId, instanceId, e.routeId, e.orderId, e.skuCode, bayName, RowActorStamp.performedBy(null, formData));
+
             if ("WITHOUT_CONVEYOR".equals(e.conveyorMode) || "WITHOUT_BARCODE".equals(e.scanningStatus)) {
                 dispatchTasksSkipped++;
                 continue;

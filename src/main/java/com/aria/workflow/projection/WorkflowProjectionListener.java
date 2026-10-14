@@ -363,7 +363,16 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
                     continue;
                 }
                 List<String> keys = (List<String>) e.getValue();
-                String v = pluck(bag, keys);
+                // A page-scoped table (page_code set) is fed by that page: read its OWN submission first. The
+                // generic pluck() walks every page's data in HashMap order and takes the first hit, so a field name
+                // shared by several pages ("status", "qc_notes"...) could come back from ANOTHER page -- e.g.
+                // qc_final_outbound_detail.status saved as APPROVED (aria:qc-preload-approval's value) although the
+                // QC had just submitted REJECTED on aria:qc-final-out. Falls back to the cross-page lookup only when
+                // the triggering page itself did not send the field.
+                String scope = (String) cfg.get("page_code");
+                boolean pageScoped = scope != null && !scope.isBlank() && triggeringPageCode != null;
+                String v = pageScoped ? pluckScoped(bag, keys, triggeringPageCode) : null;
+                if (v == null) v = pluck(bag, keys);
                 if (v != null) cols.put(ident(e.getKey()), v);
             }
         }

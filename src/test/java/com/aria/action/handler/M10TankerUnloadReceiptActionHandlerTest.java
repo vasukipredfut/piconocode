@@ -264,6 +264,21 @@ class M10TankerUnloadReceiptActionHandlerTest {
     }
 
     @Test
+    void loggedInUser_isStampedOnTheReceiptedRow() {
+        when(jdbc.queryForList(contains("unloading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(tankRow(10L, "ROT-1", "1000")));
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
+                new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
+                        new com.aria.auth.AuthUserDetails(42L, "officer", "x", 1L), "n/a", List.of()));
+        try {
+            handler.handle(invocationWithLines(List.of(line("INV-1001", "SKU1215", 500))));
+        } finally {
+            org.springframework.security.core.context.SecurityContextHolder.clearContext();
+        }
+        verify(jdbc).update("UPDATE unloading_progress_detail_bay SET unloaded_by_id = ? WHERE tenant_id = ? AND id = ?", 42L, 1L, 10L);
+    }
+
+    @Test
     void locationWise_unknownTank_errors() {
         when(jdbc.queryForList(contains("unloading_progress_detail_bay"), any(Object[].class)))
                 .thenReturn(List.of(tankRow(10L, "ROT-1", "1000")));

@@ -242,6 +242,8 @@ public class M10BayCompleteActionHandler implements ActionHandler {
                 return ActionResult.error("no open bay row found for route_id=" + routeId + " order_id=" + orderId + " sku_code=" + skuCode);
             }
 
+            RowActorStamp.completedLoading(jdbc, tenantId, instanceId, routeId, orderId, skuCode, RowActorStamp.performedBy(line, formData));
+
             log.info("action.bay-complete.bay-row-closed tenantId={} instanceId={} routeId={} skuCode={} processedQty={}",
                     tenantId, instanceId, routeId, skuCode, processedQty);
 

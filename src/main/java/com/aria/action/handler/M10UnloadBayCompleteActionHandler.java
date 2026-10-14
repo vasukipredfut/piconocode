@@ -154,6 +154,8 @@ public class M10UnloadBayCompleteActionHandler implements ActionHandler {
                 return ActionResult.error("no open unload bay row found for route_id=" + routeId + " order_id=" + orderId + " sku_code=" + skuCode);
             }
 
+            RowActorStamp.completedUnloading(jdbc, tenantId, instanceId, routeId, orderId, skuCode, RowActorStamp.performedBy(line, formData));
+
             // Partial unload support: this vehicle may come back for a SECOND
             // (or third...) bay against the same originally-loaded SKU/route
             // to take off the rest of it. Only mark the original row fully

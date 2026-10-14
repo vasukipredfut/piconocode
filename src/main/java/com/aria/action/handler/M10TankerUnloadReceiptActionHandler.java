@@ -205,6 +205,9 @@ public class M10TankerUnloadReceiptActionHandler implements ActionHandler {
                     markRollbackOnly();
                     return ActionResult.error("unloading_progress_detail_bay row changed concurrently for invoice_no=" + invoiceNo + " sku_code=" + skuCode + " — retry");
                 }
+                // who receipted this tank: the logged-in user (JWT) + the person the form names (performed_by_name)
+                RowActorStamp.unloadedRow(jdbc, tenantId,
+                        share.rowId() instanceof Number rid ? rid.longValue() : null, RowActorStamp.performedBy(line, formData));
 
                 Map<String, Object> row = new HashMap<>();
                 row.put("invoiceNo", invoiceNo);

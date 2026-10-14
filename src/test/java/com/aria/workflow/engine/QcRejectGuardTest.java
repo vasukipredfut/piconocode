@@ -68,6 +68,26 @@ class QcRejectGuardTest {
     }
 
     @Test
+    void qcSampleReject_splitsByHasLoadedStock() {
+        String toPreload = "#submitted['status'] == 'REJECTED' && #submitted['has_loaded_stock'] == 'true'";
+        String toWeight = "#submitted['status'] == 'REJECTED' && #submitted['has_loaded_stock'] != 'true'";
+        Map<String, Object> loaded = Map.of("status", "REJECTED", "has_loaded_stock", "true");
+        Map<String, Object> notLoaded = Map.of("status", "REJECTED", "has_loaded_stock", "false");
+        Map<String, Object> flagMissing = Map.of("status", "REJECTED");
+        Map<String, Object> pass = Map.of("status", "APPROVED", "has_loaded_stock", "true");
+        assertThat(allowed(toPreload, loaded, new HashMap<>())).isTrue();
+        assertThat(allowed(toWeight, loaded, new HashMap<>())).isFalse();
+        assertThat(allowed(toPreload, notLoaded, new HashMap<>())).isFalse();
+        assertThat(allowed(toWeight, notLoaded, new HashMap<>())).isTrue();
+        // flag forgotten by the UI -> safe default: the weight-2 path, never a silent skip of both
+        assertThat(allowed(toPreload, flagMissing, new HashMap<>())).isFalse();
+        assertThat(allowed(toWeight, flagMissing, new HashMap<>())).isTrue();
+        // a QC pass never takes either reject path
+        assertThat(allowed(toPreload, pass, new HashMap<>())).isFalse();
+        assertThat(allowed(toWeight, pass, new HashMap<>())).isFalse();
+    }
+
+    @Test
     void instanceThatNeverHadQcFinalOut_isNormalFlow_noError() {
         Map<String, Object> yes = Map.of("withinTolerance", "YES");
         assertThat(allowed(Q, yes, bagWithQc(null))).isFalse();

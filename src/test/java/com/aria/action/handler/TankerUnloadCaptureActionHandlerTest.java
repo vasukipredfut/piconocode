@@ -279,6 +279,21 @@ class TankerUnloadCaptureActionHandlerTest {
     }
 
     @Test
+    void loggedInUser_isStampedOnTheUnloadedTankRow() {
+        openRows(row("id", 11L, "bay_name", "COT-9", "quantity", new BigDecimal("2000")), null);
+        consumed(Map.of("COT-9", "2000"));
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
+                new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
+                        new com.aria.auth.AuthUserDetails(42L, "officer", "x", 1L), "n/a", List.of()));
+        try {
+            unload(line(2000, "COT-9"));
+        } finally {
+            org.springframework.security.core.context.SecurityContextHolder.clearContext();
+        }
+        verify(jdbc).update("UPDATE unloading_progress_detail_bay SET unloaded_by_id = ? WHERE tenant_id = ? AND id = ?", 42L, 1L, 11L);
+    }
+
+    @Test
     void unknownTank_errors() {
         openRows(row("id", 11L, "bay_name", "TANK-1", "quantity", new BigDecimal("1000")), null);
         ActionResult r = unload(line(100, "TANK-9"));

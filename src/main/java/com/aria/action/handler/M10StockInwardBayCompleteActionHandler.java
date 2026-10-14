@@ -149,6 +149,8 @@ public class M10StockInwardBayCompleteActionHandler implements ActionHandler {
                 return ActionResult.error("unloading_progress_detail_bay row changed concurrently for route_id=" + routeId + " sku_code=" + skuCode + " — retry");
             }
 
+            RowActorStamp.completedUnloading(jdbc, tenantId, instanceId, routeId, orderId, skuCode, RowActorStamp.performedBy(line, formData));
+
             int dispatchTasksClosed = jdbc.update(
                     "UPDATE dispatch_task SET status = 'Completed', "
                             + "completed_at = CASE WHEN completed_at IS NULL THEN CURRENT_TIMESTAMP ELSE completed_at END "

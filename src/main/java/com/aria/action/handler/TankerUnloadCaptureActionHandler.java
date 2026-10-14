@@ -233,6 +233,8 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
                     return ActionResult.error("no open unload row found for route_id=" + routeId + " order_id=" + orderId
                             + " sku_code=" + skuCode + " tank=" + p.tank());
                 }
+                // who unloaded this tank: the logged-in user (JWT) + the person the form names (performed_by_name)
+                RowActorStamp.unloadedRow(jdbc, tenantId, p.rowId(), RowActorStamp.performedBy(line, formData));
                 if (tankDone) {
                     jdbc.update(
                             "UPDATE loading_progress_detail_bay SET status = 'REVERSED' "

@@ -269,6 +269,9 @@ public class TankerWeighmentSkuCaptureActionHandler implements ActionHandler {
                     return ActionResult.error("no open bay row found for route_id=" + routeId + " order_id=" + orderId + " sku_code=" + skuCode);
                 }
 
+                // who saved this tank's weight: the logged-in user (JWT) + the person the form names (performed_by_name)
+                RowActorStamp.weighedLoadingRow(jdbc, tenantId, share.rowId(), RowActorStamp.performedBy(line, formData));
+
                 log.info("action.tanker-weighment-capture.bay-row-closed tenantId={} instanceId={} routeId={} skuCode={} tank={} loadWgt={}",
                         tenantId, instanceId, routeId, skuCode, tankLocation, share.qty());
             }
