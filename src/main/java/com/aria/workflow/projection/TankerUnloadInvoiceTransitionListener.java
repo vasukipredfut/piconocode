@@ -153,14 +153,17 @@ public class TankerUnloadInvoiceTransitionListener implements WorkflowTransition
             }
         }
 
-        // lines whose invoice + SKU + tank (+ RD code, so a "SAMPLE TEST" row and a normal row into the same tank are two
-        // different lines) already has a surviving (closed / weighed / rejected) row are not written again
+        // A line whose invoice + SKU + tank (+ RD code, so a "SAMPLE TEST" row and a normal row into the same tank are two
+        // different lines) already has a row still IN_PROGRESS -- one that is part-weighed, so it survived the delete above --
+        // is not written again: that row is still open and weighing it carries on. A tank whose earlier row is DONE (or
+        // REJECTED) takes a NEW row: Unload Again / Load Again may give the same tank a second time, and the closed row
+        // stays as history.
         List<Object[]> fresh = new ArrayList<>();
         totalQty = BigDecimal.ZERO;
         for (Object[] r : rows) {
             Integer kept = jdbc.queryForObject(
                     "SELECT COUNT(*) FROM unloading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? "
-                            + "AND invoice_no <=> ? AND sku_code <=> ? AND bay_name <=> ? AND rd_code <=> ?",
+                            + "AND invoice_no <=> ? AND sku_code <=> ? AND bay_name <=> ? AND rd_code <=> ? AND status = 'IN_PROGRESS'",
                     Integer.class, tenantId, instanceId, r[0], r[4], r[6], r[3]);
             if (kept != null && kept > 0) continue;
             fresh.add(r);

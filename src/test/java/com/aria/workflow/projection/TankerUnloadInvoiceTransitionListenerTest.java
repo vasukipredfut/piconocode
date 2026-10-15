@@ -135,8 +135,8 @@ class TankerUnloadInvoiceTransitionListenerTest {
     }
 
     @Test
-    void lineWhoseTankAlreadyHasAClosedRow_isNotInsertedAgain() {
-        // invoice INV1 + SKU1 + ROT-1 was already weighed (DONE) -- it survives the delete and the re-sent line is skipped
+    void lineWhoseTankHasAPartWeighedInProgressRow_isNotInsertedAgain() {
+        // invoice INV1 + SKU1 + ROT-1 has a part-weighed row still IN_PROGRESS -- it survives the delete, the re-sent line is skipped
         when(jdbc.queryForObject(contains("SELECT COUNT(*) FROM unloading_progress_detail_bay"), eq(Integer.class), any(Object[].class)))
                 .thenReturn(1);
         WorkflowInstance inst = instance("M10.TankerInbound", "QC_APPROVED");
@@ -146,6 +146,24 @@ class TankerUnloadInvoiceTransitionListenerTest {
         listener.onTransition(inst, "QC_APPROVED", bag(line));
 
         verify(jdbc, never()).update(contains("INSERT INTO unloading_progress_detail_bay"), any(Object[].class));
+    }
+
+    @Test
+    void tankWhoseEarlierRowIsDone_takesANewRow_forUnloadAgainOrLoadAgain() {
+        // the same invoice + SKU + ROT-1 was weighed (DONE) earlier; giving ROT-1 again must write a new IN_PROGRESS row
+        // (the survivor check only counts IN_PROGRESS rows, so a DONE one reads as 0 here)
+        when(jdbc.queryForObject(contains("SELECT COUNT(*) FROM unloading_progress_detail_bay"), eq(Integer.class), any(Object[].class)))
+                .thenReturn(0);
+        WorkflowInstance inst = instance("M10.TankerInbound", "QC_APPROVED");
+        Map<String, Object> line = baseLine("SKU1", "30");
+        line.put("tank_allocations", List.of(Map.of("tank_location", "ROT-1", "qty", "30")));
+
+        listener.onTransition(inst, "QC_APPROVED", bag(line));
+
+        verify(jdbc).queryForObject(argThat((String sql) -> sql.contains("status = 'IN_PROGRESS'")), eq(Integer.class), any(Object[].class));
+        verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
+                eq(1L), eq(777L), eq(1495L), eq("INV1"), isNull(), isNull(), isNull(),
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("30")), isNull(), isNull());
     }
 
     @Test
@@ -167,8 +185,8 @@ class TankerUnloadInvoiceTransitionListenerTest {
     }
 
     @Test
-    void closedSampleRowInATank_doesNotSwallowANormalLineIntoTheSameTank() {
-        // a weighed SAMPLE TEST row sits in ROT-1; the normal (no RD flag) line for the same invoice + SKU + ROT-1 must still be written
+    void openSampleRowInATank_doesNotSwallowANormalLineIntoTheSameTank() {
+        // a part-weighed SAMPLE TEST row sits in ROT-1; the normal (no RD flag) line for the same invoice + SKU + ROT-1 must still be written
         when(jdbc.queryForObject(contains("SELECT COUNT(*) FROM unloading_progress_detail_bay"), eq(Integer.class), any(Object[].class)))
                 .thenAnswer(inv -> "SAMPLE TEST".equals(inv.getArgument(7)) ? 1 : 0);
         WorkflowInstance inst = instance("M10.TankerInbound", "QC_APPROVED");
