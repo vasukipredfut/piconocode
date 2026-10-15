@@ -118,6 +118,82 @@ class TankerUnloadInvoiceTransitionListenerTest {
                 eq("SKU1"), eq("SKU1 Desc"), eq("ROT-2"), eq(new BigDecimal("40")), eq(new BigDecimal("5")), eq("Short supply"));
     }
 
+    // ---- a weighed / closed row is never wiped or re-opened by a later transition that re-sends the list ----
+
+    @Test
+    void rerun_deletesOnlyUnstartedInProgressRows_neverDoneOnes() {
+        WorkflowInstance inst = instance("M10.TankerInbound", "QC_APPROVED");
+        Map<String, Object> line = baseLine("SKU1", "20");
+        line.put("tank_location", "ROT-1");
+
+        listener.onTransition(inst, "DISPATCH_QUEUED", bag(line));
+
+        verify(jdbc).update(argThat((String sql) -> sql.startsWith("DELETE FROM unloading_progress_detail_bay")
+                && sql.contains("status = 'IN_PROGRESS'") && sql.contains("processed_quantity")), any(Object[].class));
+        verify(jdbc, never()).update(startsWith("DELETE FROM unloading_progress_detail "), any(Object[].class));
+        verify(jdbc, never()).update(eq("DELETE FROM unloading_progress_detail WHERE tenant_id = ? AND workflow_instance_id = ?"), any(Object[].class));
+    }
+
+    @Test
+    void lineWhoseTankAlreadyHasAClosedRow_isNotInsertedAgain() {
+        // invoice INV1 + SKU1 + ROT-1 was already weighed (DONE) -- it survives the delete and the re-sent line is skipped
+        when(jdbc.queryForObject(contains("SELECT COUNT(*) FROM unloading_progress_detail_bay"), eq(Integer.class), any(Object[].class)))
+                .thenReturn(1);
+        WorkflowInstance inst = instance("M10.TankerInbound", "QC_APPROVED");
+        Map<String, Object> line = baseLine("SKU1", "100");
+        line.put("tank_allocations", List.of(Map.of("tank_location", "ROT-1", "qty", "100")));
+
+        listener.onTransition(inst, "QC_APPROVED", bag(line));
+
+        verify(jdbc, never()).update(contains("INSERT INTO unloading_progress_detail_bay"), any(Object[].class));
+    }
+
+    @Test
+    void onlyTheMissingTankIsInserted_whenOneOfTwoAlreadyHasARow() {
+        when(jdbc.queryForObject(contains("SELECT COUNT(*) FROM unloading_progress_detail_bay"), eq(Integer.class), any(Object[].class)))
+                .thenAnswer(inv -> "ROT-1".equals(inv.getArgument(6)) ? 1 : 0);
+        WorkflowInstance inst = instance("M10.TankerInbound", "QC_APPROVED");
+        Map<String, Object> line = baseLine("SKU1", "100");
+        line.put("tank_allocations", List.of(
+                Map.of("tank_location", "ROT-1", "qty", "60"),
+                Map.of("tank_location", "ROT-2", "qty", "40")));
+
+        listener.onTransition(inst, "QC_APPROVED", bag(line));
+
+        verify(jdbc, times(1)).update(contains("INSERT INTO unloading_progress_detail_bay"), any(Object[].class));
+        verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
+                eq(1L), eq(777L), eq(1495L), eq("INV1"), isNull(), isNull(), isNull(),
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-2"), eq(new BigDecimal("40")), isNull(), isNull());
+    }
+
+    @Test
+    void closedSampleRowInATank_doesNotSwallowANormalLineIntoTheSameTank() {
+        // a weighed SAMPLE TEST row sits in ROT-1; the normal (no RD flag) line for the same invoice + SKU + ROT-1 must still be written
+        when(jdbc.queryForObject(contains("SELECT COUNT(*) FROM unloading_progress_detail_bay"), eq(Integer.class), any(Object[].class)))
+                .thenAnswer(inv -> "SAMPLE TEST".equals(inv.getArgument(7)) ? 1 : 0);
+        WorkflowInstance inst = instance("M10.TankerInbound", "QC_APPROVED");
+        Map<String, Object> line = baseLine("SKU1", "100");
+        line.put("tank_allocations", List.of(Map.of("tank_location", "ROT-1", "qty", "100")));
+
+        listener.onTransition(inst, "QC_APPROVED", bag(line));
+
+        verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"), any(Object[].class));
+    }
+
+    @Test
+    void parentIsUpsertedAndItsTotalsRecomputedFromTheRows() {
+        WorkflowInstance inst = instance("M10.TankerInbound", "QC_APPROVED");
+        Map<String, Object> line = baseLine("SKU1", "20");
+        line.put("tank_location", "ROT-1");
+
+        listener.onTransition(inst, "DISPATCH_QUEUED", bag(line));
+
+        verify(jdbc).update(argThat((String sql) -> sql.contains("INSERT INTO unloading_progress_detail ") && sql.contains("ON DUPLICATE KEY UPDATE")),
+                any(Object[].class));
+        verify(jdbc).update(argThat((String sql) -> sql.startsWith("UPDATE unloading_progress_detail p SET")
+                && sql.contains("b.status <> 'REJECTED'") && sql.contains("THEN 'IN_PROGRESS' ELSE p.status END")), eq(1L), eq(1495L));
+    }
+
     // ---- "load again": loadingInvoices -> loading_progress_detail(_bay), status IN_PROGRESS ----
 
     @Test

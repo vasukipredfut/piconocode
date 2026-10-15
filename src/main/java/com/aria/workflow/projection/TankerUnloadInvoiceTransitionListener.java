@@ -99,14 +99,14 @@ public class TankerUnloadInvoiceTransitionListener implements WorkflowTransition
 
         if (!(linesRaw instanceof List<?> lines) || lines.isEmpty()) return;
 
-        // Idempotent re-run: this instance's prior snapshot (if any) is fully
-        // replaced, same reasoning as DispatchInvoiceItemTransitionListener.
-        // Scoped to invoice_no NOT NULL so this never touches a reject-unload
-        // row for the same instance (impossible in practice — see class
-        // javadoc — but the guard costs nothing and documents the intent).
-        jdbc.update("DELETE FROM unloading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? AND invoice_no IS NOT NULL",
-                tenantId, instanceId);
-        jdbc.update("DELETE FROM unloading_progress_detail WHERE tenant_id = ? AND workflow_instance_id = ?",
+        // Idempotent re-run, same reasoning as DispatchInvoiceItemTransitionListener -- but only for rows nobody has
+        // started yet. A row the weighment operator already closed (DONE, stock posted), one that is part-weighed,
+        // or one QC marked REJECTED is history and is NEVER deleted or re-opened: a later transition that re-sends
+        // the list (e.g. the Sample Oil Test save or Load Again, which send unloadingInvoices along) would otherwise
+        // turn a weighed row back into IN_PROGRESS and post its stock a second time when it is weighed again.
+        // Scoped to invoice_no NOT NULL so this never touches a reject-unload row for the same instance.
+        jdbc.update("DELETE FROM unloading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? AND invoice_no IS NOT NULL "
+                        + "AND status = 'IN_PROGRESS' AND (processed_quantity IS NULL OR processed_quantity = 0)",
                 tenantId, instanceId);
 
         String vehicleNo = str(pageData, "vehicleNo", "vehicle_no");
@@ -153,9 +153,26 @@ public class TankerUnloadInvoiceTransitionListener implements WorkflowTransition
             }
         }
 
+        // lines whose invoice + SKU + tank (+ RD code, so a "SAMPLE TEST" row and a normal row into the same tank are two
+        // different lines) already has a surviving (closed / weighed / rejected) row are not written again
+        List<Object[]> fresh = new ArrayList<>();
+        totalQty = BigDecimal.ZERO;
+        for (Object[] r : rows) {
+            Integer kept = jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM unloading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? "
+                            + "AND invoice_no <=> ? AND sku_code <=> ? AND bay_name <=> ? AND rd_code <=> ?",
+                    Integer.class, tenantId, instanceId, r[0], r[4], r[6], r[3]);
+            if (kept != null && kept > 0) continue;
+            fresh.add(r);
+            totalQty = totalQty.add((BigDecimal) r[7]);
+        }
+        rows = fresh;
+
         jdbc.update(
                 "INSERT INTO unloading_progress_detail (tenant_id, workflow_instance_id, vehicle_no, gate_pass_no, total_quantity, processed_quantity, status) "
-                        + "VALUES (?,?,?,?,?,0,'IN_PROGRESS')",
+                        + "VALUES (?,?,?,?,?,0,'IN_PROGRESS') "
+                        + "ON DUPLICATE KEY UPDATE vehicle_no = COALESCE(VALUES(vehicle_no), vehicle_no), "
+                        + "gate_pass_no = COALESCE(VALUES(gate_pass_no), gate_pass_no)",
                 tenantId, instanceId, vehicleNo, gatePassNo, totalQty);
         Long parentId = jdbc.queryForObject(
                 "SELECT id FROM unloading_progress_detail WHERE tenant_id = ? AND workflow_instance_id = ?",
@@ -173,6 +190,19 @@ public class TankerUnloadInvoiceTransitionListener implements WorkflowTransition
                 log.warn("unloading_progress_detail_bay insert failed for instance {} invoice_no={}: {}", instanceId, r[0], e.getMessage());
             }
         }
+
+        // the parent follows its rows: total = every non-rejected invoice row, processed = what has been weighed, and it is
+        // open again while any row is still IN_PROGRESS (a new Sample / Load Again row added after everything was DONE)
+        jdbc.update("UPDATE unloading_progress_detail p SET "
+                        + "p.total_quantity = (SELECT COALESCE(SUM(b.quantity), 0) FROM unloading_progress_detail_bay b "
+                        + "WHERE b.tenant_id = p.tenant_id AND b.workflow_instance_id = p.workflow_instance_id AND b.invoice_no IS NOT NULL AND b.status <> 'REJECTED'), "
+                        + "p.processed_quantity = (SELECT COALESCE(SUM(b.processed_quantity), 0) FROM unloading_progress_detail_bay b "
+                        + "WHERE b.tenant_id = p.tenant_id AND b.workflow_instance_id = p.workflow_instance_id AND b.invoice_no IS NOT NULL), "
+                        + "p.status = CASE WHEN EXISTS (SELECT 1 FROM unloading_progress_detail_bay b WHERE b.tenant_id = p.tenant_id "
+                        + "AND b.workflow_instance_id = p.workflow_instance_id AND b.invoice_no IS NOT NULL AND b.status = 'IN_PROGRESS') "
+                        + "THEN 'IN_PROGRESS' ELSE p.status END "
+                        + "WHERE p.tenant_id = ? AND p.workflow_instance_id = ?",
+                tenantId, instanceId);
 
         log.info("unloading_progress_detail (tanker): wrote {}/{} row(s) for instance {} (vehicle={}, totalQty={})",
                 written, rows.size(), instanceId, vehicleNo, totalQty);
