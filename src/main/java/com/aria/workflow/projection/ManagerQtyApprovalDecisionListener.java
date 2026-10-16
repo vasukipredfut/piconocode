@@ -54,7 +54,10 @@ public class ManagerQtyApprovalDecisionListener implements WorkflowTransitionLis
 
     @Override
     public void onTransition(WorkflowInstance instance, String previousState, Map<String, Object> bag) {
-        if (bag == null || !"QTY_PENDING_MANAGER".equals(previousState)
+        // aria:manager-qty-approval is submitted from WEIGHMENT_2 on the first pass (the tolerance routing: within -> document
+        // verification, outside -> QTY_PENDING_MANAGER) and again from QTY_PENDING_MANAGER when the manager decides. Only that
+        // page has a transition out of either state in M10.TankerInbound, so the previous state alone identifies it.
+        if (bag == null || !("QTY_PENDING_MANAGER".equals(previousState) || "WEIGHMENT_2".equals(previousState))
                 || !"M10.TankerInbound".equals(instance.getWorkflowCode())) {
             return;
         }
@@ -66,6 +69,14 @@ public class ManagerQtyApprovalDecisionListener implements WorkflowTransitionLis
             putIfPresent(cols, "manager_qty_reason", page, "variance_reason");
             putIfPresent(cols, "manager_decision", page, "status");
             putIfPresent(cols, "grn_status", page, "grn_status");
+            // Invoice - Unloading (the page's own "Difference"), plus the tolerance figures the page shows: expected / loaded
+            // weight, the variance % and the within-tolerance verdict (columns of V263).
+            putIfPresent(cols, "qty_difference", page, "qty_difference_display");
+            putIfPresent(cols, "expected_weight_kg", page, "expected_weight_kg");
+            putIfPresent(cols, "loaded_weight_kg", page, "loaded_weight_kg");
+            putIfPresent(cols, "pmt_variance_pct", page, "pmt_variance_pct");
+            String within = firstNonBlank(str(page, "within_tolerance"), str(page, "withinTolerance"));
+            if (within != null) cols.put("pmt_within_tolerance", within);
             // manager_name (V358): the approving manager's name, sent by the UI.
             String managerName = firstNonBlank(str(page, "manager_name"), str(page, "managerName"));
             if (managerName != null) cols.put("manager_name", managerName);
