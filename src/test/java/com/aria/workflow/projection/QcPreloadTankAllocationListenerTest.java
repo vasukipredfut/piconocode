@@ -116,6 +116,66 @@ class QcPreloadTankAllocationListenerTest {
         verifyNoInteractions(jdbc);
     }
 
+    // ---- reject-unload route: QC Final Out rejected after loading, QC preload Approve goes to QC_SAMPLE_APPROVED ----
+
+    private Map<String, Object> rejectedUnloadBag(String qcFinalOutStatus) {
+        Map<String, Object> bag = new HashMap<>();
+        Map<String, Object> page = new HashMap<>();
+        page.put("tankUnloadAllocations", List.of(new HashMap<>(Map.of("order_dispatch_detail_id", 3886, "tank_location", "COT-5",
+                "alloc_qty", "20", "sku_code", "SKU1013", "sku_desc", "SF ACID OIL", "order_id", "OR2256762", "route_id", "ROU638342"))));
+        bag.put("aria:qc-preload-approval", page);
+        if (qcFinalOutStatus != null) bag.put("aria:qc-final-out", new HashMap<>(Map.of("status", qcFinalOutStatus)));
+        return bag;
+    }
+
+    @Test
+    void rejectUnloadRoute_toQcSampleApproved_savesUnloadPlanRows_andNoLoading() {
+        when(jdbc.queryForObject(contains("SELECT id FROM unloading_progress_detail"), eq(Long.class), any(Object[].class))).thenReturn(888L);
+        WorkflowInstance inst = instance("M10.TankerOutbound", "QC_SAMPLE_APPROVED");
+
+        listener.onTransition(inst, "DISPATCH_LOADING_PLANNING", rejectedUnloadBag("REJECTED"));
+
+        verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
+                eq(1L), eq(888L), eq(1495L), eq("ROU638342"), eq("OR2256762"), eq("SKU1013"), eq("SF ACID OIL"),
+                eq("COT-5"), eq(new BigDecimal("20")), isNull(), isNull());
+        verify(jdbc, never()).update(contains("INSERT INTO loading_progress_detail_bay"), any(Object[].class));
+    }
+
+    @Test
+    void rejectUnloadRoute_rejectMarkOnlyOnTheTable_isFoundThere() {
+        when(jdbc.queryForList(contains("FROM qc_final_outbound_detail"), any(Object[].class))).thenReturn(List.of(Map.of("status", "REJECTED")));
+        when(jdbc.queryForObject(contains("SELECT id FROM unloading_progress_detail"), eq(Long.class), any(Object[].class))).thenReturn(888L);
+        WorkflowInstance inst = instance("M10.TankerOutbound", "QC_SAMPLE_APPROVED");
+
+        listener.onTransition(inst, "DISPATCH_LOADING_PLANNING", rejectedUnloadBag(null));
+
+        verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"), any(Object[].class));
+    }
+
+    @Test
+    void notRejectedAtQcFinalOut_toQcSampleApproved_doesNotSeedAnUnloadPlan() {
+        WorkflowInstance inst = instance("M10.TankerOutbound", "QC_SAMPLE_APPROVED");
+        listener.onTransition(inst, "DISPATCH_LOADING_PLANNING", rejectedUnloadBag("APPROVED"));
+        verify(jdbc, never()).update(contains("INSERT INTO unloading_progress_detail_bay"), any(Object[].class));
+    }
+
+    @Test
+    void rejectUnloadRoute_withNoUsableUnloadEntry_savesNothing() {
+        WorkflowInstance inst = instance("M10.TankerOutbound", "QC_SAMPLE_APPROVED");
+        Map<String, Object> bag = rejectedUnloadBag("REJECTED");
+        pageData(bag).put("tankUnloadAllocations", List.of(Map.of("order_dispatch_detail_id", 3886, "alloc_qty", "20"),
+                Map.of("order_dispatch_detail_id", 3886, "tank_location", "COT-5", "alloc_qty", "0")));
+        listener.onTransition(inst, "DISPATCH_LOADING_PLANNING", bag);
+        verifyNoInteractions(jdbc);
+    }
+
+    @Test
+    void rejectUnloadRoute_onlyFromDispatchLoadingPlanning() {
+        WorkflowInstance inst = instance("M10.TankerOutbound", "QC_SAMPLE_APPROVED");
+        listener.onTransition(inst, "LOADING_COMPLETED", rejectedUnloadBag("REJECTED"));
+        verifyNoInteractions(jdbc);
+    }
+
     @Test
     void livePayload_unloadAllocations_savedAsInProgressPlanRows_evenWithNoNewLoading() {
         // Shape captured off a live reload transition (instance 2040): no NEW loading allocation (tank_location blank on

@@ -93,7 +93,7 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
         // QC_PRELOAD_APPROVED normally; LOADING_COMPLETED on a reload, where the first weighment (W1) is
         // skipped and QC preload approve goes straight to loading (see M10.TankerOutbound's workflow).
         String toState = instance.getCurrentState();
-        if (!"QC_PRELOAD_APPROVED".equals(toState) && !"LOADING_COMPLETED".equals(toState)) return;
+        boolean loadingRoute = "QC_PRELOAD_APPROVED".equals(toState) || "LOADING_COMPLETED".equals(toState);
         if (submittedDataBag == null) return;
 
         Long tenantId = TenantContext.get();
@@ -103,6 +103,14 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
             Object pageObj = submittedDataBag.get(PAGE_CODE);
             if (!(pageObj instanceof Map)) return;
             Map<String, Object> page = (Map<String, Object>) pageObj;
+
+            // Reject-unload route: a vehicle QC rejected at QC Final Out after loading has its unload tanks chosen on this page and
+            // goes on to Weighment Capture (QC_SAMPLE_APPROVED -- there is no QC sample for an unload), not to a loading state. The
+            // unload plan is still saved here, whatever state the vehicle goes to; no new loading is seeded on this route.
+            if (!loadingRoute) {
+                if (hasUnloadEntry(page) && rejectedAtQcFinalOut(tenantId, instanceId, submittedDataBag)) seedUnloadPlan(tenantId, instance, page);
+                return;
+            }
 
             // Oil already loaded that QC wants taken back off: the page's unload allocations go to
             // unloading_progress_detail(_bay), same way the loading allocations below go to loading_progress_detail(_bay).
@@ -281,6 +289,35 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
         } catch (Exception e) {
             log.warn("qc-preload tank allocation seeding failed for instance={}: {}", instanceId, e.getMessage());
         }
+    }
+
+    /** At least one {@code tankUnloadAllocations} entry with both a tank and a qty above zero. */
+    private static boolean hasUnloadEntry(Map<String, Object> page) {
+        if (!(page.get("tankUnloadAllocations") instanceof List<?> list)) return false;
+        for (Object o : list) {
+            if (!(o instanceof Map<?, ?> m)) continue;
+            String tank = firstNonBlank(str(m.get("tank_location")), str(m.get("bay_name")));
+            BigDecimal qty = toBig(firstNonNull(m.get("alloc_qty"), m.get("qty"), m.get("quantity")));
+            if (tank != null && qty.signum() > 0) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Did QC reject this vehicle at QC Final Out? The decision is on that page's submission ({@code status}, or
+     * {@code qc_final_outbound_status}) and, once projected, on {@code qc_final_outbound_detail.status}.
+     */
+    @SuppressWarnings("unchecked")
+    private boolean rejectedAtQcFinalOut(Long tenantId, Long instanceId, Map<String, Object> bag) {
+        Object qc = bag.get("aria:qc-final-out");
+        if (qc instanceof Map<?, ?> m) {
+            String v = firstNonBlank(str(((Map<String, Object>) m).get("qc_final_outbound_status")), str(((Map<String, Object>) m).get("status")));
+            if (v != null) return "REJECTED".equalsIgnoreCase(v.trim());
+        }
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT status FROM qc_final_outbound_detail WHERE tenant_id = ? AND workflow_instance_id = ?", tenantId, instanceId);
+        return !rows.isEmpty() && rows.get(0).get("status") != null
+                && "REJECTED".equalsIgnoreCase(String.valueOf(rows.get(0).get("status")).trim());
     }
 
     /**
