@@ -78,6 +78,10 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
 
     private static final Logger log = LoggerFactory.getLogger(QcPreloadTankAllocationListener.class);
     private static final String PAGE_CODE = "aria:qc-preload-approval";
+    /** unloading_progress_detail_bay.plan_source of an unload plan for a vehicle QC rejected at QC Final Out. */
+    public static final String PLAN_SOURCE_QC_PRELOAD = "QC_PRELOAD";
+    /** plan_source of every other unload plan (deviation unload, then reload) -- lets the manager pages tell it from the reject flow. */
+    public static final String PLAN_SOURCE_MANAGER_UNLOAD = "MANAGER_UNLOAD";
 
     private final JdbcTemplate jdbc;
 
@@ -104,18 +108,20 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
             if (!(pageObj instanceof Map)) return;
             Map<String, Object> page = (Map<String, Object>) pageObj;
 
-            // Reject-unload route: a vehicle QC rejected at QC Final Out after loading has its unload tanks chosen on this page and
-            // goes on to Weighment Capture (QC_SAMPLE_APPROVED -- there is no QC sample for an unload), not to a loading state. The
-            // unload plan is still saved here, whatever state the vehicle goes to; no new loading is seeded on this route.
+            // Unload route: a pre-load submit that carries a valid tankUnloadAllocations entry saves an unload plan, whatever state
+            // the vehicle goes to (QC_SAMPLE_APPROVED for a reject unload -- there is no QC sample for an unload -- or any other
+            // non-loading state for a deviation unload). No new loading is seeded on this route. A QC rejection of the pre-load
+            // itself (QC_PRELOAD_REJECTED) plans nothing. The rows are tagged so the manager pages can tell the two apart (see
+            // seedUnloadPlan).
             if (!loadingRoute) {
-                if (hasUnloadEntry(page) && rejectedAtQcFinalOut(tenantId, instanceId, submittedDataBag)) seedUnloadPlan(tenantId, instance, page);
+                if (!"QC_PRELOAD_REJECTED".equals(toState) && hasUnloadEntry(page)) seedUnloadPlan(tenantId, instance, page, submittedDataBag);
                 return;
             }
 
             // Oil already loaded that QC wants taken back off: the page's unload allocations go to
             // unloading_progress_detail(_bay), same way the loading allocations below go to loading_progress_detail(_bay).
             // Independent of whether this submission also allocated NEW loading (a pure unload plan has none).
-            seedUnloadPlan(tenantId, instance, page);
+            seedUnloadPlan(tenantId, instance, page, submittedDataBag);
 
             // "tankAllocation" is what aria:qc-preload-approval's "Order Details —
             // Tank Allocation" ListView actually submits (confirmed off a live
@@ -326,13 +332,15 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
      * row per destination tank (route_id / order_id / sku_code / sku_desc resolved from the order-sheet row, bay_name = the
      * tank the oil goes to, quantity = alloc_qty) under the {@code unloading_progress_detail} parent.
      *
-     * <p>Rows are written {@code IN_PROGRESS} with {@code plan_source = 'QC_PRELOAD'} (V367): the marker tells
+     * <p>Rows are written {@code IN_PROGRESS} with a {@code plan_source} (V367) that tells
      * {@code m10.tanker-unload-capture} that {@code bay_name} is the DESTINATION tank (oil goes there from the tank(s) it was
-     * loaded from), not an origin tank. Re-running replaces the instance's not-yet-started plan rows, so a re-delivered event
-     * or a re-submitted page never duplicates them.
+     * loaded from), not an origin tank: {@value #PLAN_SOURCE_QC_PRELOAD} when QC rejected the vehicle at QC Final Out (the reject
+     * flow), {@value #PLAN_SOURCE_MANAGER_UNLOAD} for every other unload plan (a deviation unload followed by a reload) -- the
+     * manager pages key their reject-flow behaviour on the former only. Re-running replaces the instance's not-yet-started plan
+     * rows (of either source), so a re-delivered event or a re-submitted page never duplicates them.
      */
     @SuppressWarnings("unchecked")
-    private void seedUnloadPlan(Long tenantId, WorkflowInstance instance, Map<String, Object> page) {
+    private void seedUnloadPlan(Long tenantId, WorkflowInstance instance, Map<String, Object> page, Map<String, Object> bag) {
         Object raw = page.get("tankUnloadAllocations");
         if (!(raw instanceof List<?> list) || list.isEmpty()) return;
         Long instanceId = instance.getId();
@@ -378,8 +386,10 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
             // replace this instance's not-yet-started plan rows (a re-submitted page / re-delivered event never duplicates them;
             // rows that already unloaded something keep their progress)
             jdbc.update("DELETE FROM unloading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? "
-                            + "AND plan_source = 'QC_PRELOAD' AND status = 'IN_PROGRESS' AND (processed_quantity IS NULL OR processed_quantity = 0)",
+                            + "AND plan_source IN ('" + PLAN_SOURCE_QC_PRELOAD + "', '" + PLAN_SOURCE_MANAGER_UNLOAD + "') "
+                            + "AND status = 'IN_PROGRESS' AND (processed_quantity IS NULL OR processed_quantity = 0)",
                     tenantId, instanceId);
+            String planSource = rejectedAtQcFinalOut(tenantId, instanceId, bag) ? PLAN_SOURCE_QC_PRELOAD : PLAN_SOURCE_MANAGER_UNLOAD;
             jdbc.update(
                     "INSERT INTO unloading_progress_detail (tenant_id, workflow_instance_id, flow_variant_code, current_step, vehicle_no, gate_pass_no, total_quantity, processed_quantity, status) "
                             + "VALUES (?,?,?,?,?,?,?,0,'IN_PROGRESS') "
@@ -396,7 +406,7 @@ public class QcPreloadTankAllocationListener implements WorkflowTransitionListen
                 jdbc.update(
                         "INSERT INTO unloading_progress_detail_bay "
                                 + "(tenant_id, unloading_progress_detail_id, workflow_instance_id, route_id, order_id, sku_code, sku_desc, bay_name, quantity, rd_code, vendor_name, status, plan_source) "
-                                + "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'IN_PROGRESS', 'QC_PRELOAD')",
+                                + "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'IN_PROGRESS', '" + planSource + "')",
                         tenantId, parentId, instanceId, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
             }
             log.info("qc-preload unload plan: instance={} wrote {} PLANNED unloading_progress_detail_bay row(s), total={}", instanceId, rows.size(), total);

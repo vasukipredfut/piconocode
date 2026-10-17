@@ -128,16 +128,36 @@ class TankerUnloadCaptureActionHandlerTest {
     }
 
     @Test
-    void moreThanLoaded_rejected_nothingWritten() {
+    void moreThanLoaded_isSavedAsEntered_theSurplusGoesInAsLotlessStock() {
         openRows(row("id", 11L, "bay_name", "COT-9", "quantity", new BigDecimal("2000")), null);
         consumed(Map.of("COT-9", "2000"));
 
         ActionResult r = unload(line(2500, "COT-9"));
 
+        assertThat(r.isOk()).isTrue();
+        List<Object[]> moves = updates("INSERT INTO m5_stock_movement");
+        assertThat(moves).hasSize(2);
+        // sql, tenant, kind, item, lot, from_bin, to_bin, qty, uom, ref_type, ref_id, ref_number
+        assertThat(moves.get(0)[4]).isEqualTo("L-COT-9");
+        assertThat((BigDecimal) moves.get(0)[7]).isEqualByComparingTo("2000");
+        assertThat(moves.get(1)[4]).isNull();
+        assertThat(moves.get(1)[6]).isEqualTo("COT-9");
+        assertThat((BigDecimal) moves.get(1)[7]).isEqualByComparingTo("500");
+        // the tank counts as given back: its unload row is DONE and its loading row REVERSED
+        assertThat(updates("status = 'DONE'")).hasSize(1);
+        assertThat(updates("SET status = 'REVERSED'")).hasSize(1);
+    }
+
+    @Test
+    void zeroQty_isStillRefused_nothingWritten() {
+        openRows(row("id", 11L, "bay_name", "COT-9", "quantity", new BigDecimal("2000")), null);
+        consumed(Map.of("COT-9", "2000"));
+
+        ActionResult r = unload(line(0, "COT-9"));
+
         assertThat(r.isOk()).isFalse();
-        assertThat(r.getMessage()).contains("is more than was loaded");
+        assertThat(r.getMessage()).contains("needs unloading_qty > 0");
         assertThat(updates("INSERT INTO m5_stock_movement")).isEmpty();
-        assertThat(updates("m5_stock_balance")).isEmpty();
     }
 
     @Test
@@ -174,8 +194,19 @@ class TankerUnloadCaptureActionHandlerTest {
         when(jdbc.queryForList(contains("kind = 'RETURN'"), any(Object[].class)))
                 .thenReturn(List.of(row("lot_no", "L-COT-9", "qty", new BigDecimal("1500"))));
 
-        assertThat(unload(line(600, "COT-9")).isOk()).isFalse();      // only 500 still returnable
+        // only 500 is still returnable by lot (2000 loaded - 1500 already back); 600 entered: 500 by lot + 100 lot-less surplus
+        assertThat(unload(line(600, "COT-9")).isOk()).isTrue();
+        List<Object[]> moves = updates("INSERT INTO m5_stock_movement");
+        assertThat(moves).hasSize(2);
+        assertThat(moves.get(0)[4]).isEqualTo("L-COT-9");
+        assertThat((BigDecimal) moves.get(0)[7]).isEqualByComparingTo("500");
+        assertThat(moves.get(1)[4]).isNull();
+        assertThat((BigDecimal) moves.get(1)[7]).isEqualByComparingTo("100");
+
+        clearInvocations(jdbc);
+        openRows(row("id", 11L, "bay_name", "COT-9", "quantity", new BigDecimal("2000")), null);
         assertThat(unload(line(500, "COT-9")).isOk()).isTrue();
+        assertThat(updates("INSERT INTO m5_stock_movement")).hasSize(1);  // exactly what is left, no surplus
     }
 
     @Test
@@ -331,6 +362,28 @@ class TankerUnloadCaptureActionHandlerTest {
     }
 
     @Test
+    void plan_managerUnloadRows_areHandledLikeQcPreloadPlanRows_destinationTank() {
+        // a deviation unload planned at pre-load is tagged MANAGER_UNLOAD; bay_name is the DESTINATION tank there too
+        Map<String, Object> p1 = planRow(31L, "COT-5", "10", null);
+        Map<String, Object> p2 = planRow(32L, "COT-8", "10", null);
+        p1.put("plan_source", "MANAGER_UNLOAD");
+        p2.put("plan_source", "MANAGER_UNLOAD");
+        when(jdbc.queryForList(contains("FROM unloading_progress_detail_bay"), any(Object[].class))).thenReturn(List.of(p1, p2));
+        loadedFrom("COT-1");
+        consumed(Map.of("COT-1", "20"));
+
+        ActionResult r = unload(line(20, null));
+
+        assertThat(r.isOk()).isTrue();
+        List<Object[]> moves = updates("INSERT INTO m5_stock_movement");
+        assertThat(moves).hasSize(2);
+        assertThat(moves.get(0)[5]).isEqualTo("COT-1");
+        assertThat(moves.get(0)[6]).isEqualTo("COT-5");
+        assertThat(moves.get(1)[6]).isEqualTo("COT-8");
+        assertThat(updates("status = 'DONE'")).hasSize(2);
+    }
+
+    @Test
     void plan_aNamedDestination_unloadsJustThatPlanRow_originStaysLoaded() {
         when(jdbc.queryForList(contains("FROM unloading_progress_detail_bay"), any(Object[].class)))
                 .thenReturn(List.of(planRow(31L, "COT-5", "10", null), planRow(32L, "COT-8", "10", null)));
@@ -349,31 +402,48 @@ class TankerUnloadCaptureActionHandlerTest {
     }
 
     @Test
-    void plan_moreThanThePlanStillNeeds_orMoreThanLoaded_isRefused() {
+    void plan_moreThanThePlanStillNeeds_orMoreThanLoaded_isSavedAsEntered() {
         when(jdbc.queryForList(contains("FROM unloading_progress_detail_bay"), any(Object[].class)))
                 .thenReturn(List.of(planRow(31L, "COT-5", "10", "4")));   // only 6 more planned
         loadedFrom("COT-1");
         consumed(Map.of("COT-1", "20"));
 
-        ActionResult tooMuchForPlan = unload(line(8, null));
-        assertThat(tooMuchForPlan.isOk()).isFalse();
-        assertThat(tooMuchForPlan.getMessage()).contains("more than the unload plan still needs");
+        // 8 entered although the plan needs 6 more: saved as entered, the plan row closes
+        ActionResult aboveThePlan = unload(line(8, null));
+        assertThat(aboveThePlan.isOk()).isTrue();
+        assertThat(updates("INSERT INTO m5_stock_movement")).hasSize(1);
+        assertThat(updates("status = 'DONE'")).hasSize(1);
 
+        // 6 entered although loading drew only 5: 5 go back by lot, the extra 1 goes in as lot-less stock
+        clearInvocations(jdbc);
+        when(jdbc.queryForList(contains("FROM unloading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(planRow(31L, "COT-5", "10", "4")));
         consumed(Map.of("COT-1", "5"));
-        ActionResult tooMuchForLoad = unload(line(6, null));
-        assertThat(tooMuchForLoad.isOk()).isFalse();
-        assertThat(tooMuchForLoad.getMessage()).contains("more than was loaded");
-        assertThat(updates("INSERT INTO m5_stock_movement")).isEmpty();
+        ActionResult aboveTheLoad = unload(line(6, null));
+        assertThat(aboveTheLoad.isOk()).isTrue();
+        List<Object[]> moves = updates("INSERT INTO m5_stock_movement");
+        assertThat(moves).hasSize(2);
+        assertThat((BigDecimal) moves.get(0)[7]).isEqualByComparingTo("5");
+        assertThat(moves.get(1)[4]).isNull();                              // lot-less surplus
+        assertThat(moves.get(1)[6]).isEqualTo("COT-5");
+        assertThat((BigDecimal) moves.get(1)[7]).isEqualByComparingTo("1");
+        // the origin tank gave everything back (5 of 5): its loading row is REVERSED; the plan row is DONE
+        assertThat(updates("SET status = 'REVERSED'")).hasSize(1);
+        assertThat(updates("status = 'DONE'")).hasSize(1);
     }
 
     @Test
     void plan_nothingLoaded_orUnknownDestination_errors() {
         when(jdbc.queryForList(contains("FROM unloading_progress_detail_bay"), any(Object[].class)))
                 .thenReturn(List.of(planRow(31L, "COT-5", "10", null)));
-        loadedFrom();                                                       // no origin tank
+        loadedFrom();                                                       // no origin tank: nothing to draw from, the qty goes in as entered
         ActionResult none = unload(line(5, null));
-        assertThat(none.isOk()).isFalse();
-        assertThat(none.getMessage()).contains("more than was loaded");
+        assertThat(none.isOk()).isTrue();
+        List<Object[]> moves = updates("INSERT INTO m5_stock_movement");
+        assertThat(moves).hasSize(1);
+        assertThat(moves.get(0)[4]).isNull();
+        assertThat(moves.get(0)[6]).isEqualTo("COT-5");
+        assertThat((BigDecimal) moves.get(0)[7]).isEqualByComparingTo("5");
 
         loadedFrom("COT-1");
         consumed(Map.of("COT-1", "20"));

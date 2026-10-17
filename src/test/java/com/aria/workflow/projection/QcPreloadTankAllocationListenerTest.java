@@ -153,10 +153,55 @@ class QcPreloadTankAllocationListenerTest {
     }
 
     @Test
-    void notRejectedAtQcFinalOut_toQcSampleApproved_doesNotSeedAnUnloadPlan() {
+    void notRejectedAtQcFinalOut_unloadPlanIsStillSaved_taggedManagerUnload() {
+        // a deviation unload has no REJECTED stamp -- any pre-load submit with a valid tankUnloadAllocations entry saves the plan,
+        // tagged MANAGER_UNLOAD so the manager pages can tell it from the reject flow
+        when(jdbc.queryForObject(contains("SELECT id FROM unloading_progress_detail"), eq(Long.class), any(Object[].class))).thenReturn(888L);
         WorkflowInstance inst = instance("M10.TankerOutbound", "QC_SAMPLE_APPROVED");
+
         listener.onTransition(inst, "DISPATCH_LOADING_PLANNING", rejectedUnloadBag("APPROVED"));
-        verify(jdbc, never()).update(contains("INSERT INTO unloading_progress_detail_bay"), any(Object[].class));
+
+        verify(jdbc).update(contains("'IN_PROGRESS', 'MANAGER_UNLOAD')"), any(Object[].class));
+        verify(jdbc, never()).update(contains("'IN_PROGRESS', 'QC_PRELOAD')"), any(Object[].class));
+        verify(jdbc, never()).update(contains("INSERT INTO loading_progress_detail_bay"), any(Object[].class));
+    }
+
+    @Test
+    void noQcFinalOutStatusAtAll_unloadPlanSavedAsManagerUnload() {
+        when(jdbc.queryForObject(contains("SELECT id FROM unloading_progress_detail"), eq(Long.class), any(Object[].class))).thenReturn(888L);
+        WorkflowInstance inst = instance("M10.TankerOutbound", "QC_SAMPLE_APPROVED");
+
+        listener.onTransition(inst, "DISPATCH_LOADING_PLANNING", rejectedUnloadBag(null));
+
+        verify(jdbc).update(contains("'IN_PROGRESS', 'MANAGER_UNLOAD')"), any(Object[].class));
+    }
+
+    @Test
+    void rejectedAtQcFinalOut_unloadPlanKeepsQcPreloadTag() {
+        when(jdbc.queryForObject(contains("SELECT id FROM unloading_progress_detail"), eq(Long.class), any(Object[].class))).thenReturn(888L);
+        WorkflowInstance inst = instance("M10.TankerOutbound", "QC_SAMPLE_APPROVED");
+
+        listener.onTransition(inst, "DISPATCH_LOADING_PLANNING", rejectedUnloadBag("REJECTED"));
+
+        verify(jdbc).update(contains("'IN_PROGRESS', 'QC_PRELOAD')"), any(Object[].class));
+        verify(jdbc, never()).update(contains("'IN_PROGRESS', 'MANAGER_UNLOAD')"), any(Object[].class));
+    }
+
+    @Test
+    void rePlanningReplacesNotYetStartedPlanRowsOfEitherSource() {
+        when(jdbc.queryForObject(contains("SELECT id FROM unloading_progress_detail"), eq(Long.class), any(Object[].class))).thenReturn(888L);
+        WorkflowInstance inst = instance("M10.TankerOutbound", "QC_SAMPLE_APPROVED");
+
+        listener.onTransition(inst, "DISPATCH_LOADING_PLANNING", rejectedUnloadBag("APPROVED"));
+
+        verify(jdbc).update(contains("plan_source IN ('QC_PRELOAD', 'MANAGER_UNLOAD')"), eq(1L), eq(1495L));
+    }
+
+    @Test
+    void qcPreloadRejected_savesNoUnloadPlan_evenWithUnloadEntries() {
+        WorkflowInstance inst = instance("M10.TankerOutbound", "QC_PRELOAD_REJECTED");
+        listener.onTransition(inst, "DISPATCH_LOADING_PLANNING", rejectedUnloadBag("APPROVED"));
+        verifyNoInteractions(jdbc);
     }
 
     @Test

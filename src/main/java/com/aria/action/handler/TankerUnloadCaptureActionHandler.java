@@ -38,8 +38,9 @@ import java.util.Map;
  *       a line naming {@code tank_location} (or {@code bay_name}) unloads just that tank;</li>
  *   <li>stock goes back into THAT tank's bin, into the same lots the loading drew from
  *       (oldest first), kind {@code RETURN}, ref_type {@code TANKER_UNLOAD};</li>
- *   <li>a tank can never take back more than it gave: the request is rejected if a tank's
- *       share exceeds what is still returnable from it (nothing is written then);</li>
+ *   <li>there is no upper limit on the quantity entered (only {@code > 0}): whatever the weighbridge shows is
+ *       saved. What loading drew from a tank is returned lot by lot; anything above that goes in as lot-less
+ *       stock;</li>
  *   <li>when a tank has taken back everything it gave -- or the line carries
  *       {@code "final": true}, for a weighbridge reading a little under the loaded figure --
  *       its unload row closes (DONE) and its {@code loading_progress_detail_bay} row is
@@ -149,9 +150,11 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
                 return ActionResult.error("nothing loaded to unload for route_id=" + routeId + " order_id=" + orderId + " sku_code=" + skuCode
                         + " (already unloaded, or this SKU was never loaded)");
             }
-            // Unload rows the QC planned at QC preload (plan_source QC_PRELOAD): bay_name is the tank the oil GOES TO.
-            // They are handled on their own -- the oil is taken from the tank(s) it was loaded from and put into those tanks.
-            List<Map<String, Object>> planRows = openRows.stream().filter(r -> "QC_PRELOAD".equals(r.get("plan_source"))).toList();
+            // Unload rows planned at pre-load (plan_source QC_PRELOAD for the reject flow, MANAGER_UNLOAD for a deviation unload):
+            // bay_name is the tank the oil GOES TO. They are handled on their own -- the oil is taken from the tank(s) it was
+            // loaded from and put into those tanks.
+            List<Map<String, Object>> planRows = openRows.stream()
+                    .filter(r -> "QC_PRELOAD".equals(r.get("plan_source")) || "MANAGER_UNLOAD".equals(r.get("plan_source"))).toList();
             if (!planRows.isEmpty()) {
                 String err = unloadPlannedLine(tenantId, instanceId, i, routeId, orderId, skuCode, unloadQty,
                         toLocation != null ? toLocation : onlyTank, forceFinal, planRows, RowActorStamp.performedBy(line, formData), closed);
@@ -200,12 +203,8 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
                 plans.add(new TankPlan(asLong(r.get("id")), tank, lots, returnable));
                 totalReturnable = totalReturnable.add(returnable);
             }
-            if (unloadQty.compareTo(totalReturnable) > 0) {
-                markRollbackOnly();
-                return ActionResult.error("tankerUnloadItems[" + i + "] (" + skuCode + ") unloading_qty " + unloadQty
-                        + " is more than was loaded (" + totalReturnable + " still returnable"
-                        + (onlyTank != null ? " from tank " + onlyTank : "") + ")");
-            }
+            // No upper limit on the quantity entered: whatever the weighbridge shows is saved. The qty is only split across
+            // the tanks in proportion to what each gave (equally when none has anything left to give back).
 
             BigDecimal assigned = BigDecimal.ZERO;
             for (int k = 0; k < plans.size(); k++) {
@@ -215,24 +214,28 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
                     share = unloadQty;
                 } else if (k == plans.size() - 1) {
                     share = unloadQty.subtract(assigned);
-                } else {
+                } else if (totalReturnable.signum() > 0) {
                     share = unloadQty.multiply(p.returnable()).divide(totalReturnable, 3, RoundingMode.HALF_UP);
+                } else {
+                    share = unloadQty.divide(BigDecimal.valueOf(plans.size()), 3, RoundingMode.HALF_UP);
                 }
                 assigned = assigned.add(share);
-                if (share.compareTo(p.returnable()) > 0) {
-                    markRollbackOnly();
-                    return ActionResult.error("tankerUnloadItems[" + i + "] (" + skuCode + ") tank " + p.tank() + " can take back at most "
-                            + p.returnable() + " but " + share + " was entered for it");
-                }
                 if (share.signum() == 0) continue;
 
                 BigDecimal left = share;
+                String lastUom = "KG";
                 for (LotQty lot : p.lots()) {
+                    lastUom = lot.uom();
                     if (left.signum() <= 0) break;
                     BigDecimal take = lot.qty().compareTo(left) >= 0 ? left : lot.qty();
                     addStock(tenantId, instanceId, routeId, skuCode, lot.lotNo(), p.tank(),
                             toLocation != null ? toLocation : p.tank(), take, lot.uom());
                     left = left.subtract(take);
+                }
+                if (left.signum() > 0) {
+                    // more came back than loading drew from this tank: the surplus goes in as lot-less stock
+                    addStock(tenantId, instanceId, routeId, skuCode, null, p.tank(),
+                            toLocation != null ? toLocation : p.tank(), left, lastUom);
                 }
 
                 boolean tankDone = forceFinal || share.compareTo(p.returnable()) >= 0;
@@ -300,7 +303,7 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
     }
 
     /**
-     * Unloads one SKU line against the QC's unload plan. The plan rows (IN_PROGRESS, plan_source QC_PRELOAD) name the
+     * Unloads one SKU line against the QC's unload plan. The plan rows (IN_PROGRESS, plan_source QC_PRELOAD or MANAGER_UNLOAD) name the
      * DESTINATION tanks and how much each should get; the oil comes out of the tank(s) loading drew it from (lots oldest
      * first, net of earlier returns) and is put into the destination tank, one RETURN movement per slice
      * (from_bin = origin tank, to_bin = destination). A line naming a tank unloads just that plan row; otherwise the
@@ -344,14 +347,8 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
                 totalReturnable = totalReturnable.add(lot.qty());
             }
         }
-        if (unloadQty.compareTo(totalReturnable) > 0) {
-            return "tankerUnloadItems[" + index + "] (" + skuCode + ") unloading_qty " + unloadQty
-                    + " is more than was loaded (" + totalReturnable + " still returnable)";
-        }
-        if (unloadQty.compareTo(totalRemaining) > 0) {
-            return "tankerUnloadItems[" + index + "] (" + skuCode + ") unloading_qty " + unloadQty
-                    + " is more than the unload plan still needs (" + totalRemaining + ")";
-        }
+        // No upper limit on the quantity entered (neither what was loaded nor what the plan still needs): whatever the
+        // weighbridge shows is saved; the last plan row takes anything above the plan.
 
         BigDecimal assigned = BigDecimal.ZERO;
         int cursor = 0;
@@ -370,10 +367,6 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
             }
             assigned = assigned.add(share);
             if (share.signum() <= 0) continue;
-            if (share.compareTo(rem) > 0) {
-                return "tankerUnloadItems[" + index + "] (" + skuCode + ") tank " + r.get("bay_name") + " is planned to take "
-                        + rem + " more but " + share + " was entered for it";
-            }
             String destTank = (String) r.get("bay_name");
             BigDecimal need = share;
             while (need.signum() > 0 && cursor < chunks.size()) {
@@ -385,6 +378,12 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
                     need = need.subtract(take);
                 }
                 if (c.left.signum() <= 0) cursor++;
+            }
+            if (need.signum() > 0) {
+                // more came back than loading drew: the surplus goes into the destination tank as lot-less stock
+                Chunk lastChunk = chunks.isEmpty() ? null : chunks.get(chunks.size() - 1);
+                addStock(tenantId, instanceId, routeId, skuCode, null, lastChunk != null ? lastChunk.originTank : destTank,
+                        destTank, need, lastChunk != null ? lastChunk.uom : "KG");
             }
             boolean rowDone = forceFinal || share.compareTo(rem) >= 0;
             int n = rowDone
