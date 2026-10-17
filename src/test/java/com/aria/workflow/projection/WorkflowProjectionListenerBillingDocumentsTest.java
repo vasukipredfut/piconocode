@@ -86,6 +86,31 @@ class WorkflowProjectionListenerBillingDocumentsTest {
     }
 
     @Test
+    void documentVerificationAttachments_savedAsJsonArrayOnItsOwnTable() {
+        Map<String, Object> cfg = new HashMap<>();
+        cfg.put("target_table", "document_verification_detail");
+        cfg.put("key_column", "workflow_instance_id");
+        cfg.put("state_columns", "current_step");
+        cfg.put("page_code", "aria:document-verification");
+        cfg.put("field_map_json", "{\"verification_documents\":[\"verification_documents\",\"verificationDocuments\"],\"grn_number\":[\"grn_number\"]}");
+        when(jdbc.queryForList(contains("FROM m0_workflow_projection"), any(Object[].class))).thenReturn(List.of(cfg));
+        Map<String, Object> f1 = new HashMap<>(Map.of("url", "/uploads/inv.pdf", "doc_no", "DOC-21"));
+        Map<String, Object> f2 = new HashMap<>(Map.of("url", "/uploads/seal.jpg", "doc_no", "DOC-22"));
+        Map<String, Object> page = new HashMap<>();
+        page.put("verification_documents", List.of(f1, f2));
+        page.put("grn_number", "GRN-77");
+        WorkflowInstance inbound = WorkflowInstance.builder().id(7L).tenantId(1L).workflowCode("M10.TankerInbound").currentState("QTY_RECONCILED").build();
+
+        listener.onTransition(inbound, "DOC_VERIFICATION_PENDING", Map.of("aria:document-verification", page));
+
+        Object[] a = updateArgs();
+        assertThat((String) a[0]).contains("document_verification_detail").contains("verification_documents").contains("grn_number");
+        String json = (String) List.of(a).stream().filter(o -> o instanceof String s && s.startsWith("[")).findFirst().orElseThrow();
+        assertThat(json).contains("/uploads/inv.pdf").contains("/uploads/seal.jpg").contains("\"doc_no\":\"DOC-22\"");
+        assertThat(List.of(a)).contains("GRN-77");
+    }
+
+    @Test
     void noDocumentsSubmitted_columnNotWritten() {
         listener.onTransition(inst(), "WEIGHMENT_2", Map.of("aria:billing-entry", Map.of("other", "x")));
         verify(jdbc, never()).update(contains("billing_documents"), any(Object[].class));
