@@ -77,6 +77,14 @@ public class ManagerQtyApprovalDecisionListener implements WorkflowTransitionLis
             putIfPresent(cols, "pmt_variance_pct", page, "pmt_variance_pct");
             String within = firstNonBlank(str(page, "within_tolerance"), str(page, "withinTolerance"));
             if (within != null) cols.put("pmt_within_tolerance", within);
+            // pmt_variance_pct holds the ACTUAL difference in kg here too (loaded - expected; negative = short): the page's own
+            // figure is saved as sent (above); when it sends none, it is worked out from the two weights.
+            if (cols.get("pmt_variance_pct") == null && cols.get("expected_weight_kg") != null && cols.get("loaded_weight_kg") != null) {
+                try {
+                    cols.put("pmt_variance_pct", new java.math.BigDecimal(String.valueOf(cols.get("loaded_weight_kg")))
+                            .subtract(new java.math.BigDecimal(String.valueOf(cols.get("expected_weight_kg")))));
+                } catch (NumberFormatException ignored) { /* not numbers: leave it out */ }
+            }
             // manager_name (V358): the approving manager's name, sent by the UI.
             String managerName = firstNonBlank(str(page, "manager_name"), str(page, "managerName"));
             if (managerName != null) cols.put("manager_name", managerName);

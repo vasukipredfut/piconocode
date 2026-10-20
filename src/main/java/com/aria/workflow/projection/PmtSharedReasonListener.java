@@ -201,10 +201,10 @@ public class PmtSharedReasonListener implements WorkflowTransitionListener {
                         if (expected != null) cols.put("expected_weight_kg", expected);
                         if (loaded != null) cols.put("loaded_weight_kg", loaded);
                         if (within != null) cols.put("pmt_within_tolerance", within);
-                        if (expected != null && loaded != null && expected.signum() > 0) {
-                            cols.put("pmt_variance_pct", loaded.subtract(expected).abs()
-                                    .multiply(BigDecimal.valueOf(100))
-                                    .divide(expected, 3, RoundingMode.HALF_UP));
+                        // Tanker Outbound keeps the ACTUAL difference in pmt_variance_pct, in kg (loaded - expected; negative =
+                        // short), not a percentage -- the same field the percentage used to be saved in.
+                        if (expected != null && loaded != null) {
+                            cols.put("pmt_variance_pct", loaded.subtract(expected));
                         }
                     }
                     if (!cols.isEmpty()) {

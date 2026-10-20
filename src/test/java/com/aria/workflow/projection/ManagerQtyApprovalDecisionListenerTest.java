@@ -91,6 +91,47 @@ class ManagerQtyApprovalDecisionListenerTest {
                 .doesNotContain("qty_difference").doesNotContain("expected_weight_kg").doesNotContain("pmt_within_tolerance");
     }
 
+    // ---- the actual difference in kg, saved in pmt_variance_pct (not a percentage) ----
+
+    @Test
+    void inbound_varianceWorkedOutAsLoadedMinusExpected_inTheSameField_whenThePageSendsNone() {
+        Map<String, Object> page = fullPage();
+        page.remove("pmt_variance_pct");
+        listener.onTransition(inst("M10.TankerInbound", "QTY_PENDING_MANAGER"), "WEIGHMENT_2", bag(page));
+
+        Object[] a = updateCall();
+        assertThat((String) a[0]).contains("pmt_variance_pct").doesNotContain("pmt_variance_kg");
+        assertThat(List.of(a)).anyMatch(o -> o instanceof java.math.BigDecimal b && b.compareTo(new java.math.BigDecimal("-15")) == 0);
+    }
+
+    @Test
+    void inbound_varianceSentByThePage_isSavedAsItIs() {
+        Map<String, Object> page = fullPage();
+        page.put("pmt_variance_pct", "-14.5");
+        listener.onTransition(inst("M10.TankerInbound", "QTY_PENDING_MANAGER"), "WEIGHMENT_2", bag(page));
+
+        assertThat(List.of(updateCall())).contains("-14.5");
+    }
+
+    @Test
+    void inbound_noExpectedOrLoaded_noVariance() {
+        Map<String, Object> page = new HashMap<>(Map.of("status", "APPROVED", "loaded_weight_kg", "985"));
+        listener.onTransition(inst("M10.TankerInbound", "DOC_VERIFICATION_PENDING"), "WEIGHMENT_2", bag(page));
+
+        assertThat((String) updateCall()[0]).doesNotContain("pmt_variance_pct");
+    }
+
+    @Test
+    void outbound_varianceIsTheActualDifferenceInKg_inThePmtVariancePctField() {
+        Map<String, Object> page = new HashMap<>(Map.of("status", "APPROVED", "expected_weight_kg", "20000",
+                "loaded_weight_kg", "20080", "withinTolerance", "YES"));
+        new PmtSharedReasonListener(jdbc).onTransition(inst("M10.TankerOutbound", "WEIGHT_DIFF_OK"), "WEIGHMENT_2", bag(page));
+
+        Object[] a = updateCall();
+        assertThat((String) a[0]).contains("pmt_variance_pct").doesNotContain("pmt_variance_kg");
+        assertThat(List.of(a)).anyMatch(o -> o instanceof java.math.BigDecimal b && b.compareTo(new java.math.BigDecimal("80")) == 0);
+    }
+
     @Test
     void otherWorkflowOrOtherState_doesNothing() {
         listener.onTransition(inst("M10.TankerOutbound", "QTY_PENDING_MANAGER"), "WEIGHMENT_2", bag(fullPage()));

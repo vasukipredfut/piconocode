@@ -160,57 +160,120 @@ class TankerUnloadCaptureActionHandlerTest {
         assertThat(updates("INSERT INTO m5_stock_movement")).isEmpty();
     }
 
-    // ---- loading rows keep what was loaded and count what came back (unloaded_quantity, V375) ----
+    // ---- loading rows keep what was loaded and count what came back (unloaded_quantity, V375), first loaded first ----
+
+    private void loadingRows(Map<String, Object>... rows) {
+        when(jdbc.queryForList(contains("SELECT id, processed_quantity, unloaded_quantity FROM loading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(rows));
+    }
+
+    private static Map<String, Object> loadingRow(long id, String processed, String unloaded) {
+        return row("id", id, "processed_quantity", new BigDecimal(processed), "unloaded_quantity", new BigDecimal(unloaded));
+    }
+
+    private List<Object[]> counted() {
+        return updates("UPDATE loading_progress_detail_bay SET unloaded_quantity = COALESCE(unloaded_quantity, 0) + ?");
+    }
 
     @Test
-    void oneOfTwoLoadedTanks_unloadedInPart_onlyThatTanksLoadingRowCountsIt() {
+    void fifo_oneTotal_takenFromTheFirstLoadedTankFirst_thenTheNext_noRatio() {
         openRows(row("id", 11L, "bay_name", "COT-1", "quantity", new BigDecimal("3000")),
                 row("id", 12L, "bay_name", "COT-2", "quantity", new BigDecimal("2000")));
         consumed(Map.of("COT-1", "3000", "COT-2", "2000"));
 
-        ActionResult r = unload(line(1000, "COT-1"));
+        ActionResult r = unload(line(3500, null));
 
         assertThat(r.isOk()).isTrue();
-        List<Object[]> counted = updates("SET unloaded_quantity = COALESCE(unloaded_quantity, 0) + ?");
-        assertThat(counted).hasSize(1);
-        // sql, qty, tenant, instance, route, sku, bay
-        assertThat((BigDecimal) counted.get(0)[1]).isEqualByComparingTo("1000");
-        assertThat(counted.get(0)[5]).isEqualTo("SKU1");
-        assertThat(counted.get(0)[6]).isEqualTo("COT-1");
-        // the loaded quantity is never touched, and the half-unloaded tank is not reversed
-        assertThat(updates("UPDATE loading_progress_detail_bay SET processed_quantity")).isEmpty();
+        List<Object[]> moves = updates("INSERT INTO m5_stock_movement");
+        assertThat(moves).hasSize(2);
+        assertThat(moves.get(0)[5]).isEqualTo("COT-1");                                   // from_bin: first loaded
+        assertThat((BigDecimal) moves.get(0)[7]).isEqualByComparingTo("3000");            // all of it, not 2100
+        assertThat(moves.get(1)[5]).isEqualTo("COT-2");
+        assertThat((BigDecimal) moves.get(1)[7]).isEqualByComparingTo("500");             // only the rest, not 1400
+        assertThat(updates("SET status = 'REVERSED'")).hasSize(1);                        // COT-1 is empty, COT-2 is not
+    }
+
+    @Test
+    void fifo_aSmallUnload_staysInTheFirstTank_theSecondIsNotTouched() {
+        openRows(row("id", 11L, "bay_name", "COT-1", "quantity", new BigDecimal("3000")),
+                row("id", 12L, "bay_name", "COT-2", "quantity", new BigDecimal("2000")));
+        consumed(Map.of("COT-1", "3000", "COT-2", "2000"));
+
+        unload(line(1000, null));
+
+        List<Object[]> moves = updates("INSERT INTO m5_stock_movement");
+        assertThat(moves).hasSize(1);
+        assertThat(moves.get(0)[5]).isEqualTo("COT-1");
+        assertThat((BigDecimal) moves.get(0)[7]).isEqualByComparingTo("1000");
         assertThat(updates("SET status = 'REVERSED'")).isEmpty();
     }
 
     @Test
-    void totalAcrossTwoTanks_eachLoadingRowCountsItsOwnShare() {
+    void theSelectedLocation_isWhereTheOilGoes_notWhichTankItComesFrom() {
+        openRows(row("id", 11L, "bay_name", "COT-1", "quantity", new BigDecimal("3000")),
+                row("id", 12L, "bay_name", "COT-2", "quantity", new BigDecimal("2000")));
+        consumed(Map.of("COT-1", "3000", "COT-2", "2000"));
+        when(jdbc.queryForObject(contains("m10_tanker_location"), eq(Integer.class), any(Object[].class))).thenReturn(1);
+        Map<String, Object> l = line(3500, null);
+        l.put("tank_locations", List.of("COT-2"));   // no longer narrows the source
+        l.put("to_location", "ROT-9");
+
+        unload(l);
+
+        List<Object[]> moves = updates("INSERT INTO m5_stock_movement");
+        assertThat(moves).hasSize(2);
+        assertThat(moves.get(0)[5]).isEqualTo("COT-1");
+        assertThat(moves.get(0)[6]).isEqualTo("ROT-9");
+        assertThat(moves.get(1)[5]).isEqualTo("COT-2");
+        assertThat(moves.get(1)[6]).isEqualTo("ROT-9");
+    }
+
+    @Test
+    void aTankLocationGiven_isTheDestination_andEveryLoadedTankStillGivesFifo() {
         openRows(row("id", 11L, "bay_name", "COT-1", "quantity", new BigDecimal("3000")),
                 row("id", 12L, "bay_name", "COT-2", "quantity", new BigDecimal("2000")));
         consumed(Map.of("COT-1", "3000", "COT-2", "2000"));
 
-        unload(line(2500, null));
+        unload(line(3500, "COT-2"));
 
-        List<Object[]> counted = updates("SET unloaded_quantity = COALESCE(unloaded_quantity, 0) + ?");
-        assertThat(counted).hasSize(2);
-        assertThat(counted.get(0)[6]).isEqualTo("COT-1");
-        assertThat((BigDecimal) counted.get(0)[1]).isEqualByComparingTo("1500");
-        assertThat(counted.get(1)[6]).isEqualTo("COT-2");
-        assertThat((BigDecimal) counted.get(1)[1]).isEqualByComparingTo("1000");
+        List<Object[]> moves = updates("INSERT INTO m5_stock_movement");
+        assertThat(moves).hasSize(2);
+        assertThat(moves.get(0)[5]).isEqualTo("COT-1");
+        assertThat(moves.get(0)[6]).isEqualTo("COT-2");
+        assertThat((BigDecimal) moves.get(0)[7]).isEqualByComparingTo("3000");
     }
 
     @Test
-    void toLocation_countsAgainstTheOriginTank_notTheDestination() {
+    void loadingRowsCountWhatCameBack_firstLoadedRowFirst_eachUpToItsLoadedQty() {
+        // COT-1 was loaded in two rows: 446.429 then 267.857 -- 1000 coming back fills the first, then the second, rest on the last
+        openRows(row("id", 11L, "bay_name", "COT-1", "quantity", new BigDecimal("2500")), null);
+        consumed(Map.of("COT-1", "1000"));
+        loadingRows(loadingRow(1, "446.429", "0"), loadingRow(2, "267.857", "0"));
+
+        unload(line(1000, null));
+
+        List<Object[]> counted = counted();
+        assertThat(counted).hasSize(2);
+        // sql, take, tenant, id
+        assertThat((BigDecimal) counted.get(0)[1]).isEqualByComparingTo("446.429");
+        assertThat(counted.get(0)[3]).isEqualTo(1L);
+        assertThat((BigDecimal) counted.get(1)[1]).isEqualByComparingTo("553.571");   // 267.857 + the surplus on the last row
+        assertThat(counted.get(1)[3]).isEqualTo(2L);
+    }
+
+    @Test
+    void aPartUnload_countsOnTheFirstRowOnly_theLoadedQuantityIsNeverTouched() {
         openRows(row("id", 11L, "bay_name", "COT-1", "quantity", new BigDecimal("3000")), null);
         consumed(Map.of("COT-1", "3000"));
-        when(jdbc.queryForObject(contains("m10_tanker_location"), eq(Integer.class), any(Object[].class))).thenReturn(1);
-        Map<String, Object> l = line(1200, "COT-1");
-        l.put("to_location", "ROT-2");
+        loadingRows(loadingRow(1, "2000", "0"), loadingRow(2, "1000", "0"));
 
-        unload(l);
+        unload(line(1500, null));
 
-        List<Object[]> counted = updates("SET unloaded_quantity = COALESCE(unloaded_quantity, 0) + ?");
+        List<Object[]> counted = counted();
         assertThat(counted).hasSize(1);
-        assertThat(counted.get(0)[6]).isEqualTo("COT-1");
+        assertThat((BigDecimal) counted.get(0)[1]).isEqualByComparingTo("1500");
+        assertThat(counted.get(0)[3]).isEqualTo(1L);
+        assertThat(updates("UPDATE loading_progress_detail_bay SET processed_quantity")).isEmpty();
     }
 
     @Test
@@ -360,16 +423,16 @@ class TankerUnloadCaptureActionHandlerTest {
     }
 
     @Test
-    void tankLocations_aNamedTankWithNoOpenRow_errors() {
+    void tankLocations_isIgnored_itIsNoLongerAnOriginFilter() {
         openRows(row("id", 11L, "bay_name", "T1", "quantity", new BigDecimal("4000")), null);
+        consumed(Map.of("T1", "4000"));
         Map<String, Object> l = line(100, null);
         l.put("tank_locations", "T1,T9");
 
         ActionResult r = unload(l);
 
-        assertThat(r.isOk()).isFalse();
-        assertThat(r.getMessage()).contains("no open unload row for tank T9");
-        assertThat(updates("INSERT INTO m5_stock_movement")).isEmpty();
+        assertThat(r.isOk()).isTrue();
+        assertThat(updates("INSERT INTO m5_stock_movement")).hasSize(1);
     }
 
     @Test
@@ -396,7 +459,7 @@ class TankerUnloadCaptureActionHandlerTest {
     }
 
     private void loadedFrom(String... tanks) {
-        when(jdbc.queryForList(contains("SELECT DISTINCT bay_name FROM loading_progress_detail_bay"), eq(String.class), any(Object[].class)))
+        when(jdbc.queryForList(contains("SELECT bay_name FROM loading_progress_detail_bay"), eq(String.class), any(Object[].class)))
                 .thenReturn(List.of(tanks));
     }
 
@@ -516,10 +579,13 @@ class TankerUnloadCaptureActionHandlerTest {
     }
 
     @Test
-    void unknownTank_errors() {
+    void aTankLocationNotAmongTheLoadedTanks_isJustWhereTheOilGoes() {
         openRows(row("id", 11L, "bay_name", "TANK-1", "quantity", new BigDecimal("1000")), null);
+        consumed(Map.of("TANK-1", "1000"));
         ActionResult r = unload(line(100, "TANK-9"));
-        assertThat(r.isOk()).isFalse();
-        assertThat(r.getMessage()).contains("no open unload row for tank TANK-9");
+        assertThat(r.isOk()).isTrue();
+        List<Object[]> moves = updates("INSERT INTO m5_stock_movement");
+        assertThat(moves.get(0)[5]).isEqualTo("TANK-1");
+        assertThat(moves.get(0)[6]).isEqualTo("TANK-9");
     }
 }

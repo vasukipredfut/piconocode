@@ -165,109 +165,91 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
                 totalReturned = totalReturned.add(unloadQty);
                 continue;
             }
-            // tank_locations: ONE total unloading_qty for just these tanks of the SKU (e.g. 2 of its 3), divided
-            // across them by what each can still give back; the SKU's other tanks stay open.
-            List<String> tankSubset = onlyTank != null ? List.of() : tankList(line.get("tank_locations"));
-            if (!tankSubset.isEmpty()) {
-                final List<Map<String, Object>> open = openRows;
-                for (String t : tankSubset) {
-                    if (open.stream().noneMatch(r -> t.equals(r.get("bay_name")))) {
-                        markRollbackOnly();
-                        return ActionResult.error("tankerUnloadItems[" + i + "] (" + skuCode + ") has no open unload row for tank " + t
-                                + " (already unloaded, or not loaded in that tank)");
-                    }
-                }
-                openRows = openRows.stream().filter(r -> tankSubset.contains((String) r.get("bay_name"))).toList();
-            }
-            if (onlyTank != null) {
-                final String wanted = onlyTank.trim();
-                openRows = openRows.stream().filter(r -> wanted.equals(r.get("bay_name"))).toList();
-                if (openRows.isEmpty()) {
-                    markRollbackOnly();
-                    return ActionResult.error("tankerUnloadItems[" + i + "] (" + skuCode + ") has no open unload row for tank " + wanted
-                            + " (already unloaded, or not loaded in that tank)");
-                }
-            }
-
-            // What each tank can still give back = what loading drew from it, per lot, minus earlier returns.
-            List<TankPlan> plans = new ArrayList<>();
-            BigDecimal totalReturnable = BigDecimal.ZERO;
+            // FIFO, no ratio: the one total quantity is taken from the SKU's loaded tanks in the order they were loaded (the
+            // unload rows follow the loading rows' order), each tank up to what it can still give back; the last tank takes
+            // whatever is left. The location selected (to_location, else tank_location) is where the oil goes -- it does not
+            // narrow the tanks the oil comes from (tank_locations is no longer used). With none selected each tank takes its
+            // own oil back.
+            String destination = toLocation != null ? toLocation : onlyTank;
+            String performedBy = RowActorStamp.performedBy(line, formData);
+            LinkedHashMap<String, List<Map<String, Object>>> rowsByTank = new LinkedHashMap<>();
             for (Map<String, Object> r : openRows) {
                 String tank = (String) r.get("bay_name");
                 if (tank == null || tank.isBlank()) {
                     markRollbackOnly();
                     return ActionResult.error("tankerUnloadItems[" + i + "] (" + skuCode + ") has no tank location recorded on its unload row");
                 }
+                rowsByTank.computeIfAbsent(tank, k -> new ArrayList<>()).add(r);
+            }
+            List<String> tanks = new ArrayList<>(rowsByTank.keySet());
+            BigDecimal left = unloadQty;
+            // No upper limit on the quantity entered: whatever the weighbridge shows is saved, the last tank takes the surplus.
+            for (int k = 0; k < tanks.size() && left.signum() > 0; k++) {
+                String tank = tanks.get(k);
+                // What the tank can still give back = what loading drew from it, per lot, minus earlier returns.
                 List<LotQty> lots = returnableLots(tenantId, instanceId, skuCode, tank);
                 BigDecimal returnable = lots.stream().map(LotQty::qty).reduce(BigDecimal.ZERO, BigDecimal::add);
-                plans.add(new TankPlan(asLong(r.get("id")), tank, lots, returnable));
-                totalReturnable = totalReturnable.add(returnable);
-            }
-            // No upper limit on the quantity entered: whatever the weighbridge shows is saved. The qty is only split across
-            // the tanks in proportion to what each gave (equally when none has anything left to give back).
+                boolean lastTank = k == tanks.size() - 1;
+                BigDecimal share = lastTank ? left : left.min(returnable);
+                if (share.signum() <= 0) continue;
+                left = left.subtract(share);
+                String to = destination != null ? destination : tank;
 
-            BigDecimal assigned = BigDecimal.ZERO;
-            for (int k = 0; k < plans.size(); k++) {
-                TankPlan p = plans.get(k);
-                BigDecimal share;
-                if (plans.size() == 1) {
-                    share = unloadQty;
-                } else if (k == plans.size() - 1) {
-                    share = unloadQty.subtract(assigned);
-                } else if (totalReturnable.signum() > 0) {
-                    share = unloadQty.multiply(p.returnable()).divide(totalReturnable, 3, RoundingMode.HALF_UP);
-                } else {
-                    share = unloadQty.divide(BigDecimal.valueOf(plans.size()), 3, RoundingMode.HALF_UP);
-                }
-                assigned = assigned.add(share);
-                if (share.signum() == 0) continue;
-
-                BigDecimal left = share;
+                BigDecimal rest = share;
                 String lastUom = "KG";
-                for (LotQty lot : p.lots()) {
+                for (LotQty lot : lots) {
                     lastUom = lot.uom();
-                    if (left.signum() <= 0) break;
-                    BigDecimal take = lot.qty().compareTo(left) >= 0 ? left : lot.qty();
-                    addStock(tenantId, instanceId, routeId, skuCode, lot.lotNo(), p.tank(),
-                            toLocation != null ? toLocation : p.tank(), take, lot.uom());
-                    left = left.subtract(take);
+                    if (rest.signum() <= 0) break;
+                    BigDecimal take = lot.qty().compareTo(rest) >= 0 ? rest : lot.qty();
+                    addStock(tenantId, instanceId, routeId, skuCode, lot.lotNo(), tank, to, take, lot.uom());
+                    rest = rest.subtract(take);
                 }
-                if (left.signum() > 0) {
+                if (rest.signum() > 0) {
                     // more came back than loading drew from this tank: the surplus goes in as lot-less stock
-                    addStock(tenantId, instanceId, routeId, skuCode, null, p.tank(),
-                            toLocation != null ? toLocation : p.tank(), left, lastUom);
+                    addStock(tenantId, instanceId, routeId, skuCode, null, tank, to, rest, lastUom);
                 }
 
-                boolean tankDone = forceFinal || share.compareTo(p.returnable()) >= 0;
-                int n = tankDone
-                        ? jdbc.update("UPDATE unloading_progress_detail_bay SET processed_quantity = COALESCE(processed_quantity, 0) + ?, status = 'DONE' "
-                                + "WHERE tenant_id = ? AND id = ? AND status = 'IN_PROGRESS'", share, tenantId, p.rowId())
-                        : jdbc.update("UPDATE unloading_progress_detail_bay SET processed_quantity = COALESCE(processed_quantity, 0) + ? "
-                                + "WHERE tenant_id = ? AND id = ? AND status = 'IN_PROGRESS'", share, tenantId, p.rowId());
-                if (n == 0) {
-                    markRollbackOnly();
-                    return ActionResult.error("no open unload row found for route_id=" + routeId + " order_id=" + orderId
-                            + " sku_code=" + skuCode + " tank=" + p.tank());
+                boolean tankDone = forceFinal || share.compareTo(returnable) >= 0;
+                // the tank's unload rows (one per loading row) fill in order, each up to its planned quantity; the last takes the rest
+                List<Map<String, Object>> tankRows = rowsByTank.get(tank);
+                BigDecimal toRows = share;
+                for (int j = 0; j < tankRows.size(); j++) {
+                    Map<String, Object> ur = tankRows.get(j);
+                    BigDecimal room = asDecimal(ur.get("quantity")).subtract(asDecimal(ur.get("processed_quantity")));
+                    if (room.signum() < 0) room = BigDecimal.ZERO;
+                    BigDecimal add = j == tankRows.size() - 1 ? toRows : toRows.min(room);
+                    toRows = toRows.subtract(add);
+                    if (add.signum() <= 0 && !tankDone) continue;
+                    int n = tankDone
+                            ? jdbc.update("UPDATE unloading_progress_detail_bay SET processed_quantity = COALESCE(processed_quantity, 0) + ?, status = 'DONE' "
+                                    + "WHERE tenant_id = ? AND id = ? AND status = 'IN_PROGRESS'", add, tenantId, asLong(ur.get("id")))
+                            : jdbc.update("UPDATE unloading_progress_detail_bay SET processed_quantity = COALESCE(processed_quantity, 0) + ? "
+                                    + "WHERE tenant_id = ? AND id = ? AND status = 'IN_PROGRESS'", add, tenantId, asLong(ur.get("id")));
+                    if (n == 0) {
+                        markRollbackOnly();
+                        return ActionResult.error("no open unload row found for route_id=" + routeId + " order_id=" + orderId
+                                + " sku_code=" + skuCode + " tank=" + tank);
+                    }
+                    // who unloaded this tank: the logged-in user (JWT) + the person the form names (performed_by_name)
+                    RowActorStamp.unloadedRow(jdbc, tenantId, asLong(ur.get("id")), performedBy);
                 }
-                // who unloaded this tank: the logged-in user (JWT) + the person the form names (performed_by_name)
-                RowActorStamp.unloadedRow(jdbc, tenantId, p.rowId(), RowActorStamp.performedBy(line, formData));
                 if (tankDone) {
                     jdbc.update(
                             "UPDATE loading_progress_detail_bay SET status = 'REVERSED' "
                                     + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND "
                                     + "((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? AND bay_name = ? "
                                     + "AND status IN ('UNLOAD_IN_PROGRESS','DONE')",
-                            tenantId, instanceId, routeId, orderId, orderId, skuCode, p.tank());
+                            tenantId, instanceId, routeId, orderId, orderId, skuCode, tank);
                 }
                 log.info("action.tanker-unload-capture.tank tenantId={} instanceId={} routeId={} skuCode={} tank={} qty={} tankClosed={}",
-                        tenantId, instanceId, routeId, skuCode, p.tank(), share, tankDone);
+                        tenantId, instanceId, routeId, skuCode, tank, share, tankDone);
 
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("routeId", routeId);
                 row.put("orderId", orderId);
                 row.put("skuCode", skuCode);
-                row.put("tank", p.tank());
-                row.put("returnedTo", toLocation != null ? toLocation : p.tank());
+                row.put("tank", tank);
+                row.put("returnedTo", to);
                 row.put("unloaded", share);
                 row.put("tankClosed", tankDone);
                 closed.add(row);
@@ -339,9 +321,9 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
         }
         // what loading can still give back, across the tanks the SKU was loaded from
         List<String> originTanks = jdbc.queryForList(
-                "SELECT DISTINCT bay_name FROM loading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? "
+                "SELECT bay_name FROM loading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? "
                         + "AND route_id = ? AND ((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? "
-                        + "AND status IN ('DONE','UNLOAD_IN_PROGRESS') ORDER BY bay_name",
+                        + "AND status IN ('DONE','UNLOAD_IN_PROGRESS') GROUP BY bay_name ORDER BY MIN(id)",
                 String.class, tenantId, instanceId, routeId, orderId, orderId, skuCode);
         List<Chunk> chunks = new ArrayList<>();
         BigDecimal totalReturnable = BigDecimal.ZERO;
@@ -527,15 +509,34 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
         // The origin tank's loading row keeps what it loaded (processed_quantity) untouched and counts what has come back
         // (unloaded_quantity), so a tank unloaded only in part shows loaded / unloaded / still on the vehicle. One row only:
         // the first that still has something left, so a SKU loaded twice into the same tank is not counted twice.
-        if (fromBin != null) {
-            jdbc.update("UPDATE loading_progress_detail_bay SET unloaded_quantity = COALESCE(unloaded_quantity, 0) + ? "
-                            + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND sku_code = ? AND bay_name = ? "
-                            + "AND status IN ('DONE','UNLOAD_IN_PROGRESS') "
-                            + "AND COALESCE(processed_quantity, 0) - COALESCE(unloaded_quantity, 0) > 0 ORDER BY id LIMIT 1",
-                    qty, tenantId, instanceId, routeId, skuCode, fromBin);
-        }
+        if (fromBin != null) countUnloaded(tenantId, instanceId, routeId, skuCode, fromBin, qty);
         log.info("action.tanker-unload-capture.stock-return tenantId={} instanceId={} skuCode={} lotNo={} fromBin={} toBin={} qty={}",
                 tenantId, instanceId, skuCode, lotNo, fromBin, toBin, qty);
+    }
+
+    /**
+     * What came back counts against the origin tank's loading rows, first loaded first: each row takes up to what it still has
+     * ({@code processed_quantity - unloaded_quantity}), the last row takes any surplus. {@code processed_quantity} itself is never
+     * changed.
+     */
+    private void countUnloaded(long tenantId, Long instanceId, String routeId, String skuCode, String bay, BigDecimal qty) {
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT id, processed_quantity, unloaded_quantity FROM loading_progress_detail_bay WHERE tenant_id = ? "
+                        + "AND workflow_instance_id = ? AND route_id = ? AND sku_code = ? AND bay_name = ? "
+                        + "AND status IN ('DONE','UNLOAD_IN_PROGRESS') ORDER BY id",
+                tenantId, instanceId, routeId, skuCode, bay);
+        if (rows == null || rows.isEmpty()) return;
+        BigDecimal left = qty;
+        for (int j = 0; j < rows.size() && left.signum() > 0; j++) {
+            Map<String, Object> r = rows.get(j);
+            BigDecimal room = asDecimal(r.get("processed_quantity")).subtract(asDecimal(r.get("unloaded_quantity")));
+            if (room.signum() < 0) room = BigDecimal.ZERO;
+            BigDecimal take = j == rows.size() - 1 ? left : left.min(room);
+            if (take.signum() <= 0) continue;
+            jdbc.update("UPDATE loading_progress_detail_bay SET unloaded_quantity = COALESCE(unloaded_quantity, 0) + ? "
+                    + "WHERE tenant_id = ? AND id = ?", take, tenantId, asLong(r.get("id")));
+            left = left.subtract(take);
+        }
     }
 
     private record LotQty(String lotNo, BigDecimal qty, String uom) {}
