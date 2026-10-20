@@ -160,6 +160,69 @@ class TankerUnloadCaptureActionHandlerTest {
         assertThat(updates("INSERT INTO m5_stock_movement")).isEmpty();
     }
 
+    // ---- loading rows keep what was loaded and count what came back (unloaded_quantity, V375) ----
+
+    @Test
+    void oneOfTwoLoadedTanks_unloadedInPart_onlyThatTanksLoadingRowCountsIt() {
+        openRows(row("id", 11L, "bay_name", "COT-1", "quantity", new BigDecimal("3000")),
+                row("id", 12L, "bay_name", "COT-2", "quantity", new BigDecimal("2000")));
+        consumed(Map.of("COT-1", "3000", "COT-2", "2000"));
+
+        ActionResult r = unload(line(1000, "COT-1"));
+
+        assertThat(r.isOk()).isTrue();
+        List<Object[]> counted = updates("SET unloaded_quantity = COALESCE(unloaded_quantity, 0) + ?");
+        assertThat(counted).hasSize(1);
+        // sql, qty, tenant, instance, route, sku, bay
+        assertThat((BigDecimal) counted.get(0)[1]).isEqualByComparingTo("1000");
+        assertThat(counted.get(0)[5]).isEqualTo("SKU1");
+        assertThat(counted.get(0)[6]).isEqualTo("COT-1");
+        // the loaded quantity is never touched, and the half-unloaded tank is not reversed
+        assertThat(updates("UPDATE loading_progress_detail_bay SET processed_quantity")).isEmpty();
+        assertThat(updates("SET status = 'REVERSED'")).isEmpty();
+    }
+
+    @Test
+    void totalAcrossTwoTanks_eachLoadingRowCountsItsOwnShare() {
+        openRows(row("id", 11L, "bay_name", "COT-1", "quantity", new BigDecimal("3000")),
+                row("id", 12L, "bay_name", "COT-2", "quantity", new BigDecimal("2000")));
+        consumed(Map.of("COT-1", "3000", "COT-2", "2000"));
+
+        unload(line(2500, null));
+
+        List<Object[]> counted = updates("SET unloaded_quantity = COALESCE(unloaded_quantity, 0) + ?");
+        assertThat(counted).hasSize(2);
+        assertThat(counted.get(0)[6]).isEqualTo("COT-1");
+        assertThat((BigDecimal) counted.get(0)[1]).isEqualByComparingTo("1500");
+        assertThat(counted.get(1)[6]).isEqualTo("COT-2");
+        assertThat((BigDecimal) counted.get(1)[1]).isEqualByComparingTo("1000");
+    }
+
+    @Test
+    void toLocation_countsAgainstTheOriginTank_notTheDestination() {
+        openRows(row("id", 11L, "bay_name", "COT-1", "quantity", new BigDecimal("3000")), null);
+        consumed(Map.of("COT-1", "3000"));
+        when(jdbc.queryForObject(contains("m10_tanker_location"), eq(Integer.class), any(Object[].class))).thenReturn(1);
+        Map<String, Object> l = line(1200, "COT-1");
+        l.put("to_location", "ROT-2");
+
+        unload(l);
+
+        List<Object[]> counted = updates("SET unloaded_quantity = COALESCE(unloaded_quantity, 0) + ?");
+        assertThat(counted).hasSize(1);
+        assertThat(counted.get(0)[6]).isEqualTo("COT-1");
+    }
+
+    @Test
+    void parentTotal_isRecomputedFromItsRows() {
+        openRows(row("id", 11L, "bay_name", "COT-1", "quantity", new BigDecimal("3000")), null);
+        consumed(Map.of("COT-1", "3000"));
+
+        unload(line(1000, "COT-1"));
+
+        assertThat(updates("UPDATE loading_progress_detail SET unloaded_quantity")).hasSize(1);
+    }
+
     @Test
     void smallerUnload_tankStaysOpen() {
         openRows(row("id", 11L, "bay_name", "COT-9", "quantity", new BigDecimal("2000")), null);

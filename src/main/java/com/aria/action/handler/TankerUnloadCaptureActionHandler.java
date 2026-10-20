@@ -280,6 +280,11 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
         jdbc.update("UPDATE unloading_progress_detail SET processed_quantity = processed_quantity + ?, current_step = ? "
                 + "WHERE tenant_id = ? AND workflow_instance_id = ?", totalReturned, currentStep, tenantId, instanceId);
 
+        jdbc.update("UPDATE loading_progress_detail SET unloaded_quantity = (SELECT COALESCE(SUM(b.unloaded_quantity), 0) "
+                        + "FROM loading_progress_detail_bay b WHERE b.tenant_id = ? AND b.workflow_instance_id = ?) "
+                        + "WHERE tenant_id = ? AND workflow_instance_id = ?",
+                tenantId, instanceId, tenantId, instanceId);
+
         Integer stillActive = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM loading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? AND status NOT IN ('REVERSED','REJECTED')",
                 Integer.class, tenantId, instanceId);
@@ -519,6 +524,16 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
         }
         jdbc.update("INSERT INTO m5_stock_movement (tenant_id, kind, item_code, lot_no, from_bin, to_bin, qty, uom, ref_type, ref_id, ref_number) "
                 + "VALUES (?,?,?,?,?,?,?,?,?,?,?)", tenantId, "RETURN", skuCode, lotNo, fromBin, toBin, qty, uom, "TANKER_UNLOAD", instanceId, routeId);
+        // The origin tank's loading row keeps what it loaded (processed_quantity) untouched and counts what has come back
+        // (unloaded_quantity), so a tank unloaded only in part shows loaded / unloaded / still on the vehicle. One row only:
+        // the first that still has something left, so a SKU loaded twice into the same tank is not counted twice.
+        if (fromBin != null) {
+            jdbc.update("UPDATE loading_progress_detail_bay SET unloaded_quantity = COALESCE(unloaded_quantity, 0) + ? "
+                            + "WHERE tenant_id = ? AND workflow_instance_id = ? AND route_id = ? AND sku_code = ? AND bay_name = ? "
+                            + "AND status IN ('DONE','UNLOAD_IN_PROGRESS') "
+                            + "AND COALESCE(processed_quantity, 0) - COALESCE(unloaded_quantity, 0) > 0 ORDER BY id LIMIT 1",
+                    qty, tenantId, instanceId, routeId, skuCode, fromBin);
+        }
         log.info("action.tanker-unload-capture.stock-return tenantId={} instanceId={} skuCode={} lotNo={} fromBin={} toBin={} qty={}",
                 tenantId, instanceId, skuCode, lotNo, fromBin, toBin, qty);
     }
