@@ -185,6 +185,93 @@ class TankerLoadCaptureActionHandlerTest {
         verify(jdbc).queryForList(contains("AND route_id = ?"), any(Object[].class));
     }
 
+    // ---- what is loaded back counts against the invoice's unload rows (loaded_back_quantity, V376) ----
+
+    private void unloadRows(Map<String, Object>... rows) {
+        when(jdbc.queryForList(contains("FROM unloading_progress_detail_bay"), any(Object[].class))).thenReturn(List.of(rows));
+    }
+
+    private static Map<String, Object> unloadRow(long id, String tank, String processed, String loadedBack) {
+        Map<String, Object> r = new HashMap<>();
+        r.put("id", id);
+        r.put("bay_name", tank);
+        r.put("processed_quantity", new BigDecimal(processed));
+        r.put("loaded_back_quantity", new BigDecimal(loadedBack));
+        return r;
+    }
+
+    private List<Object[]> countedBack() {
+        return mockingDetails(jdbc).getInvocations().stream()
+                .filter(i -> i.getMethod().getName().equals("update"))
+                .map(i -> i.getArguments())
+                .filter(a -> ((String) a[0]).contains("SET status = CASE WHEN COALESCE(loaded_back_quantity"))
+                .toList();
+    }
+
+    @Test
+    void loadBackInPart_countsAgainstTheTanksUnloadRow_whichStaysOpenForTheRest() {
+        openRows(row(11, "ROT-1", "60"));
+        unloadRows(unloadRow(5, "ROT-1", "100", "0"));
+
+        ActionResult r = handler.handle(inv(line("invoice_no", "INV1", "sku_code", "SKU1", "tank_location", "ROT-1", "load_wgt", 60)));
+
+        assertThat(r.isOk()).isTrue();
+        List<Object[]> counted = countedBack();
+        assertThat(counted).hasSize(1);
+        // sql, take (status test), take (add), tenant, id
+        assertThat((BigDecimal) counted.get(0)[1]).isEqualByComparingTo("60");
+        assertThat((BigDecimal) counted.get(0)[2]).isEqualByComparingTo("60");
+        assertThat(counted.get(0)[4]).isEqualTo(5L);
+        assertThat((String) counted.get(0)[0]).contains("THEN 'REVERSED'");
+    }
+
+    @Test
+    void theTankItCameOutOfIsAskedFirst_theOtherTanksOfTheLineAfterwards() {
+        openRows(row(11, "ROT-1", "1000"));
+        unloadRows(unloadRow(5, "ROT-1", "600", "0"), unloadRow(6, "ROT-2", "3000", "0"));
+
+        handler.handle(inv(line("invoice_no", "INV1", "sku_code", "SKU1", "tank_location", "ROT-1", "load_wgt", 1000)));
+
+        verify(jdbc).queryForList(contains("ORDER BY (bay_name = ?) DESC"), eq(1L), eq(1542L), eq("INV1"), eq("SKU1"), eq("ROT-1"));
+        List<Object[]> counted = countedBack();
+        assertThat(counted).hasSize(2);
+        assertThat((BigDecimal) counted.get(0)[1]).isEqualByComparingTo("600");   // ROT-1 row takes all it had
+        assertThat((BigDecimal) counted.get(1)[1]).isEqualByComparingTo("400");   // the rest goes to the next unload row
+    }
+
+    @Test
+    void aRowWithNothingLeftIsSkipped_andAnExcessIsNotCountedAnywhere() {
+        openRows(row(11, "ROT-1", "500"));
+        unloadRows(unloadRow(5, "ROT-1", "100", "100"), unloadRow(6, "ROT-2", "200", "150"));
+
+        handler.handle(inv(line("invoice_no", "INV1", "sku_code", "SKU1", "tank_location", "ROT-1", "load_wgt", 500)));
+
+        List<Object[]> counted = countedBack();
+        assertThat(counted).hasSize(1);
+        assertThat((BigDecimal) counted.get(0)[1]).isEqualByComparingTo("50");    // only the 50 still room on ROT-2
+        assertThat(counted.get(0)[4]).isEqualTo(6L);
+    }
+
+    @Test
+    void routeBasedLine_hasNoInvoice_soNoUnloadRowIsTouched() {
+        openRows(row(11, "ROT-1", "60"));
+
+        handler.handle(inv(line("route_id", "ROU1", "sku_code", "SKU1", "load_wgt", 60)));
+
+        verify(jdbc, never()).queryForList(contains("FROM unloading_progress_detail_bay"), any(Object[].class));
+        assertThat(countedBack()).isEmpty();
+    }
+
+    @Test
+    void parentTotalIsRecomputed() {
+        openRows(row(11, "ROT-1", "60"));
+        unloadRows(unloadRow(5, "ROT-1", "100", "0"));
+
+        handler.handle(inv(line("invoice_no", "INV1", "sku_code", "SKU1", "load_wgt", 60)));
+
+        verify(jdbc).update(contains("UPDATE unloading_progress_detail p SET p.loaded_back_quantity"), eq(1L), eq(1542L));
+    }
+
     /** Stock picker whose tank holds {@code available} (default plenty). */
     private static class FakeFefo extends FefoStockPickerService {
         BigDecimal available = new BigDecimal("999999");
