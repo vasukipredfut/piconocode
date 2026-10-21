@@ -1,6 +1,7 @@
 package com.aria.workflow.controller;
 
 import com.aria.security.TenantContext;
+import com.aria.workflow.engine.SpelGuardEvaluator;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.Operation;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -60,13 +61,20 @@ public class WorkflowFlowController {
             String from = str(t.get("from")), to = str(t.get("to"));
             if (from.isEmpty() || to.isEmpty() || from.equals(to)) continue;
             adj.computeIfAbsent(from, k -> new ArrayList<>())
-               .add(Map.of("to", to, "pageCode", str(t.get("pageCode"))));
+               .add(Map.of("to", to, "pageCode", str(t.get("pageCode")), "guard", str(t.get("guard"))));
         }
+
+        // The tracker shows the FIRST-TIME journey. A transition whose guard cannot pass for a fresh instance (nothing submitted
+        // yet) is a re-entry / reject route (e.g. "weighment already done -> straight to loading completed") and stays off the
+        // main line; `next` below still lists every transition.
+        Map<String, List<Map<String, String>>> mainAdj = new LinkedHashMap<>();
+        adj.forEach((k, v) -> mainAdj.put(k, v.stream().filter(e -> passesOnFreshInstance(e.get("guard"))).toList()));
 
         // Main line = the happy path: shortest route from the initial state to the
         // success terminal. Exception detours (QC_REJECTED, *_PENDING_MANAGER,
         // REJECTED_BY_*) are longer/side branches and fall off this path.
-        List<String> mainline = happyPath(initial, adj);
+        List<String> mainline = happyPath(initial, mainAdj);
+        if (mainline.size() < 2) mainline = happyPath(initial, adj);
 
         // Friendly page titles for every pageCode we might return.
         Map<String, String> titles = pageTitles(mainline, adj);
@@ -173,6 +181,31 @@ public class WorkflowFlowController {
             ") x WHERE rn = 1",
             rs -> { titles.put(rs.getString(1), rs.getString(2)); }, args.toArray());
         return titles;
+    }
+
+    private final SpelGuardEvaluator guards = new SpelGuardEvaluator();
+
+    /** Stands in for every field of the page being submitted: equal to anything, so only the "what was submitted before" part decides. */
+    private static final class AnyValue implements Comparable<Object> {
+        @Override public int compareTo(Object o) { return 0; }
+        @Override public boolean equals(Object o) { return true; }
+        @Override public int hashCode() { return 0; }
+    }
+
+    private static final Map<String, Object> ANY_SUBMISSION = new HashMap<>() {
+        @Override public Object get(Object key) { return new AnyValue(); }
+    };
+
+    private static final SpelGuardEvaluator.InstanceView FRESH_INSTANCE = new SpelGuardEvaluator.InstanceView() {
+        @Override public String getCurrentState() { return null; }
+        @Override public Map<String, Object> getSubmittedData() { return Map.of(); }
+    };
+
+    /** Does this guard pass for a fresh instance (no page submitted yet) whatever the page being submitted says? Unreadable guards pass. */
+    private boolean passesOnFreshInstance(String guard) {
+        if (guard == null || guard.isBlank()) return true;
+        SpelGuardEvaluator.Outcome o = guards.evaluate(guard, ANY_SUBMISSION, FRESH_INSTANCE, null, null);
+        return o.allowed() || o.errored();
     }
 
     private static String str(Object o) { return o == null ? "" : String.valueOf(o); }
