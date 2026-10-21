@@ -42,8 +42,12 @@ class TankerUnloadCaptureActionHandlerTest {
         return m;
     }
 
+    /** The tanks the SKU was loaded from (first loaded first). Without a QC plan the unload works off these, not off unload rows. */
     private void openRows(Map<String, Object> a, Map<String, Object> b) {
-        when(jdbc.queryForList(contains("FROM unloading_progress_detail_bay"), any(Object[].class))).thenReturn(b == null ? List.of(a) : List.of(a, b));
+        List<String> tanks = new java.util.ArrayList<>();
+        tanks.add((String) a.get("bay_name"));
+        if (b != null) tanks.add((String) b.get("bay_name"));
+        when(jdbc.queryForList(contains("SELECT bay_name FROM loading_progress_detail_bay"), eq(String.class), any(Object[].class))).thenReturn(tanks);
     }
 
     /** loading consumed {@code qty} of lot L-&lt;tank&gt; from each listed tank (qty per tank). */
@@ -295,8 +299,7 @@ class TankerUnloadCaptureActionHandlerTest {
 
         assertThat(r.isOk()).isTrue();
         assertThat(updates("INSERT INTO m5_stock_movement")).hasSize(1);
-        assertThat(updates("status = 'DONE'")).isEmpty();
-        assertThat(updates("SET status = 'REVERSED'")).isEmpty();
+        assertThat(updates("SET status = 'REVERSED'")).isEmpty();       // the origin tank still holds some, its loading row stays
     }
 
     @Test
@@ -343,23 +346,74 @@ class TankerUnloadCaptureActionHandlerTest {
     }
 
     @Test
-    void firstSave_opensUnloadRowsFromLoadedRows_thenUnloads() {
-        // no unload row yet -> handler seeds from the loaded (DONE) tank rows, then re-reads them
-        when(jdbc.queryForList(contains("FROM unloading_progress_detail_bay"), any(Object[].class)))
-                .thenReturn(List.of())
-                .thenReturn(List.of(row("id", 11L, "bay_name", "COT-9", "quantity", new BigDecimal("2000"))));
-        when(jdbc.queryForList(contains("FROM loading_progress_detail_bay"), any(Object[].class)))
-                .thenReturn(List.of(row("sku_desc", "Oil", "bay_name", "COT-9", "quantity", new BigDecimal("2000"))));
+    void firstSave_createsTheDestinationsUnloadRow_noRowPerOriginTank() {
+        openRows(row("id", 11L, "bay_name", "COT-1", "quantity", new BigDecimal("3000")),
+                row("id", 12L, "bay_name", "COT-2", "quantity", new BigDecimal("2000")));
+        consumed(Map.of("COT-1", "3000", "COT-2", "2000"));
+        when(jdbc.queryForObject(contains("m10_tanker_location"), eq(Integer.class), any(Object[].class))).thenReturn(1);
         when(jdbc.queryForObject(contains("SELECT id FROM unloading_progress_detail"), eq(Long.class), any(Object[].class))).thenReturn(7L);
-        consumed(Map.of("COT-9", "2000"));
+        // the destination has no row yet: the update touches nothing, so the row is inserted
+        when(jdbc.update(contains("UPDATE unloading_progress_detail_bay SET quantity"), any(Object[].class))).thenReturn(0);
+        Map<String, Object> l = line(3500, null);
+        l.put("to_location", "ROT-9");
 
-        ActionResult r = unload(line(2000, "COT-9"));
+        ActionResult r = unload(l);
 
         assertThat(r.isOk()).isTrue();
-        assertThat(updates("INSERT INTO unloading_progress_detail_bay")).hasSize(1);
-        assertThat(updates("SET status = 'UNLOAD_IN_PROGRESS'")).hasSize(1);
-        assertThat(updates("INSERT INTO m5_stock_movement")).hasSize(1);
-        assertThat(updates("SET status = 'REVERSED'")).hasSize(1);
+        List<Object[]> inserted = updates("INSERT INTO unloading_progress_detail_bay");
+        assertThat(inserted).hasSize(2);   // the first save for ROT-9 (3000 from COT-1), then 500 from COT-2 re-tries and also finds none
+        // sql, tenant, parent, instance, route, order, sku, desc, bay_name (destination), quantity, processed
+        assertThat(inserted.get(0)[8]).isEqualTo("ROT-9");
+        assertThat((BigDecimal) inserted.get(0)[9]).isEqualByComparingTo("3000");
+        assertThat(updates("SET status = 'UNLOAD_IN_PROGRESS'")).isEmpty();
+    }
+
+    @Test
+    void theUnloadTableKeepsTheDestination_oneRowPerPlaceTheOilWent_growingOnEachSave() {
+        openRows(row("id", 11L, "bay_name", "COT-1", "quantity", new BigDecimal("3000")),
+                row("id", 12L, "bay_name", "COT-2", "quantity", new BigDecimal("2000")));
+        consumed(Map.of("COT-1", "3000", "COT-2", "2000"));
+        when(jdbc.queryForObject(contains("m10_tanker_location"), eq(Integer.class), any(Object[].class))).thenReturn(1);
+        Map<String, Object> l = line(3500, null);
+        l.put("to_location", "ROT-9");
+
+        unload(l);
+
+        // both origin tanks' oil went to ROT-9: the one destination row is grown twice (3000, then 500), never keyed by COT-1 / COT-2
+        List<Object[]> grown = updates("UPDATE unloading_progress_detail_bay SET quantity");
+        assertThat(grown).hasSize(2);
+        // sql, qty, qty, tenant, instance, route, order, order, sku, bay_name
+        assertThat((BigDecimal) grown.get(0)[1]).isEqualByComparingTo("3000");
+        assertThat(grown.get(0)[9]).isEqualTo("ROT-9");
+        assertThat((BigDecimal) grown.get(1)[1]).isEqualByComparingTo("500");
+        assertThat(grown.get(1)[9]).isEqualTo("ROT-9");
+        assertThat((String) grown.get(0)[0]).contains("status = 'DONE'").contains("plan_source IS NULL");
+    }
+
+    @Test
+    void withNoLocationSelected_eachOriginTankGetsItsOwnUnloadRow() {
+        openRows(row("id", 11L, "bay_name", "COT-1", "quantity", new BigDecimal("3000")),
+                row("id", 12L, "bay_name", "COT-2", "quantity", new BigDecimal("2000")));
+        consumed(Map.of("COT-1", "3000", "COT-2", "2000"));
+
+        unload(line(3500, null));
+
+        List<Object[]> grown = updates("UPDATE unloading_progress_detail_bay SET quantity");
+        assertThat(grown).hasSize(2);
+        assertThat(grown.get(0)[9]).isEqualTo("COT-1");
+        assertThat(grown.get(1)[9]).isEqualTo("COT-2");
+    }
+
+    @Test
+    void parentTotalGrowsWithWhatWasUnloaded() {
+        openRows(row("id", 11L, "bay_name", "COT-1", "quantity", new BigDecimal("3000")), null);
+        consumed(Map.of("COT-1", "3000"));
+
+        unload(line(1000, null));
+
+        List<Object[]> parent = updates("INSERT INTO unloading_progress_detail (");
+        assertThat(parent).hasSize(1);
+        assertThat((BigDecimal) parent.get(0)[7]).isEqualByComparingTo("1000");
     }
 
     @Test
@@ -439,6 +493,7 @@ class TankerUnloadCaptureActionHandlerTest {
     void loggedInUser_isStampedOnTheUnloadedTankRow() {
         openRows(row("id", 11L, "bay_name", "COT-9", "quantity", new BigDecimal("2000")), null);
         consumed(Map.of("COT-9", "2000"));
+        when(jdbc.queryForList(contains("SELECT id FROM unloading_progress_detail_bay"), eq(Long.class), any(Object[].class))).thenReturn(List.of(11L));
         org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
                 new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
                         new com.aria.auth.AuthUserDetails(42L, "officer", "x", 1L), "n/a", List.of()));

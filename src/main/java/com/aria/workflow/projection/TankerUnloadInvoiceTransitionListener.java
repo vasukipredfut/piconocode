@@ -127,6 +127,11 @@ public class TankerUnloadInvoiceTransitionListener implements WorkflowTransition
             // Per-line Diff / Diff Reason (V361): same value on every tank row the line splits into.
             BigDecimal diffQty = numOrNull(line, "diff_box", "diff_qty");
             String diffReason = str(line, "diff_reason", "diffReason");
+            // The QC's decision on the line (Approved / Rebate / Reject) and, for a Rebate, the Value (rate) entered with it.
+            // The page names it rebate_reason; the value is only kept while the line really is a Rebate.
+            String approvedStatus = str(line, "approved_status", "approvedStatus");
+            String rebateValue = approvedStatus == null || "REBATE".equalsIgnoreCase(approvedStatus)
+                    ? str(line, "rebate_value", "rebate_reason", "rebateValue") : null;
 
             // Multiple tank locations for one product: a nested allocations
             // array overrides the line's own single tank_location/qty, one
@@ -139,7 +144,7 @@ public class TankerUnloadInvoiceTransitionListener implements WorkflowTransition
                     BigDecimal allocQty = num(alloc, "qty");
                     rows.add(new Object[]{
                             invoiceNo, orderId, vendorName, rdCode, skuCode, skuName,
-                            str(alloc, "tank_location", "tankLocation"), allocQty, diffQty, diffReason
+                            str(alloc, "tank_location", "tankLocation"), allocQty, diffQty, diffReason, approvedStatus, rebateValue
                     });
                     totalQty = totalQty.add(allocQty);
                 }
@@ -147,7 +152,7 @@ public class TankerUnloadInvoiceTransitionListener implements WorkflowTransition
                 BigDecimal qty = num(line, "qty");
                 rows.add(new Object[]{
                         invoiceNo, orderId, vendorName, rdCode, skuCode, skuName,
-                        str(line, "tank_location", "tankLocation"), qty, diffQty, diffReason
+                        str(line, "tank_location", "tankLocation"), qty, diffQty, diffReason, approvedStatus, rebateValue
                 });
                 totalQty = totalQty.add(qty);
             }
@@ -185,9 +190,10 @@ public class TankerUnloadInvoiceTransitionListener implements WorkflowTransition
             try {
                 jdbc.update(
                         "INSERT INTO unloading_progress_detail_bay (tenant_id, unloading_progress_detail_id, workflow_instance_id, "
-                                + "invoice_no, order_id, vendor_name, rd_code, sku_code, sku_desc, bay_name, quantity, status, diff_qty, diff_reason) "
-                                + "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'IN_PROGRESS', ?, ?)",
-                        tenantId, parentId, instanceId, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9]);
+                                + "invoice_no, order_id, vendor_name, rd_code, sku_code, sku_desc, bay_name, quantity, status, diff_qty, diff_reason, "
+                                + "approved_status, rebate_value) "
+                                + "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'IN_PROGRESS', ?, ?, ?, ?)",
+                        tenantId, parentId, instanceId, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11]);
                 written++;
             } catch (Exception e) {
                 log.warn("unloading_progress_detail_bay insert failed for instance {} invoice_no={}: {}", instanceId, r[0], e.getMessage());

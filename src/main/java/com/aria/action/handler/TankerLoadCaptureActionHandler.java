@@ -218,8 +218,9 @@ public class TankerLoadCaptureActionHandler implements ActionHandler {
     }
 
     /**
-     * What was loaded back counts against what was unloaded: the invoice + SKU's unload rows (DONE, with something left) take
-     * {@code qty} into {@code loaded_back_quantity}, the tank the oil came out of first, then the other tanks of the same line.
+     * What was loaded back counts against the unload rows of the SAME tank it was taken from: that tank's unload rows for the invoice + SKU (DONE, with something left) take
+     * {@code qty} into {@code loaded_back_quantity}. Oil taken from a tank the invoice was not unloaded into counts against
+     * nothing -- the unload table never shows a load-back that did not happen there.
      * The unloaded quantity ({@code processed_quantity}) itself is never changed -- it stays the record of what was unloaded.
      * A row that has had everything loaded back is REVERSED, the mirror of what the reject-unload does to loading rows.
      * No upper limit: a quantity above what was unloaded is simply not counted anywhere.
@@ -227,8 +228,8 @@ public class TankerLoadCaptureActionHandler implements ActionHandler {
     private void countLoadedBack(long tenantId, Long instanceId, String invoiceNo, String skuCode, String tank, BigDecimal qty) {
         List<Map<String, Object>> rows = jdbc.queryForList(
                 "SELECT id, bay_name, processed_quantity, loaded_back_quantity FROM unloading_progress_detail_bay "
-                        + "WHERE tenant_id = ? AND workflow_instance_id = ? AND invoice_no = ? AND sku_code = ? AND status = 'DONE' "
-                        + "ORDER BY (bay_name = ?) DESC, id",
+                        + "WHERE tenant_id = ? AND workflow_instance_id = ? AND invoice_no = ? AND sku_code = ? AND bay_name = ? "
+                        + "AND status = 'DONE' ORDER BY id",
                 tenantId, instanceId, invoiceNo, skuCode, tank);
         BigDecimal left = qty;
         for (Map<String, Object> r : rows) {

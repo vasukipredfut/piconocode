@@ -226,29 +226,26 @@ class TankerLoadCaptureActionHandlerTest {
     }
 
     @Test
-    void theTankItCameOutOfIsAskedFirst_theOtherTanksOfTheLineAfterwards() {
-        openRows(row(11, "ROT-1", "1000"));
-        unloadRows(unloadRow(5, "ROT-1", "600", "0"), unloadRow(6, "ROT-2", "3000", "0"));
+    void onlyTheSameTanksUnloadRowCountsIt_aDifferentTanksOilCountsAgainstNothing() {
+        // unloaded into ROT-1 (and ROT-2); the oil is taken from ROT-5, a tank it was never unloaded into
+        openRows(row(11, "ROT-5", "1000"));
 
-        handler.handle(inv(line("invoice_no", "INV1", "sku_code", "SKU1", "tank_location", "ROT-1", "load_wgt", 1000)));
+        handler.handle(inv(line("invoice_no", "INV1", "sku_code", "SKU1", "tank_location", "ROT-5", "load_wgt", 1000)));
 
-        verify(jdbc).queryForList(contains("ORDER BY (bay_name = ?) DESC"), eq(1L), eq(1542L), eq("INV1"), eq("SKU1"), eq("ROT-1"));
-        List<Object[]> counted = countedBack();
-        assertThat(counted).hasSize(2);
-        assertThat((BigDecimal) counted.get(0)[1]).isEqualByComparingTo("600");   // ROT-1 row takes all it had
-        assertThat((BigDecimal) counted.get(1)[1]).isEqualByComparingTo("400");   // the rest goes to the next unload row
+        verify(jdbc).queryForList(contains("AND bay_name = ?"), eq(1L), eq(1542L), eq("INV1"), eq("SKU1"), eq("ROT-5"));
+        assertThat(countedBack()).isEmpty();
     }
 
     @Test
     void aRowWithNothingLeftIsSkipped_andAnExcessIsNotCountedAnywhere() {
         openRows(row(11, "ROT-1", "500"));
-        unloadRows(unloadRow(5, "ROT-1", "100", "100"), unloadRow(6, "ROT-2", "200", "150"));
+        unloadRows(unloadRow(5, "ROT-1", "100", "100"), unloadRow(6, "ROT-1", "200", "150"));
 
         handler.handle(inv(line("invoice_no", "INV1", "sku_code", "SKU1", "tank_location", "ROT-1", "load_wgt", 500)));
 
         List<Object[]> counted = countedBack();
         assertThat(counted).hasSize(1);
-        assertThat((BigDecimal) counted.get(0)[1]).isEqualByComparingTo("50");    // only the 50 still room on ROT-2
+        assertThat((BigDecimal) counted.get(0)[1]).isEqualByComparingTo("50");    // only the 50 still room on the tank's second unload row
         assertThat(counted.get(0)[4]).isEqualTo(6L);
     }
 

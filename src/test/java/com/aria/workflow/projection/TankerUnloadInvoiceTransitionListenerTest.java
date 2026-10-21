@@ -58,7 +58,7 @@ class TankerUnloadInvoiceTransitionListenerTest {
 
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
                 eq(1L), eq(777L), eq(1495L), eq("INV1"), isNull(), isNull(), isNull(),
-                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("20")), isNull(), isNull());
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("20")), isNull(), isNull(), isNull(), isNull());
     }
 
     @Test
@@ -75,10 +75,10 @@ class TankerUnloadInvoiceTransitionListenerTest {
 
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
                 eq(1L), eq(777L), eq(1495L), eq("INV1"), isNull(), isNull(), isNull(),
-                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("60")), isNull(), isNull());
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("60")), isNull(), isNull(), isNull(), isNull());
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
                 eq(1L), eq(777L), eq(1495L), eq("INV1"), isNull(), isNull(), isNull(),
-                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-2"), eq(new BigDecimal("40")), isNull(), isNull());
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-2"), eq(new BigDecimal("40")), isNull(), isNull(), isNull(), isNull());
         // total_quantity on the parent row must reflect the sum of allocations (100), not double it.
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail"),
                 eq(1L), eq(1495L), any(), any(), eq(new BigDecimal("100")));
@@ -95,7 +95,7 @@ class TankerUnloadInvoiceTransitionListenerTest {
 
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
                 eq(1L), eq(777L), eq(1495L), eq("INV1"), isNull(), isNull(), isNull(),
-                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("20")), isNull(), isNull());
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("20")), isNull(), isNull(), isNull(), isNull());
     }
 
     @Test
@@ -112,10 +112,10 @@ class TankerUnloadInvoiceTransitionListenerTest {
 
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
                 eq(1L), eq(777L), eq(1495L), eq("INV1"), isNull(), isNull(), isNull(),
-                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("60")), eq(new BigDecimal("5")), eq("Short supply"));
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("60")), eq(new BigDecimal("5")), eq("Short supply"), isNull(), isNull());
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
                 eq(1L), eq(777L), eq(1495L), eq("INV1"), isNull(), isNull(), isNull(),
-                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-2"), eq(new BigDecimal("40")), eq(new BigDecimal("5")), eq("Short supply"));
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-2"), eq(new BigDecimal("40")), eq(new BigDecimal("5")), eq("Short supply"), isNull(), isNull());
     }
 
     // ---- a weighed / closed row is never wiped or re-opened by a later transition that re-sends the list ----
@@ -163,7 +163,7 @@ class TankerUnloadInvoiceTransitionListenerTest {
         verify(jdbc).queryForObject(argThat((String sql) -> sql.contains("status = 'IN_PROGRESS'")), eq(Integer.class), any(Object[].class));
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
                 eq(1L), eq(777L), eq(1495L), eq("INV1"), isNull(), isNull(), isNull(),
-                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("30")), isNull(), isNull());
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("30")), isNull(), isNull(), isNull(), isNull());
     }
 
     @Test
@@ -181,7 +181,7 @@ class TankerUnloadInvoiceTransitionListenerTest {
         verify(jdbc, times(1)).update(contains("INSERT INTO unloading_progress_detail_bay"), any(Object[].class));
         verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
                 eq(1L), eq(777L), eq(1495L), eq("INV1"), isNull(), isNull(), isNull(),
-                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-2"), eq(new BigDecimal("40")), isNull(), isNull());
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-2"), eq(new BigDecimal("40")), isNull(), isNull(), isNull(), isNull());
     }
 
     @Test
@@ -210,6 +210,43 @@ class TankerUnloadInvoiceTransitionListenerTest {
                 any(Object[].class));
         verify(jdbc).update(argThat((String sql) -> sql.startsWith("UPDATE unloading_progress_detail p SET")
                 && sql.contains("b.status <> 'REJECTED'") && sql.contains("THEN 'IN_PROGRESS' ELSE p.status END")), eq(1L), eq(1495L));
+    }
+
+    // ---- the QC's decision on the line and the Rebate value (approved_status / rebate_value, V377) ----
+
+    @Test
+    void rebateLine_savesTheDecisionAndTheValueOnEveryTankRowOfTheLine() {
+        WorkflowInstance inst = instance("M10.TankerInbound", "QC_APPROVED");
+        Map<String, Object> line = baseLine("SKU1", "100");
+        line.put("approved_status", "REBATE");
+        line.put("rebate_reason", "45.5");
+        line.put("tank_allocations", List.of(
+                Map.of("tank_location", "ROT-1", "qty", "60"),
+                Map.of("tank_location", "ROT-2", "qty", "40")));
+
+        listener.onTransition(inst, "DISPATCH_QUEUED", bag(line));
+
+        verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
+                eq(1L), eq(777L), eq(1495L), eq("INV1"), isNull(), isNull(), isNull(),
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("60")), isNull(), isNull(), eq("REBATE"), eq("45.5"));
+        verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
+                eq(1L), eq(777L), eq(1495L), eq("INV1"), isNull(), isNull(), isNull(),
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-2"), eq(new BigDecimal("40")), isNull(), isNull(), eq("REBATE"), eq("45.5"));
+    }
+
+    @Test
+    void approvedLine_savesTheDecision_andKeepsNoStaleRebateValue() {
+        WorkflowInstance inst = instance("M10.TankerInbound", "QC_APPROVED");
+        Map<String, Object> line = baseLine("SKU1", "20");
+        line.put("tank_location", "ROT-1");
+        line.put("approved_status", "APPROVED");
+        line.put("rebate_reason", "45.5");   // typed earlier, then the line was changed back to Approved
+
+        listener.onTransition(inst, "DISPATCH_QUEUED", bag(line));
+
+        verify(jdbc).update(contains("INSERT INTO unloading_progress_detail_bay"),
+                eq(1L), eq(777L), eq(1495L), eq("INV1"), isNull(), isNull(), isNull(),
+                eq("SKU1"), eq("SKU1 Desc"), eq("ROT-1"), eq(new BigDecimal("20")), isNull(), isNull(), eq("APPROVED"), isNull());
     }
 
     // ---- "load again": loadingInvoices -> loading_progress_detail(_bay), status IN_PROGRESS ----
