@@ -614,6 +614,26 @@ class TankerUnloadCaptureActionHandlerTest {
     }
 
     @Test
+    void plan_loadedTankKnownButNoConsumptionRecorded_theMovementStillComesFromTheLoadedTank() {
+        // two plan rows for the same destination; loaded from COT-1 and COT-9 but no per-lot consumption to draw from
+        when(jdbc.queryForList(contains("FROM unloading_progress_detail_bay"), any(Object[].class)))
+                .thenReturn(List.of(planRow(31L, "COT-4", "1000", null), planRow(32L, "COT-4", "3000", null)));
+        loadedFrom("COT-1", "COT-9");
+
+        ActionResult r = unload(line(3000, "COT-4"));
+
+        assertThat(r.isOk()).isTrue();
+        List<Object[]> moves = updates("INSERT INTO m5_stock_movement");
+        assertThat(moves).hasSize(2);
+        for (Object[] m : moves) {
+            assertThat(m[5]).isEqualTo("COT-9");     // from: the loaded tank, not the destination
+            assertThat(m[6]).isEqualTo("COT-4");
+        }
+        assertThat((BigDecimal) moves.get(0)[7]).isEqualByComparingTo("750");
+        assertThat((BigDecimal) moves.get(1)[7]).isEqualByComparingTo("2250");
+    }
+
+    @Test
     void plan_nothingLoaded_orUnknownDestination_errors() {
         when(jdbc.queryForList(contains("FROM unloading_progress_detail_bay"), any(Object[].class)))
                 .thenReturn(List.of(planRow(31L, "COT-5", "10", null)));

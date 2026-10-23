@@ -344,7 +344,7 @@ public class WorkflowProjectionListener implements WorkflowTransitionListener {
                 // JSON objects here -- [{"url":..,"doc_no":..,"sha256":..,"size_kb":..}, ...].
                 // qc_final_files on qc_officer_final_check_detail (V357) and verification_documents on
                 // document_verification_detail (V372) take the same path.
-                if (("billing_entry".equals(table) && "billing_documents".equals(e.getKey()))
+                if (("billing_entry".equals(table) && ("billing_documents".equals(e.getKey()) || "billing_check_list".equals(e.getKey())))
                         || ("qc_officer_final_check_detail".equals(table) && "qc_final_files".equals(e.getKey()))
                         || ("document_verification_detail".equals(table) && "verification_documents".equals(e.getKey()))) {
                     Object raw = pluckRaw(bag, (List<String>) e.getValue());

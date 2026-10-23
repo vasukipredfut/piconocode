@@ -50,6 +50,16 @@ public class DispatchTaskService {
                 tenantId, workflowCode, bayCode);
     }
 
+    /** The bay's most recently completed task for this SKU: a scan that arrives after it is over the order quantity. */
+    public Optional<Map<String, Object>> findLatestCompleted(String workflowCode, String bayCode, String skuCode) {
+        long tenantId = TenantContext.get();
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT * FROM dispatch_task WHERE tenant_id = ? AND workflow_code = ? AND bay_code = ? AND sku_code = ? "
+                        + "AND status = 'Completed' ORDER BY completed_at DESC, id DESC LIMIT 1",
+                tenantId, workflowCode, bayCode, skuCode);
+        return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+    }
+
     /**
      * The one task matching (workflowCode, bayCode, skuCode, status) exactly — used by
      * {@code GET /api/conveyor/dispatchdetails} so a device can fetch a specific task's

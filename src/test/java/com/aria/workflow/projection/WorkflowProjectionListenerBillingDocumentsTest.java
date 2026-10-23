@@ -63,6 +63,29 @@ class WorkflowProjectionListenerBillingDocumentsTest {
     }
 
     @Test
+    void billingCheckList_multipleFiles_savedAsJsonArray_besideBillingDocuments() {
+        Map<String, Object> cfg = new HashMap<>();
+        cfg.put("target_table", "billing_entry");
+        cfg.put("key_column", "workflow_instance_id");
+        cfg.put("state_columns", "");
+        cfg.put("field_map_json", "{\"billing_documents\":[\"billing_documents\"],\"billing_check_list\":[\"billing_check_list\",\"billingCheckList\"]}");
+        when(jdbc.queryForList(contains("FROM m0_workflow_projection"), any(Object[].class))).thenReturn(List.of(cfg));
+        Map<String, Object> c1 = new HashMap<>(Map.of("url", "/uploads/c1.pdf", "doc_no", "DOC-31"));
+        Map<String, Object> c2 = new HashMap<>(Map.of("url", "/uploads/c2.jpg", "doc_no", "DOC-32"));
+        Map<String, Object> page = new HashMap<>();
+        page.put("billing_check_list", List.of(c1, c2));
+        page.put("billing_documents", List.of(new HashMap<>(Map.of("url", "/uploads/b.pdf", "doc_no", "DOC-33"))));
+
+        listener.onTransition(inst(), "WEIGHMENT_2", Map.of("aria:billing-entry", page));
+
+        Object[] a = updateArgs();
+        assertThat((String) a[0]).contains("billing_check_list").contains("billing_documents");
+        List<String> arrays = List.of(a).stream().filter(o -> o instanceof String s && s.startsWith("[")).map(String.class::cast).toList();
+        assertThat(arrays).anyMatch(j -> j.contains("/uploads/c1.pdf") && j.contains("/uploads/c2.jpg") && j.contains("\"doc_no\":\"DOC-32\""));
+        assertThat(arrays).anyMatch(j -> j.contains("/uploads/b.pdf") && !j.contains("c1.pdf"));
+    }
+
+    @Test
     void qcOfficerFinalFiles_savedAsJsonArrayOnItsOwnTable() {
         Map<String, Object> cfg = new HashMap<>();
         cfg.put("target_table", "qc_officer_final_check_detail");

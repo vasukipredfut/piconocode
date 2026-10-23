@@ -25,6 +25,13 @@ public final class DispatchTaskMath {
      * @return the new processed quantity and status ({@code Completed} once processed >= target,
      *         otherwise unchanged)
      */
+    /** Would adding {@code incrementQty} take the task past its target (order) quantity? Unknown target = no limit. */
+    public static boolean exceedsTarget(BigDecimal processedQty, BigDecimal incrementQty, BigDecimal targetQty) {
+        if (targetQty == null || incrementQty == null) return false;
+        BigDecimal processed = processedQty == null ? BigDecimal.ZERO : processedQty;
+        return processed.add(incrementQty).compareTo(targetQty) > 0;
+    }
+
     public static Result apply(BigDecimal processedQty, BigDecimal incrementQty, BigDecimal targetQty, String currentStatus) {
         BigDecimal newQty = processedQty.add(incrementQty);
         String newStatus = newQty.compareTo(targetQty) >= 0 ? "Completed" : currentStatus;

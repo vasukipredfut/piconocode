@@ -325,8 +325,12 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
             }
             if (need.signum() > 0) {
                 // more came back than loading drew: the surplus goes into the destination tank as lot-less stock
+                // "from" is the tank the SKU was loaded from (the last one when there are several), never the destination itself --
+                // even when loading left no per-lot consumption to draw from
                 Chunk lastChunk = chunks.isEmpty() ? null : chunks.get(chunks.size() - 1);
-                addStock(tenantId, instanceId, routeId, skuCode, null, lastChunk != null ? lastChunk.originTank : destTank,
+                String surplusFrom = lastChunk != null ? lastChunk.originTank
+                        : loadedTanks(tenantId, instanceId, routeId, orderId, skuCode, true).stream().reduce((a, b) -> b).orElse(destTank);
+                addStock(tenantId, instanceId, routeId, skuCode, null, surplusFrom,
                         destTank, need, lastChunk != null ? lastChunk.uom : "KG");
             }
             boolean rowDone = forceFinal || share.compareTo(rem) >= 0;
@@ -368,10 +372,15 @@ public class TankerUnloadCaptureActionHandler implements ActionHandler {
 
     /** The tanks this SKU was loaded from and has not yet given back, in the order they were loaded (first loaded first). */
     private List<String> loadedTanks(long tenantId, Long instanceId, String routeId, String orderId, String skuCode) {
+        return loadedTanks(tenantId, instanceId, routeId, orderId, skuCode, false);
+    }
+
+    /** With {@code includeReversed} also the tanks that already gave everything back (to name where an over-return came from). */
+    private List<String> loadedTanks(long tenantId, Long instanceId, String routeId, String orderId, String skuCode, boolean includeReversed) {
         List<String> tanks = jdbc.queryForList(
                 "SELECT bay_name FROM loading_progress_detail_bay WHERE tenant_id = ? AND workflow_instance_id = ? "
                         + "AND route_id = ? AND ((order_id IS NULL AND ? IS NULL) OR order_id = ?) AND sku_code = ? "
-                        + "AND status IN ('DONE','UNLOAD_IN_PROGRESS') GROUP BY bay_name ORDER BY MIN(id)",
+                        + "AND status IN ('DONE','UNLOAD_IN_PROGRESS'" + (includeReversed ? ",'REVERSED'" : "") + ") GROUP BY bay_name ORDER BY MIN(id)",
                 String.class, tenantId, instanceId, routeId, orderId, orderId, skuCode);
         List<String> out = new ArrayList<>();
         if (tanks != null) for (String t : tanks) if (t != null && !t.isBlank()) out.add(t);

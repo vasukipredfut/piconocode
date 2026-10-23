@@ -60,8 +60,15 @@ public class ConveyorScanService {
 
         Map<String, Object> task = resolveTask(req, resolvedSku).orElse(null);
         if (task == null) {
+            // No open task. If the bay's task for this SKU has just been filled, this carton is over the order quantity:
+            // it counts against THAT task (rejected_qty) as well as in the scan log. No task at all stays a log-only reject.
+            Map<String, Object> filled = tasks.findLatestCompleted(req.workflowCode(), req.bayCode(), resolvedSku).orElse(null);
+            if (filled != null) return rejectOverOrderQty(req, filled);
             tasks.recordRejectedScan(null, req.barcode(), "NO_ACTIVE_TASK", req.scannerIntegrationId());
             return response("REJECT", "NO_ACTIVE_TASK", null, null);
+        }
+        if ("Completed".equalsIgnoreCase(String.valueOf(task.get("status")))) {
+            return rejectOverOrderQty(req, task);   // a finished task named by taskId
         }
         Long taskId = ((Number) task.get("id")).longValue();
 
@@ -80,10 +87,22 @@ public class ConveyorScanService {
         }
 
         BigDecimal qty = req.qty() == null ? BigDecimal.ONE : req.qty();
+        if (DispatchTaskMath.exceedsTarget((BigDecimal) task.get("processed_qty"), qty, (BigDecimal) task.get("target_qty"))) {
+            return rejectOverOrderQty(req, task);   // would take the task past its order quantity: nothing is added
+        }
         Map<String, Object> updated = tasks.recordAcceptedScan(taskId, req.barcode(), resolvedSku, req.orderRef(),
                 req.scannerIntegrationId(), qty).orElse(task);
         OutboundResult signal = plcIntegrationId == null ? null : plc.signalAccept(plcIntegrationId);
         return response("ACCEPT", null, updated, signal);
+    }
+
+    /** Over the order quantity: logged with the task, counted in its rejected_qty, PLC told to reject. */
+    private Map<String, Object> rejectOverOrderQty(ScanRequest req, Map<String, Object> task) {
+        Long taskId = ((Number) task.get("id")).longValue();
+        tasks.recordRejectedScan(taskId, req.barcode(), "ORDER_QTY_EXCEEDED", req.scannerIntegrationId());
+        Long plcIntegrationId = bindings.resolve(req.workflowCode(), req.stepCode(), "PLC", req.bayCode()).orElse(null);
+        OutboundResult signal = plcIntegrationId == null ? null : plc.signalReject(plcIntegrationId);
+        return response("REJECT", "ORDER_QTY_EXCEEDED", task, signal);
     }
 
     /** Explicit taskId wins; else the bay's one active task; else, among several, the one matching sku/orderRef. */

@@ -127,11 +127,11 @@ public final class GatePassSatelliteJoin {
             "pcvd.camera_photo, pcvd.issue_identified, pcvd.camera_variance_reason, " +
             "dvd.broker_name, dvd.broker_number, dvd.invoice_qty, dvd.oil_rm_item, dvd.transport_name, dvd.tanker_name, " +
             "dvd.po_numbers, dvd.po_attachment, dvd.party_name, " +
-            "dvd.invoice_return_count, dvd.box_weight_kg, dvd.vendor_location, " +
+            "dvd.invoice_return_count, dvd.box_weight_kg, dvd.vendor_location, dvd.lab_reports, " +
             "lpd.route_id, " +
             "gpc.seal_verified, gpc.invoice_count_verified, gpc.qc_clearance, gpc.weighment_verified, " +
             "gpc.order_recon_done, gpc.within_tolerance, gpc.closure_note, gpc.new_seal_no, gpc.closed_at AS closure_closed_at, " +
-            "be.invoice_numbers, be.invoice_number_count, be.checking_officer, be.billing_documents, " +
+            "be.invoice_numbers, be.invoice_number_count, be.checking_officer, be.billing_documents, be.billing_check_list, " +
             "CASE WHEN be.invoice_numbers IS NULL OR be.invoice_numbers = '[]' THEN NULL " +
             "ELSE REPLACE(REPLACE(REPLACE(be.invoice_numbers, '\",\"', ', '), '[\"', ''), '\"]', '') END AS invoice_no, " +
             "qua.item_category, qua.sample_jar_id, qua.qc_officer_id, " +
