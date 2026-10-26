@@ -49,11 +49,11 @@ public class ConveyorScanService {
         // looked up.
         Map<String, Object> skuMaster = skuMasterLookup.resolveByBarcode(req.barcode()).orElse(null);
         if (skuMaster == null) {
-            tasks.recordRejectedScan(null, req.barcode(), "UNKNOWN_BARCODE", req.scannerIntegrationId());
+            tasks.recordRejectedScanLogOnly(runningTaskId(req), req.barcode(), "UNKNOWN_BARCODE", req.scannerIntegrationId());
             return response("REJECT", "UNKNOWN_BARCODE", null, null);
         }
         if (!"ACTIVE".equalsIgnoreCase(String.valueOf(skuMaster.get("status")))) {
-            tasks.recordRejectedScan(null, req.barcode(), "SKU_INACTIVE", req.scannerIntegrationId());
+            tasks.recordRejectedScanLogOnly(runningTaskId(req), req.barcode(), "SKU_INACTIVE", req.scannerIntegrationId());
             return response("REJECT", "SKU_INACTIVE", null, null);
         }
         String resolvedSku = (String) skuMaster.get("sku_code");
@@ -64,7 +64,7 @@ public class ConveyorScanService {
             // it counts against THAT task (rejected_qty) as well as in the scan log. No task at all stays a log-only reject.
             Map<String, Object> filled = tasks.findLatestCompleted(req.workflowCode(), req.bayCode(), resolvedSku).orElse(null);
             if (filled != null) return rejectOverOrderQty(req, filled);
-            tasks.recordRejectedScan(null, req.barcode(), "NO_ACTIVE_TASK", req.scannerIntegrationId());
+            tasks.recordRejectedScanLogOnly(runningTaskId(req), req.barcode(), "NO_ACTIVE_TASK", req.scannerIntegrationId());
             return response("REJECT", "NO_ACTIVE_TASK", null, null);
         }
         if ("Completed".equalsIgnoreCase(String.valueOf(task.get("status")))) {
@@ -94,6 +94,17 @@ public class ConveyorScanService {
                 req.scannerIntegrationId(), qty).orElse(task);
         OutboundResult signal = plcIntegrationId == null ? null : plc.signalAccept(plcIntegrationId);
         return response("ACCEPT", null, updated, signal);
+    }
+
+    /**
+     * The task running on this bay, for the scan log only (so the task's screen lists scans that have no task of their own: invalid
+     * barcode, inactive SKU): the {@code taskId} the scanner sent, else the bay's only open task. Several open tasks and no taskId = unknown.
+     */
+    private Long runningTaskId(ScanRequest req) {
+        if (req.taskId() != null) return tasks.findById(req.taskId()).map(t -> ((Number) t.get("id")).longValue()).orElse(null);
+        if (req.workflowCode() == null || req.bayCode() == null) return null;
+        List<Map<String, Object>> active = tasks.listActiveForBay(req.workflowCode(), req.bayCode());
+        return active != null && active.size() == 1 ? ((Number) active.get(0).get("id")).longValue() : null;
     }
 
     /** Over the order quantity: logged with the task, counted in its rejected_qty, PLC told to reject. */

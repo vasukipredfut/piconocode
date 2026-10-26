@@ -103,10 +103,17 @@ public class WorkflowController {
     public ResponseEntity<List<WorkflowQueueItem>> queueForPage(
             @RequestParam("pageCode") String pageCode,
             @RequestParam(defaultValue = "0") @Min(0) int page,
-            @RequestParam(defaultValue = "25") @Min(1) int size) {
-        List<WorkflowQueueItem> items = engine.queueForPage(pageCode, page, size);
-        if (items == null) return ResponseEntity.notFound().build();
-        return ResponseEntity.ok(items);
+            @RequestParam(defaultValue = "100") @Min(1) int size) {
+        var q = engine.queuePageForPage(pageCode, page, size);
+        if (q == null) return ResponseEntity.notFound().build();
+        // The body stays a plain list (the UI reads it as one); the paging facts ride in headers: X-Total-Count = the whole queue.
+        // The page holds as many items as the caller asks for (size, default 100) -- no cap.
+        return ResponseEntity.ok()
+                .header("X-Total-Count", String.valueOf(q.total()))
+                .header("X-Page", String.valueOf(Math.max(page, 0)))
+                .header("X-Page-Size", String.valueOf(size))
+                .header("Access-Control-Expose-Headers", "X-Total-Count, X-Page, X-Page-Size")
+                .body(q.items());
     }
 
     @PostMapping("/instances/{id}/cancel")

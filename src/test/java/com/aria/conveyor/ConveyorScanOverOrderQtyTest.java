@@ -105,7 +105,7 @@ class ConveyorScanOverOrderQtyTest {
         Map<String, Object> r = service.scan(scan(null));
 
         assertThat(r).containsEntry("reason", "NO_ACTIVE_TASK");
-        verify(tasks).recordRejectedScan(isNull(), eq("8901"), eq("NO_ACTIVE_TASK"), eq(5L));
+        verify(tasks).recordRejectedScanLogOnly(isNull(), eq("8901"), eq("NO_ACTIVE_TASK"), eq(5L));
     }
 
     @Test
@@ -116,9 +116,33 @@ class ConveyorScanOverOrderQtyTest {
         service.scan(new ScanRequest("M10.PackLoading", "STEP", "BAY-1", "bad", null, 5L, null, null, null));
         service.scan(new ScanRequest("M10.PackLoading", "STEP", "BAY-1", "off", null, 5L, null, null, null));
 
-        verify(tasks).recordRejectedScan(isNull(), eq("bad"), eq("UNKNOWN_BARCODE"), eq(5L));
-        verify(tasks).recordRejectedScan(isNull(), eq("off"), eq("SKU_INACTIVE"), eq(5L));
-        verify(tasks, never()).recordRejectedScan(notNull(), any(), any(), any());
+        verify(tasks).recordRejectedScanLogOnly(isNull(), eq("bad"), eq("UNKNOWN_BARCODE"), eq(5L));
+        verify(tasks).recordRejectedScanLogOnly(isNull(), eq("off"), eq("SKU_INACTIVE"), eq(5L));
+        verify(tasks, never()).recordRejectedScan(any(), any(), any(), any());   // rejected_qty never moves for these
+    }
+
+    @Test
+    void invalidBarcode_whileATaskRunsOnTheBay_isListedUnderThatTask_withoutCountingInRejectedQty() {
+        when(skuLookup.resolveByBarcode("bad")).thenReturn(Optional.empty());
+        when(tasks.listActiveForBay("M10.PackLoading", "BAY-1")).thenReturn(List.of(task("Open", "3", "10")));
+
+        service.scan(new ScanRequest("M10.PackLoading", "STEP", "BAY-1", "bad", null, 5L, null, null, null));
+
+        verify(tasks).recordRejectedScanLogOnly(11L, "bad", "UNKNOWN_BARCODE", 5L);
+        verify(tasks, never()).recordRejectedScan(any(), any(), any(), any());
+    }
+
+    @Test
+    void invalidBarcode_withTheTaskIdFromTheScanner_usesThatTask_andSeveralOpenTasksWithoutOneStayUnknown() {
+        when(skuLookup.resolveByBarcode("bad")).thenReturn(Optional.empty());
+        when(tasks.findById(11L)).thenReturn(Optional.of(task("Open", "3", "10")));
+        service.scan(new ScanRequest("M10.PackLoading", "STEP", "BAY-1", "bad", 11L, 5L, null, null, null));
+        verify(tasks).recordRejectedScanLogOnly(11L, "bad", "UNKNOWN_BARCODE", 5L);
+
+        clearInvocations(tasks);
+        when(tasks.listActiveForBay(any(), any())).thenReturn(List.of(task("Open", "1", "5"), task("Open", "2", "5")));
+        service.scan(new ScanRequest("M10.PackLoading", "STEP", "BAY-1", "bad", null, 5L, null, null, null));
+        verify(tasks).recordRejectedScanLogOnly(isNull(), eq("bad"), eq("UNKNOWN_BARCODE"), eq(5L));
     }
 
     @Test

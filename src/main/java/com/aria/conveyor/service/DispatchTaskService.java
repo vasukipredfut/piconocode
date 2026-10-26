@@ -146,6 +146,18 @@ public class DispatchTaskService {
                 tenantId, taskId, barcode, rejectReason, integrationId);
     }
 
+    /**
+     * Logs a REJECTED scan against a task WITHOUT counting it in {@code rejected_qty}: an invalid barcode / inactive SKU is not a
+     * carton of that order, but the screen of the task running on the bay must still list it. {@code taskId} may be null.
+     */
+    public void recordRejectedScanLogOnly(Long taskId, String barcode, String rejectReason, Long integrationId) {
+        long tenantId = TenantContext.get();
+        jdbc.update(
+                "INSERT INTO dispatch_task_scan_log (tenant_id, dispatch_task_id, barcode, outcome, reject_reason, "
+                        + "integration_id) VALUES (?,?,?,'REJECTED',?,?)",
+                tenantId, taskId, barcode, rejectReason, integrationId);
+    }
+
     /** Moves a PENDING task to Open. No-op if it's already past PENDING. */
     public void start(Long taskId) {
         long tenantId = TenantContext.get();

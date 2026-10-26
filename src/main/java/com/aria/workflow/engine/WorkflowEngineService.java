@@ -418,8 +418,22 @@ public class WorkflowEngineService {
      * gate passes are exactly the ones {@link #plainGatePassQueueItems}
      * excludes.
      */
+    /** One page of a page-scoped queue and the size of the whole queue (so the UI can page through it). */
+    public record QueuePage(List<WorkflowQueueItem> items, long total) {}
+
     @Transactional(value = "m0PageTransactionManager", readOnly = true)
     public List<WorkflowQueueItem> queueForPage(String pageCode, int page, int size) {
+        QueuePage q = queuePageForPage(pageCode, page, size);
+        return q == null ? null : q.items();
+    }
+
+    /**
+     * {@link #queueForPage} with the total: {@code total} counts every open instance of the page's states plus the plain
+     * (not started) gate passes. Those plain rows are not paged by the database, so they are added to the FIRST page only --
+     * added to every page they would repeat on each one.
+     */
+    @Transactional(value = "m0PageTransactionManager", readOnly = true)
+    public QueuePage queuePageForPage(String pageCode, int page, int size) {
         Long tenantId = TenantContext.get();
         Set<String> keys = statesForPage(tenantId, pageCode);
         boolean isDispatchPage = DISPATCH_VEHICLE_DETAILS_PAGE.equals(pageCode);
@@ -427,19 +441,20 @@ public class WorkflowEngineService {
         if (keys.isEmpty() && !isDispatchPage && !isOtherVehiclePage) {
             return null; // not a step page — caller falls back
         }
-        Pageable p = PageRequest.of(Math.max(page, 0), Math.max(1, Math.min(size, 100)));
-        List<WorkflowQueueItem> items = new ArrayList<>(keys.isEmpty()
-                ? List.of()
-                : instances.queueForWorkflowStates(tenantId, keys, p).getContent().stream()
-                        .map(this::toQueueItem)
-                        .toList());
-        if (isDispatchPage) {
-            items.addAll(plainGatePassQueueItems(tenantId));
+        Pageable p = PageRequest.of(Math.max(page, 0), Math.max(1, size));
+        List<WorkflowQueueItem> items = new ArrayList<>();
+        long total = 0;
+        if (!keys.isEmpty()) {
+            var found = instances.queueForWorkflowStates(tenantId, keys, p);
+            found.getContent().stream().map(this::toQueueItem).forEach(items::add);
+            total = found.getTotalElements();
         }
-        if (isOtherVehiclePage) {
-            items.addAll(otherVehicleGatePassQueueItems(tenantId));
-        }
-        return items;
+        List<WorkflowQueueItem> plain = new ArrayList<>();
+        if (isDispatchPage) plain.addAll(plainGatePassQueueItems(tenantId));
+        if (isOtherVehiclePage) plain.addAll(otherVehicleGatePassQueueItems(tenantId));
+        total += plain.size();
+        if (p.getPageNumber() == 0) items.addAll(plain);
+        return new QueuePage(items, total);
     }
 
     /**
