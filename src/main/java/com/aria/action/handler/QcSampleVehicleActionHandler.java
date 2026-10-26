@@ -36,6 +36,11 @@ import java.util.Map;
  * The second weight needs the first. A DONE row is closed: stock is posted once, so it cannot be weighed again. The
  * workflow state does not move. The logged-in user and {@code performed_by_name} are recorded per weight.
  *
+ * <p>The sample's QC decision rides on the same line: {@code sample_decision} ({@code approved_status} / {@code decision} are
+ * accepted too) = APPROVED or REBATE, and for a REBATE the {@code rebate_value} ({@code rebate_reason} / {@code value}), required;
+ * saved on the row as {@code sample_decision} / {@code rebate_value} (V380; an APPROVED clears the value). A line that carries only
+ * the decision can also be saved on a DONE row (no weight, no stock).
+ *
  * <p>Payload ({@code sampleVehicles}; {@code samples} is accepted too, and one vehicle may be sent flat in {@code formData}):
  * <pre>
  *   { "instanceId": 1559,
@@ -110,11 +115,39 @@ public class QcSampleVehicleActionHandler implements ActionHandler {
             if (w1In != null && w1In.signum() <= 0) return fail(i, "(" + vehicleNo + ") w1_weight_kg must be greater than 0");
             if (w2In != null && w2In.signum() <= 0) return fail(i, "(" + vehicleNo + ") w2_weight_kg must be greater than 0");
 
+            String decision = str(line, "sample_decision", "approved_status", "decision");
+            if (decision != null) {
+                decision = decision.toUpperCase();
+                if (decision.equals("APPROVE")) decision = "APPROVED";
+                if (!decision.equals("APPROVED") && !decision.equals("REBATE")) {
+                    return fail(i, "(" + vehicleNo + ") sample_decision must be APPROVED or REBATE");
+                }
+            }
+            String rebateValue = str(line, "rebate_value", "rebate_reason", "value");
+            if ("REBATE".equals(decision) && rebateValue == null) {
+                return fail(i, "(" + vehicleNo + ") a REBATE needs its rebate_value");
+            }
+            boolean clearRebate = "APPROVED".equals(decision);
+
             List<Map<String, Object>> existing = jdbc.queryForList(
                     "SELECT id, status, sample_qty, w1_weight_kg, w2_weight_kg FROM qc_sample_vehicle WHERE tenant_id = ? "
                             + "AND workflow_instance_id = ? AND vehicle_no = ? AND invoice_no <=> ? AND sku_code <=> ? AND sample_location = ?",
                     tenantId, instanceId, vehicleNo, invoiceNo, skuCode, location);
             Map<String, Object> row = existing.isEmpty() ? null : existing.get(0);
+            if (row != null && "DONE".equals(String.valueOf(row.get("status")))
+                    && decision != null && qty == null && w1In == null && w2In == null) {
+                // only the QC decision: allowed on a closed row, nothing is weighed or posted
+                jdbc.update("UPDATE qc_sample_vehicle SET sample_decision = ?, rebate_value = CASE WHEN ? THEN NULL ELSE COALESCE(?, rebate_value) END "
+                        + "WHERE tenant_id = ? AND id = ?", decision, clearRebate, rebateValue, tenantId, row.get("id"));
+                Map<String, Object> done = new java.util.LinkedHashMap<>();
+                done.put("vehicleNo", vehicleNo);
+                done.put("skuCode", skuCode);
+                done.put("sampleLocation", location);
+                done.put("status", "DONE");
+                done.put("sampleDecision", decision);
+                saved.add(done);
+                continue;
+            }
             if (row != null && "DONE".equals(String.valueOf(row.get("status")))) {
                 return fail(i, "(" + vehicleNo + ") is already weighed and unloaded -- nothing more can be saved for it");
             }
@@ -141,26 +174,29 @@ public class QcSampleVehicleActionHandler implements ActionHandler {
             if (row == null) {
                 jdbc.update("INSERT INTO qc_sample_vehicle (tenant_id, workflow_instance_id, gp_number, invoice_no, order_id, sku_code, sku_desc, "
                                 + "vendor_name, rd_code, vehicle_no, sample_location, sample_qty, w1_weight_kg, w2_weight_kg, unloaded_qty, status, remarks, "
-                                + "w1_by_id, w1_by_name, w2_by_id, w2_by_name) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                + "w1_by_id, w1_by_name, w2_by_id, w2_by_name, sample_decision, rebate_value) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         tenantId, instanceId, gpNumber, invoiceNo, orderId, skuCode, skuDesc, vendorName, rdCode, vehicleNo, location,
                         samplePlanned, w1, w2, unloaded, status, remarks,
-                        w1In != null ? actor : null, w1In != null ? by : null, w2In != null ? actor : null, w2In != null ? by : null);
+                        w1In != null ? actor : null, w1In != null ? by : null, w2In != null ? actor : null, w2In != null ? by : null,
+                        decision, clearRebate ? null : rebateValue);
             } else {
                 jdbc.update("UPDATE qc_sample_vehicle SET sample_qty = ?, w1_weight_kg = ?, w2_weight_kg = ?, unloaded_qty = ?, status = ?, "
                                 + "remarks = COALESCE(?, remarks), order_id = COALESCE(?, order_id), sku_desc = COALESCE(?, sku_desc), "
                                 + "vendor_name = COALESCE(?, vendor_name), rd_code = COALESCE(?, rd_code), "
                                 + "w1_by_id = COALESCE(?, w1_by_id), w1_by_name = COALESCE(?, w1_by_name), "
-                                + "w2_by_id = COALESCE(?, w2_by_id), w2_by_name = COALESCE(?, w2_by_name) "
+                                + "w2_by_id = COALESCE(?, w2_by_id), w2_by_name = COALESCE(?, w2_by_name), "
+                                + "sample_decision = COALESCE(?, sample_decision), rebate_value = CASE WHEN ? THEN NULL ELSE COALESCE(?, rebate_value) END "
                                 + "WHERE tenant_id = ? AND id = ?",
                         samplePlanned, w1, w2, unloaded, status, remarks, orderId, skuDesc, vendorName, rdCode,
                         w1In != null ? actor : null, w1In != null ? by : null, w2In != null ? actor : null, w2In != null ? by : null,
-                        tenantId, row.get("id"));
+                        decision, clearRebate, rebateValue, tenantId, row.get("id"));
             }
             Map<String, Object> out = new java.util.LinkedHashMap<>();
             out.put("vehicleNo", vehicleNo);
             out.put("skuCode", skuCode);
             out.put("sampleLocation", location);
             out.put("status", status);
+            if (decision != null) out.put("sampleDecision", decision);
             if (unloaded != null) out.put("unloadedQty", unloaded);
             saved.add(out);
             log.info("action.qc-sample-vehicle tenantId={} instanceId={} vehicle={} sku={} location={} status={} unloaded={}",

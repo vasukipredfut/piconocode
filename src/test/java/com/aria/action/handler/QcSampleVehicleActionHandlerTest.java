@@ -91,7 +91,7 @@ class QcSampleVehicleActionHandlerTest {
         assertThat(r.isOk()).isTrue();
         verify(jdbc).update(contains("INSERT INTO qc_sample_vehicle"), eq(1L), eq(1559L), eq("GP-1-54"), eq("INV1"), isNull(),
                 eq("SKU1"), isNull(), isNull(), isNull(), eq("TN23J1144"), eq("SAMPLE-1"), eq(new BigDecimal("5")),
-                isNull(), isNull(), isNull(), eq("OPEN"), isNull(), any(), any(), any(), any());
+                isNull(), isNull(), isNull(), eq("OPEN"), isNull(), any(), any(), any(), any(), isNull(), isNull());
         verify(jdbc, never()).update(contains("m5_stock"), any(Object[].class));
     }
 
@@ -117,7 +117,7 @@ class QcSampleVehicleActionHandlerTest {
                 eq(new BigDecimal("5")), eq("EA"), eq("QC_SAMPLE"), eq(1559L), eq("TN23J1144"));
         verify(jdbc).update(contains("UPDATE qc_sample_vehicle SET"), eq(new BigDecimal("5")), eq(new BigDecimal("8200")),
                 eq(new BigDecimal("8195")), eq(new BigDecimal("5")), eq("DONE"), any(), any(), any(), any(), any(), any(), any(),
-                any(), any(), eq(1L), eq(9L));
+                any(), any(), isNull(), eq(false), isNull(), eq(1L), eq(9L));
     }
 
     @Test
@@ -180,5 +180,49 @@ class QcSampleVehicleActionHandlerTest {
         ActionResult r = handler.handle(ActionInvocation.builder().instanceId(1559L).formData(
                 Map.of("vehicle_no", "TN1", "sku_code", "SKU1", "sample_location", "S1", "w1_weight_kg", 100)).build());
         assertThat(r.isOk()).isTrue();
+    }
+
+    // ---- the QC's Approved / Rebate decision on the sample, and the rebate value ----
+
+    @Test
+    void rebateDecision_isSavedWithItsValue() {
+        ActionResult r = handler.handle(inv(vehicle("sample_qty", 5, "sample_decision", "REBATE", "rebate_value", "12.5")));
+
+        assertThat(r.isOk()).isTrue();
+        verify(jdbc).update(contains("sample_decision, rebate_value) VALUES"), any(Object[].class));
+        verify(jdbc).update(contains("INSERT INTO qc_sample_vehicle"), eq(1L), eq(1559L), eq("GP-1-54"), eq("INV1"), isNull(),
+                eq("SKU1"), isNull(), isNull(), isNull(), eq("TN23J1144"), eq("SAMPLE-1"), eq(new BigDecimal("5")),
+                isNull(), isNull(), isNull(), eq("OPEN"), isNull(), any(), any(), any(), any(), eq("REBATE"), eq("12.5"));
+    }
+
+    @Test
+    void approvedDecision_hasNoRebateValue_evenIfOneIsSent() {
+        handler.handle(inv(vehicle("sample_qty", 5, "approved_status", "approved", "rebate_reason", "9")));
+
+        verify(jdbc).update(contains("INSERT INTO qc_sample_vehicle"), eq(1L), eq(1559L), eq("GP-1-54"), eq("INV1"), isNull(),
+                eq("SKU1"), isNull(), isNull(), isNull(), eq("TN23J1144"), eq("SAMPLE-1"), eq(new BigDecimal("5")),
+                isNull(), isNull(), isNull(), eq("OPEN"), isNull(), any(), any(), any(), any(), eq("APPROVED"), isNull());
+    }
+
+    @Test
+    void rebateWithoutAValue_orAnUnknownDecision_errors() {
+        ActionResult noValue = handler.handle(inv(vehicle("sample_decision", "REBATE")));
+        assertThat(noValue.isOk()).isFalse();
+        assertThat(noValue.getMessage()).contains("needs its rebate_value");
+
+        ActionResult bad = handler.handle(inv(vehicle("sample_decision", "MAYBE")));
+        assertThat(bad.isOk()).isFalse();
+        assertThat(bad.getMessage()).contains("APPROVED or REBATE");
+    }
+
+    @Test
+    void decisionOnly_canBeSavedOnADoneRow_withoutWeighingOrStock() {
+        existing("DONE", "8200", "8195");
+
+        ActionResult r = handler.handle(inv(vehicle("sample_decision", "REBATE", "rebate_value", "7")));
+
+        assertThat(r.isOk()).isTrue();
+        verify(jdbc).update(contains("UPDATE qc_sample_vehicle SET sample_decision = ?"), eq("REBATE"), eq(false), eq("7"), eq(1L), eq(9L));
+        verify(jdbc, never()).update(contains("m5_stock"), any(Object[].class));
     }
 }

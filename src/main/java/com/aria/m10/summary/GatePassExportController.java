@@ -78,7 +78,7 @@ public class GatePassExportController {
                 "bay_name", "quantity", "processed_quantity", "loaded_back_quantity", "approved_status", "rebate_value", "diff_qty", "diff_reason",
                 "plan_source", "status", "unloaded_by_name"}});
         DETAIL.put("Sample Vehicles", new Object[]{"qc_sample_vehicle", new String[]{"vehicle_no", "invoice_no", "sku_code", "sample_location",
-                "sample_qty", "w1_weight_kg", "w2_weight_kg", "unloaded_qty", "status", "w1_by_name", "w2_by_name"}});
+                "sample_qty", "w1_weight_kg", "w2_weight_kg", "unloaded_qty", "sample_decision", "rebate_value", "status", "w1_by_name", "w2_by_name"}});
     }
     private static final String[] STOCK_COLS = {"kind", "item_code", "lot_no", "from_bin", "to_bin", "qty", "uom", "ref_type", "ref_number", "created_at"};
     private static final String MOVEMENT_REF_TYPES = "'TANKER','TANKER_UNLOAD','TANKER_LOAD','QC_SAMPLE','BAY','UNLOAD_BAY'";
