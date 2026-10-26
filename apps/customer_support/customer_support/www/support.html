@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+
+    <title>Customer Support Portal</title>
+
+    <style>
+
+        body{
+            font-family: Arial, sans-serif;
+            background:#f4f4f4;
+            margin:0;
+            padding:0;
+        }
+
+        .container{
+            width:90%;
+            max-width:700px;
+            margin:40px auto;
+        }
+
+        .card{
+            background:white;
+            padding:25px;
+            border-radius:10px;
+            box-shadow:0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom:20px;
+        }
+
+        h1,h2{
+            margin-top:0;
+        }
+
+        input, textarea{
+            width:100%;
+            padding:12px;
+            margin-top:10px;
+            margin-bottom:15px;
+            border:1px solid #ccc;
+            border-radius:5px;
+            font-size:14px;
+            box-sizing:border-box;
+        }
+
+        button{
+            background:#007bff;
+            color:white;
+            border:none;
+            padding:12px 20px;
+            border-radius:5px;
+            cursor:pointer;
+            font-size:15px;
+        }
+
+        button:hover{
+            background:#0056b3;
+        }
+
+        .issue-box{
+            border-left:5px solid #007bff;
+            background:#fafafa;
+            padding:15px;
+            margin-bottom:15px;
+            border-radius:5px;
+        }
+
+        .status{
+            font-weight:bold;
+            color:green;
+        }
+
+    </style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+    <div class="card">
+
+        <h1>Raise Support Ticket</h1>
+
+        <input
+            type="text"
+            id="customer_name"
+            placeholder="Company Name"
+        >
+
+        <input
+            type="text"
+            id="mobile"
+            placeholder="Mobile Number"
+        >
+
+        <input
+            type="text"
+            id="subject"
+            placeholder="Issue Subject"
+        >
+
+        <textarea
+            id="description"
+            rows="5"
+            placeholder="Describe your issue"
+        ></textarea>
+
+        <button onclick="submitIssue()">
+            Submit Ticket
+        </button>
+
+    </div>
+
+
+    <div class="card">
+
+        <h2>Your Existing Issues</h2>
+
+        <div id="issues">
+            No issues loaded
+        </div>
+
+    </div>
+
+</div>
+
+
+<script>
+
+// Add this helper at the top of your script
+function getCookie(name) {
+    let cookies = document.cookie.split(';');
+    for (let cookie of cookies) {
+        cookie = cookie.trim();
+        if (cookie.startsWith(name + '=')) {
+            return decodeURIComponent(cookie.substring(name.length + 1));
+        }
+    }
+    return null;
+}
+
+async function submitIssue() {
+    try {
+        let customer_name = document.getElementById("customer_name").value;
+        let mobile = document.getElementById("mobile").value;
+        let subject = document.getElementById("subject").value;
+        let description = document.getElementById("description").value;
+
+        if (!customer_name || !mobile || !subject || !description) {
+            alert("Please fill all fields");
+            return;
+        }
+
+        let formData = new FormData();
+        formData.append("customer_name", customer_name);
+        formData.append("mobile", mobile);
+        formData.append("subject", subject);
+        formData.append("description", description);
+
+        // ✅ Add CSRF token
+        let csrfToken = getCookie("X-Frappe-CSRF-Token") || getCookie("frappe_csrf_token");
+
+        let response = await fetch(
+            "/api/method/customer_support.api.create_issue",
+            {
+                method: "POST",
+                headers: {
+                    "X-Frappe-CSRF-Token": csrfToken || "fetch"  // "fetch" is a Frappe magic value for guest
+                },
+                body: formData
+            }
+        );
+
+        let data = await response.json();
+        console.log(data);
+
+        // ✅ Fixed: Frappe wraps response in data.message
+        if (data.message && data.message.status === "success") {
+            alert(data.message.message);
+            loadIssues();
+        } else if (data.message && data.message.status === "error") {
+            alert("Error: " + data.message.message);
+        } else {
+            alert("Unknown Server Response");
+        }
+
+    } catch (error) {
+        console.error(error);
+        alert("Server Error");
+    }
+}
+
+
+async function loadIssues(){
+
+    try{
+
+        let customer_name =
+            document.getElementById("customer_name").value;
+
+        let mobile =
+            document.getElementById("mobile").value;
+
+
+        let response = await fetch(
+
+            `/api/method/customer_support.api.get_customer_issues?customer_name=${customer_name}&mobile=${mobile}`
+
+        );
+
+        let data = await response.json();
+
+        console.log(data);
+
+        let issues = data.message;
+
+        let html = "";
+
+
+        if(!issues || issues.length === 0){
+
+            html = "<p>No issues found</p>";
+
+        }else{
+
+            issues.forEach(issue => {
+
+                html += `
+
+                    <div class="issue-box">
+
+                        <h3>${issue.subject}</h3>
+
+                        <p>
+
+                            Status :
+
+                            <span class="status">
+
+                                ${issue.status}
+
+                            </span>
+
+                        </p>
+
+                        <small>
+
+                            ${issue.creation}
+
+                        </small>
+
+                    </div>
+
+                `;
+            });
+        }
+
+        document.getElementById("issues").innerHTML = html;
+
+    }catch(error){
+
+        console.error(error);
+
+        document.getElementById("issues").innerHTML =
+            "Error loading issues";
+    }
+}
+
+</script>
+
+</body>
+</html>

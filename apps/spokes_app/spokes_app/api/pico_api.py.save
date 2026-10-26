@@ -1,0 +1,578 @@
+import frappe
+from frappe import _
+import uuid
+from datetime import datetime, timedelta
+from frappe.utils import now_datetime, nowdate,getdate
+import calendar
+
+@frappe.whitelist(allow_guest=True)
+def login():
+    """
+    User Login API
+    Uses Administrator token for access,
+    validates user credentials,
+    returns user details + roles + role profile
+    """
+    try:
+        email = frappe.form_dict.get("email")
+        password = frappe.form_dict.get("password")
+
+        if not email or not password:
+            frappe.local.response["http_status_code"] = 400
+            return {
+                "status": "error",
+                "message": "Email and password are required"
+            }
+
+        # Authenticate user
+        login_manager = frappe.auth.LoginManager()
+        login_manager.authenticate(user=email, pwd=password)
+        login_manager.post_login()
+
+        user = frappe.get_doc("User", email)
+
+        token = str(uuid.uuid4())
+        expiry = datetime.now() + timedelta(hours=8)
+
+
+        frappe.db.set_value("User",email,{"api_token": token,"token_expiry": expiry},update_modified=False)
+        frappe.db.commit()
+
+
+        return {
+            "status": "success",
+            "message": "Login successful",
+            "token": token,
+            "expires_at": expiry,
+            "full_name": user.full_name,
+            "email": user.name,
+            "username": user.username,
+            "role_profile_name": user.role_profile_name,
+            "roles": frappe.get_roles(user.name)
+            #"home_page": user.home_page or "/app"
+        }
+
+    except frappe.AuthenticationError:
+        frappe.local.response["http_status_code"] = 401
+        return {
+            "status": "error",
+            "message": "Invalid credentials"
+        }
+
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Pico Login API Error")
+        frappe.local.response["http_status_code"] = 500
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+
+from datetime import datetime
+
+def validate_token():
+    token = frappe.get_request_header("X-Auth-Token")
+
+    if not token:
+        frappe.throw("Token missing", frappe.AuthenticationError)
+
+    user = frappe.db.get_value(
+        "User",
+        {"api_token": token},
+        ["name", "token_expiry"],
+        as_dict=True
+    )
+
+    if not user:
+        frappe.throw("Invalid token", frappe.AuthenticationError)
+
+    from frappe.utils import now_datetime
+
+    if user.token_expiry < now_datetime():
+        frappe.throw("Token expired", frappe.AuthenticationError)
+
+    return user.name
+
+@frappe.whitelist(allow_guest=True)
+def send_reset_otp():
+    import random
+
+    try:
+        email = frappe.form_dict.get("email")
+
+        if not email:
+            return {"status": "error", "message": "Email is required"}
+
+        if not frappe.db.exists("User", email):
+            return {"status": "error", "message": "User not found"}
+
+        # 🔢 Generate OTP
+        otp = str(random.randint(1000, 9999))
+
+        user = frappe.get_doc("User", email)
+        frappe.db.set_value("User",email,{"verify_otp": otp,"otp_expiry": frappe.utils.add_minutes(frappe.utils.now_datetime(), 10)},update_modified=False)
+
+        frappe.db.commit()
+
+        # 📧 Send Email
+        frappe.sendmail(
+            recipients=email,
+            subject="Password Reset OTP",
+            message=f"Your OTP is: <b>{otp}</b><br>This will expire in 10 minutes."
+        )
+
+        return {
+            "status": "success",
+            "message": "OTP sent to email"
+        }
+
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Send OTP Error")
+        return {"status": "error", "message": str(e)}
+
+@frappe.whitelist(allow_guest=True)
+def verify_reset_otp():
+    try:
+        email = frappe.form_dict.get("email")
+        otp = frappe.form_dict.get("otp")
+
+        if not email or not otp:
+            return {"status": "error", "message": "Email and OTP required"}
+
+        user = frappe.get_doc("User", email)
+
+        # ❌ OTP mismatch
+        if user.verify_otp != otp:
+            return {"status": "error", "message": "Invalid OTP"}
+
+        # ⏰ Expiry check
+        if user.otp_expiry and frappe.utils.now_datetime() > user.otp_expiry:
+            return {"status": "error", "message": "OTP expired"}
+
+        # ✅ Mark verified
+        user.otp_verified = 1
+        user.save(ignore_permissions=True)
+        frappe.db.commit()
+
+        return {
+            "status": "success",
+            "message": "OTP verified"
+        }
+
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Verify OTP Error")
+        return {"status": "error", "message": str(e)}
+
+@frappe.whitelist(allow_guest=True)
+def reset_password():
+    """
+    Reset user password using admin authorization token
+    Required:
+        email
+        new_password
+    """
+    try:
+        email = frappe.form_dict.get("email")
+        new_password = frappe.form_dict.get("new_password")
+
+        if not email or not new_password:
+            frappe.local.response["http_status_code"] = 400
+            return {
+                "status": "error",
+                "message": "Email and new_password are required"
+            }
+
+        if not user.get("otp_verified"):
+            return {"status": "error", "message": "OTP not verified"}
+
+        # Check if user exists
+        if not frappe.db.exists("User", email):
+            frappe.local.response["http_status_code"] = 404
+            return {
+                "status": "error",
+                "message": "User not found"
+            }
+
+        # Update password
+        user = frappe.get_doc("User", email)
+
+        frappe.utils.password.update_password(email, new_password)
+
+        # 🧹 Clear OTP fields
+        user.verify_otp = None
+        user.otp_expiry = None
+        user.otp_verified = 0
+        user.save(ignore_permissions=True)
+
+
+        frappe.db.commit()
+
+        return {
+            "status": "success",
+            "message": "Password updated successfully",
+            "email": email
+        }
+
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Pico Reset Password API Error")
+        frappe.local.response["http_status_code"] = 500
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+@frappe.whitelist(allow_guest=True)
+def user_profile():
+    """
+    Get logged-in user's profile details from User + Employee
+    """
+    try:
+        #user_email = frappe.form_dict.get("email")
+        user_email = validate_token()
+
+        # Get User details
+        user = frappe.get_doc("User", user_email)
+
+        # Get Employee linked to user
+        employee = frappe.db.get_value(
+            "Employee",
+            {"user_id": user_email},
+            [
+                "name",
+                "gender",
+                "date_of_birth",
+                "cell_number",
+                "employee_number",
+                "designation"
+            ],
+            as_dict=True
+        )
+
+        return {
+            "status": "success",
+            "data": {
+                "email": user.name,
+                "first_name": user.first_name,
+                "country": user.country,
+                "role_profile_name": user.role_profile_name,
+                "gender": employee.gender if employee else None,
+                "birth_date": employee.date_of_birth if employee else None,
+                "mobile_no": employee.cell_number if employee else user.mobile_no,
+                "employee_number": employee.employee_number if employee else None,
+                "designation": employee.designation if employee else None
+            }
+        }
+
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Pico User Profile API Error")
+        frappe.local.response["http_status_code"] = 500
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+
+@frappe.whitelist(allow_guest=True)
+def refresh_token():
+    try:
+        token = frappe.get_request_header("X-Auth-Token")
+
+        if not token:
+            frappe.local.response["http_status_code"] = 401
+            return {
+                "status": "error",
+                "message": "Token missing"
+            }
+
+        # Find user by token
+        user = frappe.db.get_value(
+            "User",
+            {"api_token": token},
+            ["name", "token_expiry"],
+            as_dict=True
+        )
+
+        if not user:
+            frappe.local.response["http_status_code"] = 401
+            return {
+                "status": "error",
+                "message": "Invalid token"
+            }
+
+        # Check expiry
+        if user.token_expiry < now_datetime():
+            frappe.local.response["http_status_code"] = 401
+            return {
+                "status": "error",
+                "message": "Token expired. Please login again."
+            }
+
+        # Generate new token
+        new_token = str(uuid.uuid4())
+        new_expiry = now_datetime() + timedelta(hours=8)
+
+        # Update user
+        user_doc = frappe.get_doc("User", user.name)
+        user_doc.api_token = new_token
+        user_doc.token_expiry = new_expiry
+        user_doc.save(ignore_permissions=True)
+
+        frappe.db.commit()
+
+        return {
+            "status": "success",
+            "message": "Token refreshed successfully",
+            "token": new_token,
+            "expires_at": new_expiry
+        }
+
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Refresh Token Error")
+        frappe.local.response["http_status_code"] = 500
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+@frappe.whitelist(allow_guest=True)
+def today_attendance():
+    try:
+        # Validate token → get user
+        user_email = validate_token()
+
+        # Get Employee linked to user
+        employee = frappe.db.get_value(
+            "Employee",
+            {"user_id": user_email},
+            ["name", "employee_name"],
+            as_dict=True
+        )
+
+        if not employee:
+            return {
+                "status": "error",
+                "message": "Employee not linked to this user"
+            }
+
+        # Get today's attendance
+        attendance = frappe.db.get_value(
+            "Attendance",
+            {
+                "employee": employee.name,
+                "attendance_date": nowdate()
+            },
+            [
+                "name",
+                "status",
+                "in_time",
+                "out_time",
+                "working_hours"
+            ],
+            as_dict=True
+        )
+
+        return {
+            "status": "success",
+            "data": {
+                "employee": employee.name,
+                "employee_name": employee.employee_name,
+                "date": nowdate(),
+                "attendance": attendance if attendance else "Not Marked"
+            }
+        }
+
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Today Attendance API Error")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+
+@frappe.whitelist(allow_guest=True)
+def attendance_history():
+    try:
+        from frappe.utils import nowdate
+        from datetime import datetime, timedelta
+        import calendar
+        import json
+
+        user_email = validate_token()
+
+        # ✅ FIX: Read body properly
+        #data = frappe.request.get_json() or {}
+        data = frappe.request.get_json(silent=True) or frappe.form_dict
+
+        year = int(data.get("year")) if data.get("year") else datetime.now().year
+        month_filter = int(data.get("month")) if data.get("month") else None
+
+        today = datetime.strptime(nowdate(), "%Y-%m-%d")
+
+        # Employee
+        employee = frappe.db.get_value(
+            "Employee",
+            {"user_id": user_email},
+            ["name", "employee_name", "holiday_list"],
+            as_dict=True
+        )
+
+        if not employee:
+            return {"status": "error", "message": "Employee not linked"}
+
+        # Holidays
+        holidays = frappe.get_all(
+            "Holiday",
+            filters={"parent": employee.holiday_list},
+            fields=["holiday_date", "description"]
+        )
+        holiday_map = {str(h.holiday_date): h.description for h in holidays}
+
+        response = []
+
+        # ✅ Decide months to process
+        if month_filter:
+            months_to_process = [month_filter]
+        else:
+            if year == today.year:
+                months_to_process = list(range(1, today.month + 1))
+            else:
+                months_to_process = list(range(1, 13))
+
+        # Loop months
+        for month in months_to_process:
+
+            month_name = calendar.month_name[month]
+
+            start_date = datetime(year, month, 1)
+            last_day = calendar.monthrange(year, month)[1]
+            end_date = datetime(year, month, last_day)
+
+            # ✅ Limit to today only if current month & year
+            if year == today.year and month == today.month:
+                end_date = today
+
+            # Attendance records
+            attendance_records = frappe.get_all(
+                "Attendance",
+                filters={
+                    "employee": employee.name,
+                    "attendance_date": ["between", [start_date, end_date]]
+                },
+                fields=[
+                    "attendance_date",
+                    "status",
+                    "in_time",
+                    "out_time",
+                    "working_hours"
+                ]
+            )
+
+            att_map = {str(a.attendance_date): a for a in attendance_records}
+
+            days_data = []
+            current = start_date
+
+            while current <= end_date:
+                date_str = str(current.date())
+
+                if date_str in att_map:
+                    record = att_map[date_str]
+                    days_data.append({
+                        "date": date_str,
+                        "status": record.status,
+                        "in_time": record.in_time,
+                        "out_time": record.out_time,
+                        "working_hours": record.working_hours
+                    })
+                else:
+                    if date_str in holiday_map:
+                        days_data.append({
+                            "date": date_str,
+                            "status": "Holiday",
+                            "description": holiday_map[date_str]
+                        })
+                    else:
+                        days_data.append({
+                            "date": date_str,
+                            "status": "Absent"
+                        })
+
+                current += timedelta(days=1)
+
+            response.append({
+                "month": month,
+                "month_name": month_name,
+                "data": days_data
+            })
+
+        return {
+            "status": "success",
+            "year": year,
+            "employee": employee.name,
+            "attendance": response
+        }
+
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Attendance History Error")
+        return {"status": "error", "message": str(e)}
+
+
+@frappe.whitelist(allow_guest=True)
+def holiday_calendar():
+    try:
+        # 🔐 Token validation (your custom method)
+        user = validate_token()
+
+        data = frappe.request.get_json(silent=True) or {}
+        year = int(data.get("year", datetime.now().year))
+
+        # 🔍 Get employee
+        employee = frappe.db.get_value("Employee", {"user_id": user}, "name")
+        if not employee:
+            return {"status": "error", "message": "Employee not found"}
+
+        # 📌 Get holiday list
+        holiday_list = frappe.db.get_value("Employee", employee, "holiday_list")
+        if not holiday_list:
+            return {"status": "error", "message": "Holiday List not assigned"}
+
+        # 📅 Get holidays
+        holidays = frappe.get_all(
+            "Holiday",
+            filters={
+                "parent": holiday_list,
+                "holiday_date": ["between", [f"{year}-01-01", f"{year}-12-31"]]
+            },
+            fields=["holiday_date", "description"],
+            order_by="holiday_date asc"
+        )
+
+        # 🗂 Group by month
+        result = {}
+
+        for h in holidays:
+            month = h.holiday_date.strftime("%m")
+            month_name = h.holiday_date.strftime("%B")
+
+            if month not in result:
+                result[month] = {
+                    "month": int(month),
+                    "month_name": month_name,
+                    "holidays": []
+                }
+
+            result[month]["holidays"].append({
+                "date": str(h.holiday_date),
+                "description": h.description
+            })
+
+        return {
+            "status": "success",
+            "year": year,
+            "holiday_list": holiday_list,
+            "data": list(result.values())
+        }
+
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Holiday Calendar Error")
+        return {"status": "error", "message": str(e)}

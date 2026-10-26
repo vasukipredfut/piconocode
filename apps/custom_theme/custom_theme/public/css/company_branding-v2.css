@@ -1,0 +1,19 @@
+/* Company Branding: Frappe caps the logo tiny by default
+   (.app-logo width:24px in desk, .navbar-brand img max-height:22px on the
+   website) — these raise that ceiling. Higher specificity than the core
+   rules (adds a .navbar ancestor) so they win regardless of CSS load order. */
+
+.navbar .app-logo {
+	/* was a forced 40x40 square, which squished/cropped any non-square
+	   uploaded logo. Height-constrained + width auto lets it size
+	   rectangularly to its own natural aspect ratio instead. */
+	width: auto;
+	height: 40px;
+	max-width: 140px;
+	object-fit: contain;
+}
+
+.navbar .navbar-brand img {
+	max-width: 220px;
+	max-height: 56px;
+}

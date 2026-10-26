@@ -1,0 +1,89 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "naming_series:",
+ "creation": "2026-05-18 13:00:11.995718",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "company",
+  "full_day_before_time",
+  "shift_end_time",
+  "minimum_ot_minutes",
+  "ot_multiplier",
+  "holiday_ot_multiplier",
+  "shift",
+  "naming_series"
+ ],
+ "fields": [
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company"
+  },
+  {
+   "fieldname": "full_day_before_time",
+   "fieldtype": "Datetime",
+   "label": "Full Day before time"
+  },
+  {
+   "fieldname": "shift_end_time",
+   "fieldtype": "Datetime",
+   "label": "Shift end time"
+  },
+  {
+   "fieldname": "minimum_ot_minutes",
+   "fieldtype": "Data",
+   "label": "Minimum OT Minutes"
+  },
+  {
+   "fieldname": "ot_multiplier",
+   "fieldtype": "Float",
+   "label": "OT multiplier"
+  },
+  {
+   "fieldname": "holiday_ot_multiplier",
+   "fieldtype": "Float",
+   "label": "Holiday OT Multiplier"
+  },
+  {
+   "fieldname": "shift",
+   "fieldtype": "Link",
+   "label": "Shift",
+   "options": "Shift Type"
+  },
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Data",
+   "label": "Naming Series"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-05-18 13:04:09.422379",
+ "modified_by": "Administrator",
+ "module": "Spokes App",
+ "name": "HR Setting Custom",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

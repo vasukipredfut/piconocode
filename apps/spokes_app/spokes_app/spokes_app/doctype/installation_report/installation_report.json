@@ -1,0 +1,288 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "naming_series:",
+ "creation": "2026-05-19 15:47:28.576274",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "employee",
+  "employee_name",
+  "company",
+  "letter_head",
+  "customer",
+  "customer_name",
+  "address",
+  "contact_person_name",
+  "contact_number",
+  "otp",
+  "verified_otp",
+  "otp_verified_on",
+  "otp_to_be_verified",
+  "email",
+  "column_break_3rvj",
+  "uw",
+  "amc",
+  "ow",
+  "o",
+  "doc_no",
+  "date",
+  "call_receipt_date",
+  "nature_of_call",
+  "call_date_from",
+  "to",
+  "machine_type",
+  "machine_model",
+  "section_break_wwma",
+  "brief_of_primary_communication_with_or_by_customer",
+  "pre_work_observation",
+  "action_summary",
+  "remarks_by_customer",
+  "work_done_nature",
+  "system_operation",
+  "suggestions_for_trouble",
+  "purpose_reason",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer"
+  },
+  {
+   "fetch_from": "customer.customer_name",
+   "fieldname": "customer_name",
+   "fieldtype": "Data",
+   "label": "Customer Name"
+  },
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Data",
+   "label": "Naming Series"
+  },
+  {
+   "fieldname": "address",
+   "fieldtype": "Small Text",
+   "label": "Address"
+  },
+  {
+   "fieldname": "contact_person_name",
+   "fieldtype": "Data",
+   "label": "Contact Person Name"
+  },
+  {
+   "fieldname": "contact_number",
+   "fieldtype": "Data",
+   "label": "Contact Number"
+  },
+  {
+   "fieldname": "email",
+   "fieldtype": "Data",
+   "label": "Email"
+  },
+  {
+   "fieldname": "column_break_3rvj",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "uw",
+   "fieldtype": "Check",
+   "label": "UW"
+  },
+  {
+   "default": "0",
+   "fieldname": "amc",
+   "fieldtype": "Check",
+   "label": "AMC"
+  },
+  {
+   "default": "0",
+   "fieldname": "ow",
+   "fieldtype": "Check",
+   "label": "OW"
+  },
+  {
+   "default": "0",
+   "fieldname": "o",
+   "fieldtype": "Check",
+   "label": "O"
+  },
+  {
+   "fieldname": "doc_no",
+   "fieldtype": "Data",
+   "label": "Doc No"
+  },
+  {
+   "fieldname": "date",
+   "fieldtype": "Date",
+   "label": "Date"
+  },
+  {
+   "fieldname": "call_receipt_date",
+   "fieldtype": "Date",
+   "label": "Call Receipt Date"
+  },
+  {
+   "fieldname": "nature_of_call",
+   "fieldtype": "Data",
+   "label": "Nature of Call"
+  },
+  {
+   "fieldname": "call_date_from",
+   "fieldtype": "Date",
+   "label": "Call Date From"
+  },
+  {
+   "fieldname": "to",
+   "fieldtype": "Date",
+   "label": "To"
+  },
+  {
+   "fieldname": "machine_type",
+   "fieldtype": "Data",
+   "label": "Machine Type"
+  },
+  {
+   "fieldname": "machine_model",
+   "fieldtype": "Data",
+   "label": "Machine Model"
+  },
+  {
+   "fieldname": "section_break_wwma",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "brief_of_primary_communication_with_or_by_customer",
+   "fieldtype": "Text",
+   "label": "Brief of Primary communication with or by customer"
+  },
+  {
+   "fieldname": "pre_work_observation",
+   "fieldtype": "Text",
+   "label": "Pre work Observation"
+  },
+  {
+   "fieldname": "action_summary",
+   "fieldtype": "Text",
+   "label": "Action Summary"
+  },
+  {
+   "fieldname": "remarks_by_customer",
+   "fieldtype": "Text",
+   "label": "Remarks by Customer"
+  },
+  {
+   "default": "0",
+   "fieldname": "work_done_nature",
+   "fieldtype": "Check",
+   "label": "Work done nature Causes and Measures taken have been explained "
+  },
+  {
+   "default": "0",
+   "fieldname": "system_operation",
+   "fieldtype": "Check",
+   "label": "System operation procedures or maintenance procedures explained "
+  },
+  {
+   "default": "0",
+   "fieldname": "suggestions_for_trouble",
+   "fieldtype": "Check",
+   "label": "Suggestions for Trouble free performance trouble shoot preventive maintenance explained"
+  },
+  {
+   "default": "0",
+   "fieldname": "purpose_reason",
+   "fieldtype": "Check",
+   "label": "Purpose Reason of changing parts explained "
+  },
+  {
+   "fetch_from": "customer.company",
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company"
+  },
+  {
+   "fieldname": "letter_head",
+   "fieldtype": "Link",
+   "label": "Letter Head",
+   "options": "Letter Head"
+  },
+  {
+   "fieldname": "employee",
+   "fieldtype": "Link",
+   "label": "Employee",
+   "options": "Employee"
+  },
+  {
+   "fetch_from": "employee.employee_name",
+   "fieldname": "employee_name",
+   "fieldtype": "Data",
+   "label": "Employee Name"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Installation Report",
+   "print_hide": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "otp",
+   "fieldtype": "Data",
+   "label": "OTP"
+  },
+  {
+   "fieldname": "otp_verified_on",
+   "fieldtype": "Datetime",
+   "label": "OTP Verified On"
+  },
+  {
+   "default": "0",
+   "fieldname": "verified_otp",
+   "fieldtype": "Check",
+   "label": "Verified OTP"
+  },
+  {
+   "fieldname": "otp_to_be_verified",
+   "fieldtype": "Data",
+   "label": "OTP To be verified"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2026-05-21 11:58:05.501291",
+ "modified_by": "Administrator",
+ "module": "Spokes App",
+ "name": "Installation Report",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

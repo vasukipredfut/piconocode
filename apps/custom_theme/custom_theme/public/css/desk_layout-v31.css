@@ -1,0 +1,537 @@
+/* Full width by default — "full width" is otherwise only a per-browser
+   localStorage toggle (frappe.ui.toolbar.toggle_full_width), so this
+   reproduces its effect unconditionally instead of relying on every user
+   remembering to flip it. */
+body .container {
+	width: 90% !important;
+	max-width: 100% !important;
+}
+.page-container .page-body {
+	width: 100% !important;
+	max-width: 100% !important;
+}
+
+/* Sidebar white background / dark text / blue icons is now owned entirely
+   by spokes_app's deskk-v3.min.css (see apps/spokes_app). It used to also
+   live here, but that copy set icon color via var(--navbar-bg), which here
+   resolves to Frappe's own default ("white") since this bench's navbar
+   background is a hardcoded gradient in spokes_app's CSS, never actually
+   assigned to that custom property — so this file's white rule was
+   silently beating spokes_app's correct blue rule, since custom_theme
+   loads after spokes_app (both apps.txt order and both using !important).
+   Removed rather than fixed in place, to avoid two apps fighting over the
+   same elements going forward. */
+
+/* Hide the notification bell and Help dropdown from the desk navbar.
+   .dropdown-notifications and .dropdown-help are the exact <li> wrapper
+   classes Frappe's own navbar.html uses for these two items.
+   NOT scoped to a ".navbar" ancestor (confirmed live this reappeared once
+   relocateNavbarExtras() moved their containing .collapse.navbar-collapse
+   out of .navbar into .page-actions — same mistake, yet again, as every
+   other ancestor-scoped selector broken by a relocation in this file: once
+   moved, the element is no longer a descendant of .navbar at all, so an
+   ancestor-scoped rule silently stops matching instead of erroring).
+   Matching the classes directly is safe — they're specific enough that
+   nothing else in the app uses them. */
+.dropdown-notifications,
+.dropdown-help {
+	display: none !important;
+}
+
+/* Splash screen (templates/includes/splash_screen.html) — shown briefly on
+   every full page load/refresh before the desk JS boots, normally a white
+   background behind the generic Frappe logo. $(".splash").remove() runs
+   once boot finishes (confirmed in frappe/public/js/frappe/desk.js), so
+   this is safe to make a full-viewport overlay — it cannot linger or bleed
+   into the loaded page afterward. .centered's existing
+   top:50%;left:50%;transform:translate(-50%,-50%) still correctly spans
+   the full viewport once width/height are added, since translating a
+   100vw/100vh box by -50% of its own size from the center point puts its
+   edges exactly at the viewport edges. */
+.splash {
+	width: 100vw;
+	height: 100vh;
+	background-color: #1572b6;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+/* Hide doctype icons in the left sidebar's nested dropdown items (e.g. User,
+   Salary Slip, Employee under HR/Payroll). .sidebar-child-item is the
+   wrapper Frappe's own sidebar.html uses only for a module's nested
+   children — top-level module items (HR, Payroll, Accounting...) sit
+   directly under .desk-sidebar and are NOT inside a .sidebar-child-item, so
+   this leaves those (already themed blue by spokes_app) untouched. */
+.sidebar-child-item .sidebar-item-icon {
+	display: none !important;
+}
+
+/* Move the company logo from the top navbar row into the page-head row, in
+   front of the sidebar-toggle (hamburger) button and the page title — so
+   the logo and "Home Dashboard" read as one row instead of two stacked
+   bars.
+
+   This is the REAL <a class="navbar-brand navbar-home" href="/app"> node
+   (containing the <img class="app-logo">), physically relocated by
+   apply_theme_preference-v8.js — not a CSS-only fake. A plain
+   background-image on a ::before pseudo-element (the previous approach)
+   can't be clicked, and re-implementing "go to the user's default
+   workspace, else Home" ourselves would just be duplicating logic Frappe
+   already has: href="/app" with no further path already resolves through
+   frappe.router.make_url()'s documented order (User's default workspace ->
+   private home -> public home -> first workspace) — confirmed by reading
+   router.js. Moving the real element keeps that resolution AND Frappe's
+   existing internal-link click interception for free, with no reimplementation.
+
+   Sized 40px tall to match the sidebar-toggle button's own 40x40 box
+   (confirmed via getBoundingClientRect) so the two read as the same visual
+   scale, but wider (64px) rather than a 40x40 square — most uploaded
+   company logos are wider than tall, and a square box would otherwise
+   shrink a wide logo down, making it look smaller than the hamburger icon
+   next to it despite equal box height. */
+.page-title > .navbar-brand.navbar-home {
+	display: flex !important;
+	align-items: center;
+	justify-content: flex-start;
+	width: 64px;
+	height: 40px;
+	margin-right: 10px;
+	flex-shrink: 0;
+}
+.page-title > .navbar-brand.navbar-home .app-logo {
+	max-width: 100%;
+	max-height: 100%;
+	object-fit: contain;
+}
+
+/* Page title text next to the relocated logo + sidebar-toggle button was
+   hidden here for a while (per an earlier request to match a different
+   reference layout), then explicitly asked back: "show the name of
+   doctype/document name in top bar" — on a document this is the record
+   name (e.g. "Basic"), on a list it's the doctype name (e.g. "Salary
+   Component"), both driven by the same .title-area wrapper Frappe's
+   page.html already uses for every page type, so no extra work is needed
+   beyond no longer hiding it. */
+
+/* ...except on the Home Dashboard specifically ("in home dashboard only i
+   need to remove the home dashboard not in doctype and document name") —
+   that page's title-area shows the current Workspace's own name (e.g.
+   "Home"/"Home Dashboard"), scoped here via data-page-route="Workspaces"
+   (confirmed live: the Home Dashboard's .page-container carries that exact
+   route regardless of which workspace is open) so List/Form pages above
+   keep showing their doctype/document name untouched. */
+.page-container[data-page-route="Workspaces"] .page-title .title-area {
+	display: none !important;
+}
+
+/* Flush the logo + sidebar-toggle button to the true left edge of the page
+   head bar, matching the reference layout, instead of sitting ~80px in.
+   Root-caused via getBoundingClientRect(): .page-head .container is a
+   Bootstrap .container, which centers itself with automatic left/right
+   margins (confirmed live: margin-left computed to 61.25px at a 1280px
+   viewport) — body .container's existing "full width" rule earlier in this
+   file sets width:90% but never touched those margins, so the box still
+   centers itself within that 90%, just with less margin than the
+   default 100%-width case. Scoped to .page-head.flex specifically (not
+   changed for .container generally) so list/form page bodies below keep
+   their existing centered look — this only affects the page-head row's own
+   horizontal position. */
+.page-head.flex .container {
+	width: 100% !important;
+	margin-left: 0 !important;
+	margin-right: 0 !important;
+}
+
+/* Declutter list and form views, across every doctype — these are all
+   framework-level structural classes Frappe reuses for every doctype's list
+   and form (not per-doctype markup), so one rule here covers all of them.
+
+   List view: .list-sidebar's .filter-section is the "Assigned To" /
+   "Created By" / "Tags" / "Edit Filters" block. */
+.list-sidebar .filter-section {
+	display: none !important;
+}
+
+/* Form view: the Assigned To, Tags, Share, Attachments rows, and the
+   like+comment icon row (.form-sidebar-stats bundles both into one "0 · 0"
+   line). .form-attachments is the attachment-pill-list + "+" add-attachment
+   button pair shown next to the record's avatar. */
+.form-sidebar .form-assignments,
+.form-sidebar .form-tags,
+.form-sidebar .form-shared,
+.form-sidebar .form-attachments,
+.form-sidebar .form-sidebar-stats {
+	display: none !important;
+}
+
+/* The "Connections" tab Frappe auto-adds to every doctype with incoming
+   Link fields. data-fieldname="connections_tab" is the same literal value
+   on every doctype (only the tab's #id prefix varies, e.g.
+   "employee-connections_tab" vs "customer-connections_tab"), so both the
+   tab button and its [id$="-connections_tab"] content pane can be matched
+   doctype-agnostically. */
+li.nav-item:has(> [data-fieldname="connections_tab"]) {
+	display: none !important;
+}
+.tab-content [id$="-connections_tab"] {
+	display: none !important;
+}
+
+/* Some doctypes (confirmed live: Shift Type) don't have enough tabs for
+   Frappe to render Connections as its own tab at all — instead it renders
+   as a standalone collapsible "Connections" section (.form-links, a
+   core/generic Frappe class from form_dashboard.js's render_links(), not
+   doctype-specific markup) sitting above the form fields. The
+   tab/[data-fieldname="connections_tab"] rule above doesn't match this
+   different rendering, which is why it was still visible there — this
+   covers that second case so Connections is hidden regardless of which of
+   the two ways a given doctype happens to render it. */
+.form-links {
+	display: none !important;
+}
+
+/* List/form views replace the usual module-tree sidebar (.desk-sidebar)
+   entirely with their own .list-sidebar/.form-sidebar in the same column —
+   confirmed live that .desk-sidebar doesn't exist in that page's DOM at
+   all. So with the filter/assignment clutter above hidden, there'd be
+   nothing left to navigate with except browser back. A single "Home" link
+   wasn't enough ("I want the mentioned menus to be there always"), so
+   apply_theme_preference-v8.js instead clones the real .desk-sidebar
+   (Frappe persists hidden pages rather than destroying them, so the
+   original is always still in the DOM somewhere after the first workspace
+   visit each session) and inserts the clone as the first child of whichever
+   sidebar is present. Confirmed live that clicks on a cloned sidebar item —
+   both plain navigation links and the expand/collapse chevrons — work
+   identically to the original: Frappe's sidebar click handling is bound via
+   delegation, not per-element, so it doesn't care whether the clicked node
+   is the "original" or a clone. */
+.custom-theme-module-tree-clone {
+	border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+	margin-bottom: 10px;
+}
+
+/* The real .desk-sidebar always renders each item's drag-handle and "..."
+   settings/edit-workspace dropdown — confirmed live these are
+   opacity:1/visible by default, not a hover-only reveal, for any user who
+   can edit workspaces. That's appropriate on the actual Workspace page,
+   where dragging reorders the real sidebar and "Edit Workspace" is a real
+   action. Inside a cloned copy neither does anything: dragging a clone
+   can't persist to the real workspace, and "Edit Workspace" from a List/Form
+   page's clone would be confusing at best. Hiding them here is what actually
+   makes the clone "look like the main home page" instead of messy — the
+   controls were always visible there too, so a user with edit permissions
+   only mentally edits them out of a workspace page; cloned next to dozens of
+   list/form items it reads as visual noise.
+
+   Targets .drag-handle and .setting-btn.dropdown-btn (+ its .dropdown-list)
+   specifically, NOT their shared parent .sidebar-item-control — that parent
+   also contains .drop-icon, the expand/collapse chevron for modules with
+   children (confirmed live via DOM inspection). An earlier version of this
+   rule hid the whole .sidebar-item-control and took the chevron out with it,
+   which is what broke expanding/collapsing modules in the clone. */
+.custom-theme-module-tree-clone .drag-handle,
+.custom-theme-module-tree-clone .setting-btn.dropdown-btn,
+.custom-theme-module-tree-clone .dropdown-list {
+	display: none !important;
+}
+
+/* Icon+label laid out as a single row ("look like the main home page",
+   reported as the clone instead stacking the icon above the label on its
+   own line) — root-caused by reading Frappe's own desktop.scss: its
+   ".standard-sidebar-item .item-anchor { display: flex; ... }" rule is
+   nested under a wrapper class specific to the real Workspace page layout.
+   Confirmed live: the real .desk-sidebar's .item-anchor computes to
+   display:flex, while an identical .item-anchor inside our clone — same
+   markup, same classes, same immediate ancestor chain — computes to
+   display:block, because the clone sits inside a List/Form page's
+   .list-sidebar rather than the Workspace-specific wrapper that SCSS rule
+   is scoped under. Reproducing the declarations here, scoped to our own
+   clone class, sidesteps needing to match Frappe's exact (and
+   version-fragile) wrapper selector. */
+.custom-theme-module-tree-clone .item-anchor {
+	display: flex !important;
+	align-items: center;
+	overflow: hidden;
+	padding: 3px 0 3px 8px;
+	flex: 1;
+}
+
+/* A "Duplicate Workspace" button (.duplicate-page, es-line-duplicate icon)
+   appears next to EVERY sidebar item instead of the drag-handle/settings
+   button we already hide — confirmed by reading workspace.js's
+   add_sidebar_actions(): it renders .duplicate-page instead of
+   .drag-handle/.setting-btn specifically when item.is_editable is false,
+   i.e. for any user without Workspace Manager permissions (this app's local
+   dev/Administrator test account IS a manager, which is why this control
+   wasn't caught by the drag-handle/setting-btn rule above — only reproduced
+   once checked against a non-manager account). Same reasoning as the other
+   sidebar-item-control rules: this duplicates nothing useful from inside a
+   cloned, non-canonical copy of the sidebar. */
+.custom-theme-module-tree-clone .duplicate-page {
+	display: none !important;
+}
+
+/* List view's top-right toolbar — the "List View" view-switcher dropdown,
+   reload icon, and "..." menu. Scoped to ":has(.custom-btn-group)" (the
+   view-switcher dropdown, confirmed live to exist ONLY on true List routes
+   — absent on both Form routes and the Workspace/Home Dashboard page, even
+   though those also contain .page-icon-group/.menu-btn-group of their own)
+   so this only ever fires on a genuine list view, never removing a
+   document's own menu (Delete/Print/Duplicate/Assign, which live in the
+   same .menu-btn-group class on Form routes) or anything on the dashboard.
+   Deliberately leaves .primary-action (the "Add X" button) alone — it's a
+   sibling of .page-icon-group/.menu-btn-group inside .standard-actions, not
+   nested inside either, so it's unaffected by these two selectors. */
+.page-container:has(.custom-btn-group) .custom-actions,
+.page-container:has(.custom-btn-group) .page-icon-group,
+.page-container:has(.custom-btn-group) .menu-btn-group {
+	display: none !important;
+}
+
+/* Form view's own "..." menu — trim to just Reload and Delete, across every
+   doctype. Confirmed live: every item's actual label lives on a nested
+   <span class="menu-item-label" data-label="..."> (the same encoding used
+   for Report/Dashboard/Kanban view-switcher items earlier in this file),
+   with the literal value "Reload"/"Delete" identical for every doctype —
+   everything else varies per doctype (custom items like "Permissions > Set
+   User Permissions" on User, "Edit DocType", "New X", etc.), which is
+   exactly why a blanket hide-all-then-allowlist-two approach generalizes
+   here instead of listing out every possible label to remove. */
+.menu-btn-group .dropdown-menu > li {
+	display: none !important;
+}
+.menu-btn-group .dropdown-menu > li:has(> .dropdown-item > .menu-item-label[data-label="Reload"]),
+.menu-btn-group .dropdown-menu > li:has(> .dropdown-item > .menu-item-label[data-label="Delete"]) {
+	display: list-item !important;
+}
+
+/* Comments box + Activity feed (New Email/New Event buttons, the edit
+   history log) at the bottom of every document form. Confirmed live:
+   .after-save is the single wrapper around both .comment-box and
+   .new-timeline on every doctype (checked Employee and User) — one rule
+   removes the whole section instead of targeting comment box and timeline
+   separately. */
+.after-save {
+	display: none !important;
+}
+
+/* The logo starts inside .navbar (its original server-rendered position)
+   and apply_theme_preference-v8.js only moves it out once frappe.boot is
+   ready — hiding it here prevents a brief flash in the old spot during that
+   gap. Once JS moves the node into .page-title it's no longer a descendant
+   of .navbar, so this selector stops matching it and this rule becomes
+   inert — no conflict with the relocated element's own visible styling
+   above. */
+.navbar .navbar-brand {
+	display: none !important;
+}
+
+/* Shift Type's form-only custom buttons ("Shift Tools" dropdown — Shift
+   Assignment Tool / Roster — and "Mark Attendance"), added by Shift Type's
+   own client script via frm.add_custom_button(), not a generic Frappe
+   feature. Scoped to this one doctype's Form page specifically
+   (confirmed live: a Form route's page-container's data-page-route is just
+   the doctype name, e.g. "Shift Type"), unlike the other rules in this file
+   — the user asked to remove these FOR Shift Type, not for every doctype's
+   custom buttons generally (which would strip real functionality other
+   doctypes rely on, e.g. GL/Payroll processing buttons). */
+.page-container[data-page-route="Shift Type"] .custom-actions {
+	display: none !important;
+}
+
+/* User's form-only custom buttons ("Permissions" dropdown — Set User
+   Permissions / View Permitted Documents — and "Password"), added by
+   User's own client script, not a generic Frappe feature. Scoped to this
+   one doctype's Form page specifically, same reasoning and pattern as
+   Shift Type above — removing a specific doctype's own custom buttons, not
+   every doctype's. */
+.page-container[data-page-route="User"] .custom-actions {
+	display: none !important;
+}
+
+/* Leave Allocation's form-only custom buttons ("View Ledger" and
+   "Actions"), added by Leave Allocation's own client script, not a generic
+   Frappe feature. Scoped to this one doctype's Form page specifically, same
+   reasoning and pattern as Shift Type/User above. */
+.page-container[data-page-route="Leave Allocation"] .custom-actions {
+	display: none !important;
+}
+
+/* Salary Component's form-only custom buttons ("Create" dropdown and
+   "Update Salary Structures"), added by Salary Component's own client
+   script, not a generic Frappe feature. Scoped to this one doctype's Form
+   page specifically, same pattern as Shift Type/User/Leave Allocation
+   above. */
+.page-container[data-page-route="Salary Component"] .custom-actions {
+	display: none !important;
+}
+
+/* Salary Structure's form-only custom buttons ("Create" dropdown and
+   "Actions" dropdown), added by Salary Structure's own client script, not a
+   generic Frappe feature. Scoped to this one doctype's Form page
+   specifically, same pattern as Shift Type/User/Leave Allocation/Salary
+   Component above. */
+.page-container[data-page-route="Salary Structure"] .custom-actions {
+	display: none !important;
+}
+
+/* Payroll Entry's form-only custom button ("Make Bank Entry" /
+   "Release Withheld Salaries"), added by Payroll Entry's own client script
+   (hrms/payroll/doctype/payroll_entry/payroll_entry.js add_bank_entry_button
+   -> frm.add_custom_button), not a generic Frappe feature. Scoped to this
+   one doctype's Form page specifically, same pattern as Shift
+   Type/User/Leave Allocation/Salary Component/Salary Structure above.
+   Request referred to this as "Salary Structure Assignment" but the
+   screenshot provided was actually a Payroll Entry form (URL
+   /app/payroll-entry/..., breadcrumb "Payroll Entry") — scoped to the
+   doctype shown, not the one named. */
+.page-container[data-page-route="Payroll Entry"] .custom-actions {
+	display: none !important;
+}
+
+/* The "..." menu button itself, removed outright for every doctype's form
+   (superseding the earlier Reload/Delete allowlist further up this file —
+   that rule is now moot since its parent is hidden here, but left in place
+   rather than deleted in case a future request brings the menu back and
+   only wants it trimmed again). List views already lose this via the
+   broader ":has(.custom-btn-group) .menu-btn-group" rule above; this
+   extends the same removal to Form views and the Workspace/Home Dashboard
+   page, which that list-only rule doesn't reach. */
+.menu-btn-group {
+	display: none !important;
+}
+
+/* Merge the navbar + page-head bars into one visible layer. JS
+   (apply_theme_preference-v20.js's relocateNavbarExtras) physically moves
+   the real search bar / notifications / avatar dropdown element out of
+   .navbar into the page-head row's .page-actions, and #navbar-breadcrumbs
+   is deliberately left behind rather than also relocated (see that
+   function's comment — with the page title already hidden, a lone
+   breadcrumb trail would have nothing to sit next to), so it's hidden here
+   instead. */
+#navbar-breadcrumbs {
+	display: none !important;
+}
+
+/* .navbar is only hidden once relocateNavbarExtras() has CONFIRMED its
+   content actually moved (it adds body.navbar-extras-relocated only after
+   that succeeds) — not unconditionally. Unlike the small, low-stakes logo,
+   .navbar is where search (Ctrl+G) and the avatar/account menu live; if the
+   relocation JS ever failed for some reason (this app has already hit a
+   couple of genuine Frappe-internal edge cases this project, e.g. the
+   Workspace pre-warm throwing on a cold load), unconditionally hiding
+   .navbar would take real functionality down with no fallback. Gating on
+   the confirmation class means a JS failure just leaves the two-bar layout
+   in place instead of losing search/account access entirely. */
+body.navbar-extras-relocated .navbar {
+	display: none !important;
+}
+
+/* The relocated element itself is Bootstrap's .collapse class, which is
+   display:none by default — it was only ever visible inside .navbar because
+   of a navbar-specific responsive override (.navbar-collapse forced to
+   display:flex at wider viewports). Confirmed live: once moved into
+   .page-actions, that override no longer applies (it's scoped to a .navbar
+   ancestor this element no longer has), so the ENTIRE relocated block —
+   search bar, notifications, and the avatar dropdown together — silently
+   computed back to display:none, with nothing visibly broken to point at
+   since there was no error, just an invisible element. Re-asserting
+   display:flex here, scoped to wherever this file's JS actually puts it
+   (.page-actions), restores the layout without depending on Bootstrap's
+   .navbar-scoped rule. */
+.page-actions .collapse.navbar-collapse {
+	display: flex !important;
+	align-items: center;
+	/* Bootstrap's own .navbar-collapse class carries flex-grow:1 and
+	   flex-basis:100% — confirmed live — intended to expand and fill the
+	   space between the brand logo and the right-aligned items within the
+	   full-width .navbar it originally lived in. Relocated into the much
+	   narrower .page-actions next to the "Add X" button, that same expansion
+	   stretched it across nearly all of .page-actions' remaining width,
+	   pushing its own content (search + avatar, right-aligned within ITS OWN
+	   box via justify-content:flex-end) far away from "Add X" even though
+	   the two are adjacent siblings with no actual gap between them in the
+	   DOM — confirmed live via getBoundingClientRect() that "Add X" ended at
+	   the exact same x the collapse began, before the collapse's own
+	   expansion carried its content another ~650px to the right. Sizing it
+	   to its own content instead lets it sit directly next to "Add X". */
+	flex-grow: 0 !important;
+	flex-basis: auto !important;
+	/* Fixing the expansion above left "Add X" and the avatar touching with a
+	   literal 0px gap (confirmed live) — a small margin so they read as two
+	   distinct controls instead of visually merging into one. */
+	margin-left: 12px;
+}
+
+/* Same bug, one level deeper: Bootstrap's ul.navbar-nav (wrapping
+   notifications + Help + the avatar dropdown as <li>s) only lays out
+   horizontally via ".navbar-expand .navbar-nav { flex-direction: row }" —
+   scoped to a ".navbar-expand" ancestor (the actual class on .navbar: "navbar
+   navbar-expand"). Confirmed live: once relocated outside .navbar entirely,
+   that ancestor is gone, so .navbar-nav fell back to Bootstrap's base
+   .navbar-nav { flex-direction: column }, stacking notifications/Help/avatar
+   vertically instead of side by side. That stack grew taller (70px) than the
+   60px page-head bar itself, which is why the avatar rendered mostly below
+   the visible bar (clipped out of view) even though .dropdown-navbar-user
+   itself wasn't display:none, and why the logo/hamburger looked vertically
+   off-center — the row's height was being driven by this oversized stacked
+   column, not by the page-head bar's actual height. */
+.page-actions ul.navbar-nav {
+	display: flex !important;
+	flex-direction: row !important;
+	align-items: center;
+}
+
+/* .page-head.flex is "position: sticky; top: var(--navbar-height)" (48px)
+   in Frappe's own CSS — calibrated to stick right below .navbar's own
+   height while scrolling. Confirmed live this became stale once .navbar is
+   hidden: position:sticky's offset only affects where the element RENDERS,
+   not the space it reserves in the normal document flow (which is based on
+   its natural, un-stuck position) — so with .navbar's height now 0,
+   page-head kept rendering 48px lower than the flow space it reserves, and
+   the main content below (which starts right after that reserved space)
+   ended up visually overlapping the bottom ~48px of the page-head bar.
+   Overriding just the "top" offset (sticky position kept) does NOT fix
+   this, even with higher specificity and !important confirmed via
+   document.styleSheets — tried several ways, including a freshly injected
+   <style> tag, and getBoundingClientRect() kept reporting the stale 48px
+   every time. Only changing "position" itself away from sticky (confirmed
+   live: "static" recalculates and renders at the correct offset
+   immediately) actually takes effect, pointing to a sticky-position
+   constraint-rect caching quirk rather than an ordinary cascade/specificity
+   problem. Dropping sticky behavior here is an acceptable trade — the
+   page-head bar no longer stays pinned while scrolling — in exchange for
+   reliably fixing a real, confirmed visual overlap bug, scoped to only
+   apply once the navbar merge is confirmed
+   (body.navbar-extras-relocated). */
+body.navbar-extras-relocated .page-head.flex {
+	position: static !important;
+}
+
+/* Form view's sticky tab bar (.form-tabs-list) switches between two sticky
+   "top" offsets as you scroll (frappe/form/layout.js's setup_events(), via
+   the .form-tabs-sticky-up/-down classes): "sticky-down" rests at
+   navbar-height + page-head-height (stuck right below BOTH bars),
+   "sticky-up" rests at navbar-height alone (stuck right below just the
+   navbar, once the bigger page-head has scrolled out of view). Both assume
+   .navbar stays permanently pinned above the tab bar — true in Frappe's
+   stock two-bar layout, no longer true here: .navbar is hidden outright
+   once merged, and the merged .page-head.flex is position:static (scrolls
+   away normally, per the fix directly above) — nothing stays pinned above
+   the tab bar at all anymore. Confirmed live this leaves the tab bar
+   sticking at a now-meaningless offset (var(--navbar-height), 48px) in the
+   middle of the page instead of the viewport's actual top: scrolling to
+   where the FIRST section's fields (e.g. User's Gender/Phone row) pass
+   through that 48px-high band puts them directly behind the opaque,
+   higher-z-index tab bar, making their labels disappear ("unable to see
+   top fields its name is hidden") until scrolled further past it — not a
+   missing-field bug, a wrongly-floating sticky bar covering real content.
+   Both offsets collapse to flush-top: with nothing legitimately pinned
+   above it, sticking right at the viewport's top edge is the only offset
+   that still makes sense, and behaves like an ordinary sticky header
+   (content scrolls away from under it, not behind a phantom mid-page gap). */
+body.navbar-extras-relocated .form-tabs-sticky-up,
+body.navbar-extras-relocated .form-tabs-sticky-down {
+	top: 0 !important;
+}
