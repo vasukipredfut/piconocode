@@ -100,12 +100,14 @@ public class ExtendedFormsController {
             // Approx leave numbers — pull from m7_leave_request if present
             Integer paid = null, lop = null;
             try {
+                // Columns are employee_id / leave_kind (emp_id / leave_type never existed, so these
+                // were always 0); scoped to the tenant like every other read.
                 paid = jdbc.queryForObject(
-                    "SELECT COALESCE(SUM(days),0) FROM m7_leave_request WHERE emp_id=? AND status='APPROVED' AND leave_type IN ('CL','EL','SL')",
-                    Integer.class, empId);
+                    "SELECT COALESCE(SUM(days),0) FROM m7_leave_request WHERE tenant_id=? AND employee_id=? AND status='APPROVED' AND leave_kind IN ('CL','EL','SL')",
+                    Integer.class, com.aria.security.TenantContext.get(), empId);
                 lop = jdbc.queryForObject(
-                    "SELECT COALESCE(SUM(days),0) FROM m7_leave_request WHERE emp_id=? AND leave_type='LWP'",
-                    Integer.class, empId);
+                    "SELECT COALESCE(SUM(days),0) FROM m7_leave_request WHERE tenant_id=? AND employee_id=? AND status='APPROVED' AND leave_kind='LWP'",
+                    Integer.class, com.aria.security.TenantContext.get(), empId);
             } catch (Exception ignored) { paid = 0; lop = 0; }
             int credit_opening = 24;   // statutory minimum EL
             int credit_earned = 18;

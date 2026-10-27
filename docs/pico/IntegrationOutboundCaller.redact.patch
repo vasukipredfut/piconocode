@@ -1,0 +1,25 @@
+Patch for src/main/java/com/aria/integration/service/IntegrationOutboundCaller.java (Module 6).
+
+Why: every outbound call is written to integration_event_log with redact(payload). redact() only
+masks keys containing password / secret / token / apikey / authorization, so the installation-report
+one-time code would be stored in plain text: in the SMS "variables" and inside the email "body".
+After this patch a payload with "sensitive": true has its body / variables masked, and any key
+containing "otp" is masked as well.
+
+--- a/src/main/java/com/aria/integration/service/IntegrationOutboundCaller.java
++++ b/src/main/java/com/aria/integration/service/IntegrationOutboundCaller.java
+@@ private static Map<String, Object> redact(Map<String, Object> in) {
+         if (in == null) return null;
++        boolean sensitive = Boolean.TRUE.equals(in.get("sensitive"));
+         Map<String, Object> out = new HashMap<>();
+         for (var e : in.entrySet()) {
+             String k = e.getKey();
+             if (k == null) continue;
+             String lk = k.toLowerCase();
+             if (lk.contains("password") || lk.contains("secret")
+                     || lk.contains("token") || lk.contains("apikey")
+-                    || lk.contains("authorization")) {
++                    || lk.contains("authorization") || lk.contains("otp")
++                    || (sensitive && (lk.equals("body") || lk.equals("variables")))) {
+                 out.put(k, "***");
+             } else if (e.getValue() instanceof Map<?,?> m) {

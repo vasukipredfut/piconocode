@@ -103,9 +103,10 @@ public class AccountController {
         try {
             if (file == null || file.isEmpty()) return Map.of("ok", false, "error", "no file");
 
-            String safeName = (file.getOriginalFilename() == null ? "photo.bin"
-                    : file.getOriginalFilename().replaceAll("[^A-Za-z0-9._-]", "_"));
-            String storedName = "user-" + userId + "-" + System.currentTimeMillis() + "-" + safeName;
+            // /uploads/** is public on the app's own origin: only real images, stored under a
+            // name and extension chosen here (an uploaded .html / .svg would otherwise run as the app).
+            String kind = com.aria.utils.UploadGuard.check(file, com.aria.utils.UploadGuard.IMAGES);
+            String storedName = com.aria.utils.UploadGuard.storedName("user-" + userId + "-" + System.currentTimeMillis(), kind);
             File target = new File(new File(storageDir, "avatars"), storedName);
             try (FileOutputStream fos = new FileOutputStream(target)) {
                 fos.write(file.getBytes());
@@ -114,6 +115,8 @@ public class AccountController {
             String url = "/uploads/avatars/" + storedName;
             jdbc.update("UPDATE employee_details SET photo = ? WHERE id = ?", url, userId);
             return Map.of("ok", true, "url", url);
+        } catch (IllegalArgumentException bad) {
+            return Map.of("ok", false, "error", bad.getMessage());
         } catch (Exception e) {
             return Map.of("ok", false, "error", e.getMessage());
         }
@@ -188,9 +191,13 @@ public class AccountController {
 
         String backgroundUrl = null;
         if (req.file != null && !req.file.isEmpty()) {
-            String safeName = (req.file.getOriginalFilename() == null ? "background.bin"
-                    : req.file.getOriginalFilename().replaceAll("[^A-Za-z0-9._-]", "_"));
-            String storedName = "user-" + userId + "-" + System.currentTimeMillis() + "-" + safeName;
+            String kind;
+            try {
+                kind = com.aria.utils.UploadGuard.check(req.file, com.aria.utils.UploadGuard.IMAGES);
+            } catch (IllegalArgumentException bad) {
+                return Map.of("ok", false, "error", bad.getMessage());
+            }
+            String storedName = com.aria.utils.UploadGuard.storedName("user-" + userId + "-" + System.currentTimeMillis(), kind);
             File target = new File(new File(storageDir, "backgrounds"), storedName);
             try (FileOutputStream fos = new FileOutputStream(target)) {
                 fos.write(req.file.getBytes());

@@ -1,0 +1,37 @@
+Uploads hardening (Module 7) -- apply together with java/com/aria/utils/UploadGuard.java.
+
+Why: /uploads/** is permit-all and served from the application's own origin. Both upload
+endpoints below store ANY file type under the client's file name, so an uploaded .html / .svg runs
+as the app (stored XSS) for whoever opens the link. The PICO modules route selfies (Module 1),
+expense receipts (Module 4) and profile photos (Module 7) through these endpoints.
+
+1) src/main/java/com/aria/account/AccountController.java  -- uploadPhoto()
+
+-            String safeName = (file.getOriginalFilename() == null ? "photo.bin"
+-                    : file.getOriginalFilename().replaceAll("[^A-Za-z0-9._-]", "_"));
+-            String storedName = "user-" + userId + "-" + System.currentTimeMillis() + "-" + safeName;
++            String kind = com.aria.utils.UploadGuard.check(file, com.aria.utils.UploadGuard.IMAGES);
++            String storedName = com.aria.utils.UploadGuard.storedName(
++                    "user-" + userId + "-" + System.currentTimeMillis(), kind);
+
+   and add, before the generic catch:
++        } catch (IllegalArgumentException bad) {
++            return Map.of("ok", false, "error", bad.getMessage());
+
+2) src/main/java/com/aria/document/DocumentUploadController.java  -- upload()
+
+-            String safeName = (file.getOriginalFilename() == null ? "file.bin"
+-                : file.getOriginalFilename().replaceAll("[^A-Za-z0-9._-]", "_"));
+-            String storedName = dn + "-" + safeName;
++            String kind = com.aria.utils.UploadGuard.check(file, com.aria.utils.UploadGuard.IMAGES_AND_PDF);
++            String safeName = (file.getOriginalFilename() == null ? "file"
++                : file.getOriginalFilename().replaceAll("[^A-Za-z0-9._-]", "_"));
++            String storedName = com.aria.utils.UploadGuard.storedName(dn, kind);
+
+   (keep safeName only as the display title) and map IllegalArgumentException to {"ok":false,"error":...}.
+   If other document types (xlsx, docx) are needed in the vault, extend UploadGuard.sniff with their
+   ZIP signature AND serve them with Content-Disposition: attachment.
+
+3) src/main/java/com/aria/config/CorsConfiguration.java -- the /uploads/** resource handler:
+   add the response header  X-Content-Type-Options: nosniff  (e.g. a small OncePerRequestFilter
+   for paths starting with /uploads/), so browsers never second-guess the stored type.

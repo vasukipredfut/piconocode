@@ -167,6 +167,8 @@ public class IntegrationOutboundCaller {
 
     private static Map<String, Object> redact(Map<String, Object> in) {
         if (in == null) return null;
+        // "sensitive": true (e.g. one-time codes) also masks the message body / template variables.
+        boolean sensitive = Boolean.TRUE.equals(in.get("sensitive"));
         Map<String, Object> out = new HashMap<>();
         for (var e : in.entrySet()) {
             String k = e.getKey();
@@ -174,7 +176,8 @@ public class IntegrationOutboundCaller {
             String lk = k.toLowerCase();
             if (lk.contains("password") || lk.contains("secret")
                     || lk.contains("token") || lk.contains("apikey")
-                    || lk.contains("authorization")) {
+                    || lk.contains("authorization") || lk.contains("otp")
+                    || (sensitive && (lk.equals("body") || lk.equals("variables")))) {
                 out.put(k, "***");
             } else if (e.getValue() instanceof Map<?,?> m) {
                 @SuppressWarnings("unchecked")

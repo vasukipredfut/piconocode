@@ -1,0 +1,33 @@
+# Copy to migrate.ini (never commit the real one: it holds database passwords).
+
+[erpnext]
+# Read-only user on the ERPNext MariaDB is enough (SELECT on the site database + information_schema).
+host = 127.0.0.1
+port = 3306
+user = erp_readonly
+password = CHANGE_ME
+database = _0123456789abcdef
+
+[aria]
+# Aria MariaDB (schema earms) with V382-V389 applied.
+host = 127.0.0.1
+port = 3306
+user = earms_app
+password = CHANGE_ME
+database = earms
+
+[migration]
+# Aria tenant (tenant.id, ACTIVE) the data is loaded into.
+aria_tenant_id = 1
+# ERPNext Company to migrate (rows of other companies are ignored where the DocType has a company).
+erp_company = PICO Automation
+company_display_name = PICO Automation
+# Items: brand used when the ERPNext Item has none; GST % for new items (ERPNext item taxes are templates).
+default_brand = PICO
+default_gst_pct = 18
+# ERPNext role -> Aria role (JSON). Empty = the built-in map in migrate.py.
+role_map =
+# files phase: ERPNext site directory (contains public/files and private/files) and Aria's upload root.
+erp_files_dir = /home/frappe/frappe-bench/sites/erp.example.com
+aria_uploads_dir = /opt/aria/uploads
+log_file = migrate.log

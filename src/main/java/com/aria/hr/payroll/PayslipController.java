@@ -33,27 +33,58 @@ public class PayslipController {
         this.settings = settings;
     }
 
+    /**
+     * Payroll HR only (Manager / TenantAdmin / SuperAdmin): these endpoints take any empId, and
+     * previously any logged-in user could read anyone's salary, PAN and bank account with them.
+     * Employees read their own approved payslips through the pico.my-salary action.
+     */
     @GetMapping(value = "/html", produces = MediaType.TEXT_HTML_VALUE)
     public String html(@RequestParam long empId, @RequestParam String period) {
+        requirePayrollRole();
         return render(empId, period, true);
     }
 
     @PostMapping("/generate")
     public Map<String, Object> generate(@RequestParam long empId, @RequestParam String period) {
-        String html = render(empId, period, false);
+        requirePayrollRole();
         PayrollCalcService.PayrollResult r = calc.compute(empId, period);
+        if (r.error != null && !r.error.isEmpty()) return Map.of("ok", false, "error", r.error);
         try {
-            jdbc.update(
-                "INSERT INTO m7_payslip (tenant_id, emp_id, payroll_period, generated_at, " +
-                "status, gross, total_deduct, net_pay, html_snapshot) " +
-                "VALUES (1, ?, ?, NOW(), 'GENERATED', ?, ?, ?, ?) " +
-                "ON DUPLICATE KEY UPDATE generated_at=NOW(), status='GENERATED', " +
-                "gross=VALUES(gross), total_deduct=VALUES(total_deduct), net_pay=VALUES(net_pay), html_snapshot=VALUES(html_snapshot)",
-                empId, period, r.gross, r.totalDeduct, r.netPay, html);
+            upsertPayslip(empId, period, r, render(empId, period, false));
             return Map.of("ok", true, "empId", empId, "period", period,
                           "netPay", r.netPay == null ? "0" : r.netPay.toPlainString());
         } catch (Exception e) {
             return Map.of("ok", false, "error", e.getMessage());
+        }
+    }
+
+    /** Printable (non-preview) payslip HTML for the current tenant; used for m7_payslip.html_snapshot. */
+    public String snapshotHtml(long empId, String period) {
+        return render(empId, period, false);
+    }
+
+    /**
+     * Upserts the tenant's m7_payslip row for (empId, period). An already APPROVED / PAID payslip
+     * keeps its status: only the numbers and snapshot of a not-yet-approved slip may change.
+     */
+    public void upsertPayslip(long empId, String period, PayrollCalcService.PayrollResult r, String html) {
+        jdbc.update(
+            "INSERT INTO m7_payslip (tenant_id, emp_id, payroll_period, generated_at, " +
+            "status, gross, total_deduct, net_pay, html_snapshot) " +
+            "VALUES (?, ?, ?, NOW(), 'GENERATED', ?, ?, ?, ?) " +
+            "ON DUPLICATE KEY UPDATE generated_at=IF(status IN ('APPROVED','PAID'), generated_at, NOW()), " +
+            "gross=IF(status IN ('APPROVED','PAID'), gross, VALUES(gross)), " +
+            "total_deduct=IF(status IN ('APPROVED','PAID'), total_deduct, VALUES(total_deduct)), " +
+            "net_pay=IF(status IN ('APPROVED','PAID'), net_pay, VALUES(net_pay)), " +
+            "html_snapshot=IF(status IN ('APPROVED','PAID'), html_snapshot, VALUES(html_snapshot)), " +
+            "status=IF(status IN ('APPROVED','PAID'), status, 'GENERATED')",
+            com.aria.security.TenantContext.get(), empId, period, r.gross, r.totalDeduct, r.netPay, html);
+    }
+
+    private void requirePayrollRole() {
+        if (!com.aria.security.CurrentRole.isAny(jdbc, com.aria.security.CurrentRole.MANAGER, com.aria.security.CurrentRole.TENANT_ADMIN)) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.FORBIDDEN, "Payroll access requires Manager or TenantAdmin");
         }
     }
 
@@ -67,7 +98,7 @@ public class PayslipController {
             return "<h1>Payslip error</h1><p>" + esc(r.error) + "</p>";
         }
         Map<String, Object> emp;
-        try { emp = jdbc.queryForMap("SELECT * FROM m7_employee WHERE id=?", empId); }
+        try { emp = jdbc.queryForMap("SELECT * FROM m7_employee WHERE id=? AND tenant_id=?", empId, com.aria.security.TenantContext.get()); }
         catch (Exception ex) { return "<h1>Employee not found</h1>"; }
 
         StringBuilder earnings = new StringBuilder();

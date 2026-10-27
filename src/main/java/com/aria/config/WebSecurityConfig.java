@@ -90,6 +90,10 @@ public class WebSecurityConfig {
                     "/api/m0/element-catalog",
                     // M11 inbound-webhook endpoint — auth carried in the URL token.
                     "/api/integrations/inbound/**",
+                    // PICO customer support portal (PublicSupportController): no login; the
+                    // controller resolves the tenant from the URL, checks the customer's mobile
+                    // and rate-limits per IP.
+                    "/api/public/support/**",
                     // Raspberry Pi conveyor devices — no interactive login on the
                     // device, so these run tokenless (falls back to DEFAULT tenant
                     // via TenantContextFilter, same as any other permit-all route).

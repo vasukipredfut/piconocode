@@ -34,25 +34,35 @@ import java.util.*;
 @Service
 public class PayrollCalcService {
 
-    private final JdbcTemplate jdbc;
+    /** m0_tenant_setting key: where OT pay comes from. */
+    public static final String OT_SOURCE_SETTING = "payroll.ot_source";
+    /** Aria default: 2x basic hourly rate x m7_attendance_summary.ot_hours. */
+    public static final String OT_FROM_SUMMARY = "ATTENDANCE_SUMMARY";
+    /** PICO / ERPNext: sum of m7_overtime_entry.ot_amount in the month (already priced per shift). */
+    public static final String OT_FROM_ENTRIES = "OVERTIME_ENTRY";
 
-    public PayrollCalcService(JdbcTemplate jdbc) {
+    private final JdbcTemplate jdbc;
+    private final com.aria.tenant.TenantSettings settings;
+
+    public PayrollCalcService(JdbcTemplate jdbc, com.aria.tenant.TenantSettings settings) {
         this.jdbc = jdbc;
+        this.settings = settings;
     }
 
-    /** Compute payroll for a single employee for a YYYY-MM period. */
+    /** Compute payroll for a single employee of the current tenant for a YYYY-MM period. */
     public PayrollResult compute(long empId, String period) {
+        Long tenantId = com.aria.security.TenantContext.get();
         // 1. Load active salary card
         Map<String, Object> emp;
         Map<String, Object> sal;
         try {
-            emp = jdbc.queryForMap("SELECT * FROM m7_employee WHERE id=?", empId);
+            emp = jdbc.queryForMap("SELECT * FROM m7_employee WHERE id=? AND tenant_id=?", empId, tenantId);
             sal = jdbc.queryForMap(
                 "SELECT * FROM m7_employee_salary " +
-                "WHERE emp_id=? AND effective_from <= LAST_DAY(?) " +
+                "WHERE emp_id=? AND tenant_id=? AND effective_from <= LAST_DAY(?) " +
                 "AND (effective_to IS NULL OR effective_to >= ?) " +
                 "ORDER BY effective_from DESC LIMIT 1",
-                empId, period + "-01", period + "-01");
+                empId, tenantId, period + "-01", period + "-01");
         } catch (Exception e) {
             return PayrollResult.error("Employee or salary card not found: " + e.getMessage());
         }
@@ -64,7 +74,7 @@ public class PayrollCalcService {
         try {
             Map<String, Object> att = jdbc.queryForMap(
                 "SELECT payable_days, lop_days, ot_hours FROM m7_attendance_summary " +
-                "WHERE emp_id=? AND period=?", empId, period);
+                "WHERE emp_id=? AND tenant_id=? AND period=?", empId, tenantId, period);
             payableDays = new BigDecimal(att.get("payable_days").toString());
             lopDays     = new BigDecimal(att.get("lop_days").toString());
             otHours     = new BigDecimal(att.get("ot_hours").toString());
@@ -87,11 +97,15 @@ public class PayrollCalcService {
 
         // OT: 2x ordinary hourly rate (Factories Act §59).
         // Ordinary rate = basic / (paid days * 8 hrs). Doubled for OT.
+        boolean otFromEntries = OT_FROM_ENTRIES.equalsIgnoreCase(settings.get(OT_SOURCE_SETTING, OT_FROM_SUMMARY));
         BigDecimal otAmt = BigDecimal.ZERO;
-        if (otHours.compareTo(BigDecimal.ZERO) > 0 && payableDays.compareTo(BigDecimal.ZERO) > 0) {
+        if (!otFromEntries && otHours.compareTo(BigDecimal.ZERO) > 0 && payableDays.compareTo(BigDecimal.ZERO) > 0) {
             BigDecimal hourly = basic.divide(payableDays.multiply(new BigDecimal("8")), 4, RoundingMode.HALF_UP);
             otAmt = hourly.multiply(otHours).multiply(new BigDecimal("2")).setScale(2, RoundingMode.HALF_UP);
         }
+        // OVERTIME_ENTRY: already-priced daily OT (shift multipliers, holiday rate), added after LOP
+        // so absent days do not prorate it -- ERPNext appended it to the slip's earnings as-is.
+        BigDecimal otEntries = otFromEntries ? overtimeEntries(empId, tenantId, period) : BigDecimal.ZERO;
 
         // Total gross before LOP
         BigDecimal grossPreLop = basic.add(da).add(hra).add(conv).add(med).add(spec)
@@ -104,15 +118,19 @@ public class PayrollCalcService {
             lopDeduct = grossPreLop.divide(payableDays, 4, RoundingMode.HALF_UP)
                                     .multiply(lopDays).setScale(2, RoundingMode.HALF_UP);
         }
-        BigDecimal gross = grossPreLop.subtract(lopDeduct);
+        BigDecimal gross = grossPreLop.subtract(lopDeduct).add(otEntries);
 
         // 4. Statutory deductions — load current settings
-        Map<String, Object> pfSetting = jdbc.queryForMap(
-            "SELECT * FROM m7_pf_setting WHERE tenant_id=? ORDER BY effective_from DESC LIMIT 1",
-            com.aria.security.TenantContext.get());
-        Map<String, Object> esiSetting = jdbc.queryForMap(
-            "SELECT * FROM m7_esi_setting WHERE tenant_id=? ORDER BY effective_from DESC LIMIT 1",
-            com.aria.security.TenantContext.get());
+        Map<String, Object> pfSetting;
+        Map<String, Object> esiSetting;
+        try {
+            pfSetting = jdbc.queryForMap(
+                "SELECT * FROM m7_pf_setting WHERE tenant_id=? ORDER BY effective_from DESC LIMIT 1", tenantId);
+            esiSetting = jdbc.queryForMap(
+                "SELECT * FROM m7_esi_setting WHERE tenant_id=? ORDER BY effective_from DESC LIMIT 1", tenantId);
+        } catch (org.springframework.dao.EmptyResultDataAccessException e) {
+            return PayrollResult.error("PF / ESI settings missing for this tenant (m7_pf_setting, m7_esi_setting)");
+        }
 
         BigDecimal pfBase = basic.add(da);
         BigDecimal pfCeiling = nz(pfSetting.get("wage_ceiling"));
@@ -173,6 +191,8 @@ public class PayrollCalcService {
         if (bonus.signum() > 0) r.lines.add(line("BONUS", "EARNING", bonus));
         if (inc.signum() > 0) r.lines.add(line("INCENTIVE", "EARNING", inc));
         if (otAmt.signum() > 0) r.lines.add(line("OT", "EARNING", otAmt));
+        if (otEntries.signum() > 0) r.lines.add(line("OT", "EARNING", otEntries));
+        r.otAmount = otAmt.add(otEntries);
         if (lopDeduct.signum() > 0) r.lines.add(line("LOP_DEDUCT", "DEDUCTION", lopDeduct));
         // Deductions (employee side)
         if (isTrue(emp.get("pf_applicable")) && pfEmp.signum() > 0) r.lines.add(line("PF_EMP", "DEDUCTION", pfEmp));
@@ -196,6 +216,19 @@ public class PayrollCalcService {
     }
 
     // ===== Helpers ==========================================================
+
+    /** ERPNext overrides/salary.py: OverTime Entry amounts dated inside the month, except cancelled ones. */
+    private BigDecimal overtimeEntries(long empId, Long tenantId, String period) {
+        try {
+            BigDecimal v = jdbc.queryForObject(
+                "SELECT COALESCE(SUM(ot_amount),0) FROM m7_overtime_entry WHERE tenant_id=? AND employee_id=? " +
+                "AND status <> 'CANCELLED' AND attendance_date BETWEEN ? AND LAST_DAY(?)",
+                BigDecimal.class, tenantId, empId, period + "-01", period + "-01");
+            return v == null ? BigDecimal.ZERO : v.setScale(2, RoundingMode.HALF_UP);
+        } catch (Exception e) {
+            return BigDecimal.ZERO; // V382 not applied on this database
+        }
+    }
 
     /** Normalize free-form gender values to M / F used by the PT slab table. */
     private String normGender(String g) {
@@ -322,6 +355,8 @@ public class PayrollCalcService {
         public BigDecimal gross;
         public BigDecimal totalDeduct;
         public BigDecimal netPay;
+        /** Total OT earning (either source). */
+        public BigDecimal otAmount = BigDecimal.ZERO;
         public List<Map<String, Object>> lines = new ArrayList<>();
         public String error;
 

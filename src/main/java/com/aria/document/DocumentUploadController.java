@@ -50,11 +50,14 @@ public class DocumentUploadController {
             if (file == null || file.isEmpty())
                 return Map.of("ok", false, "error", "no file");
 
-            String safeName = (file.getOriginalFilename() == null ? "file.bin"
+            // /uploads/** is public on the app's own origin: only images / PDF, stored with the
+            // sniffed extension. The client's file name is kept only as the display title.
+            String kind = com.aria.utils.UploadGuard.check(file, com.aria.utils.UploadGuard.IMAGES_AND_PDF);
+            String safeName = (file.getOriginalFilename() == null ? "file"
                 : file.getOriginalFilename().replaceAll("[^A-Za-z0-9._-]", "_"));
             String dn = doc_no == null || doc_no.isBlank()
                 ? "DOC-" + System.currentTimeMillis() : doc_no.replaceAll("[^A-Za-z0-9_-]", "_");
-            String storedName = dn + "-" + safeName;
+            String storedName = com.aria.utils.UploadGuard.storedName(dn, kind);
             File target = new File(storageDir, storedName);
             try (FileOutputStream fos = new FileOutputStream(target)) {
                 fos.write(file.getBytes());
@@ -66,7 +69,8 @@ public class DocumentUploadController {
             jdbc.update(
                 "INSERT INTO m0_document_vault (tenant_id, doc_no, doc_category, doc_type, title, " +
                 "document_url, document_size_kb, document_hash, issued_at, fy, period, tags, access_level, archived) " +
-                "VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+                com.aria.security.TenantContext.get(),
                 dn,
                 doc_category == null ? "POLICY" : doc_category,
                 doc_type == null ? "MISC" : doc_type,
@@ -80,6 +84,8 @@ public class DocumentUploadController {
 
             return Map.of("ok", true, "doc_no", dn, "url", "/uploads/" + storedName,
                           "size_kb", file.getSize() / 1024, "sha256", sha256);
+        } catch (IllegalArgumentException bad) {
+            return Map.of("ok", false, "error", bad.getMessage());
         } catch (Exception e) {
             return Map.of("ok", false, "error", e.getMessage());
         }
